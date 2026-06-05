@@ -19,9 +19,14 @@ the credential files on the target machine and you fill them in.
 | **settingslock** | kill System Settings the instant the FileVault recovery-key pane opens | `./install.sh` (self-sudos) | yes |
 | **betterat** | no-sudo `at(1)`: schedule shell commands, persist + catch up on reboot | `./betterat install` | no |
 | **wtalk** | push-to-talk dictation daemon (Parakeet transcribe + Gemini cleanup) | `./setup.sh` | no |
+| **fade-play-pause-chrome** | daemon that fades out + pauses browser music tabs and fades them back; `fadepause`/`faderesume` triggers | `./install.sh` | no |
 
 (They don't share one rigid interface — most lockers happen to have `install`/`uninstall`/`arm`/
-`disarm`, but betterat and wtalk don't fit that mold, and that's fine.)
+`disarm`, but betterat, wtalk, and fade-play-pause-chrome don't fit that mold, and that's fine.)
+
+**wtalk ↔ fade (optional):** if you `./install.sh` fade-play-pause-chrome, it puts `fadepause`/
+`faderesume` on your `PATH`, and wtalk auto-fires them on dictation start/stop (decoupled — wtalk
+just calls them by name; no-op if fade isn't installed).
 
 ## Fresh-machine setup (in order)
 

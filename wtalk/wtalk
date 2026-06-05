@@ -1,48 +1,61 @@
 #!/usr/bin/env python3
-"""wtalk — local dictation CLI. `wtalk help` for usage."""
+"""wtalk — local push-to-talk dictation. `wtalk help` for usage.
+
+ONE always-on background daemon, managed entirely by a launchd LaunchAgent
+(runs at login, kept alive). Karabiner's F5 runs `wtalk toggle`, which signals
+the daemon. There is no second "manual" start path — install/restart/uninstall
+all act on the same launchd agent, so its state is never ambiguous.
+"""
 import os
 import sys
 
 # Re-exec under the project venv so this works at ANY clone path / username (the
-# shebang only needs some python3 to make this one hop). Resolves the symlink via
-# realpath, so ~/.local/bin/wtalk finds the venv next to the real script.
+# shebang only needs some python3 to make this one hop). realpath resolves the
+# ~/.local/bin/wtalk symlink so the venv next to the real script is found.
 ROOT = os.path.dirname(os.path.realpath(__file__))
 _VENV = os.path.join(ROOT, ".venv")
 _VENV_PY = os.path.join(_VENV, "bin", "python")
-# Re-exec under the venv unless we're already in it. Compare sys.prefix (not
-# realpath of the binary — the venv python is a symlink to the base interpreter,
-# so realpath would wrongly say "already there" and skip the hop).
 if os.path.exists(_VENV_PY) and os.path.realpath(sys.prefix) != os.path.realpath(_VENV):
     os.execv(_VENV_PY, [_VENV_PY, os.path.realpath(__file__), *sys.argv[1:]])
 
-import shutil       # noqa: E402
-import signal       # noqa: E402
-import subprocess   # noqa: E402
-import time         # noqa: E402
+import glob          # noqa: E402
+import plistlib      # noqa: E402
+import shutil        # noqa: E402
+import signal        # noqa: E402
+import subprocess    # noqa: E402
+import time          # noqa: E402
 from datetime import datetime  # noqa: E402
 
 sys.path.insert(0, ROOT)
 import config  # noqa: E402
 
+_LABEL = "com.wtalk.agent"
+_UID = os.getuid()
+_DOMAIN = f"gui/{_UID}"
+_AGENT = os.path.expanduser(f"~/Library/LaunchAgents/{_LABEL}.plist")
+_APP = os.path.join(ROOT, "wtalk.app")
+_APP_EXE = os.path.join(_APP, "Contents", "MacOS", "wtalk")
+_DAEMON = os.path.join(ROOT, "daemon.py")
+_LOGDIR = os.path.expanduser("~/.wtalk")
+
 HELP = """wtalk — local dictation: F5 to speak, F5 again to paste a cleaned version at your cursor.
 
-  wtalk                 status (ready / loading / not running)
-  wtalk start           start the background daemon (loads Parakeet, warms Gemini)
-  wtalk stop            stop the daemon
-  wtalk install         run at login + keep alive (launchd) — the "always-on" mode
-  wtalk uninstall       stop running at login
-  wtalk status          detailed status: mic, queue, last error
-  wtalk toggle          what F5 does: start dictation (run again to stop + clean + paste)
-  wtalk cancel          what Esc does: cancel the current dictation
-  wtalk cli             TEST MODE: record from mic, print cleaned result (no paste/hotkeys)
-  wtalk history         last 20 dictations
-  wtalk help            this message
+  wtalk install     build + sign the app, run at login (always-on), prompt for the 2 perms
+  wtalk uninstall   stop and remove the login agent
+  wtalk restart     bounce the daemon (after editing config.txt or .env)
+  wtalk             status: ready / loading / not running
+  wtalk status      same as bare `wtalk`
+  wtalk toggle      what F5 does: start dictation; run again to stop + clean + paste
+  wtalk cancel      what Esc does: cancel the current dictation
+  wtalk history     last 20 dictations
+  wtalk help        this message
 
-  Trigger: F5 (bound in Karabiner -> `wtalk toggle`) or the menu-bar 🎙
-  Indicator: a red dot appears bottom-center while listening; a ✓ badge when done
-  Config: {cfg}""".format(cfg=config.ROOT / "config.txt")
+  Trigger: F5 (bound in Karabiner -> `wtalk toggle`) or the menu-bar mic icon.
+  Perms:   Microphone (record) + Accessibility (paste at cursor), both shown as 'wtalk'.
+  Config:  {cfg}""".format(cfg=config.ROOT / "config.txt")
 
 
+# ============================ status ============================
 def _age(iso):
     if not iso:
         return "never"
@@ -55,9 +68,13 @@ def _age(iso):
 
 
 def cmd_status():
+    loaded = _agent_loaded()
     s = config.state_read()
     if not s or not config.alive(s.get("pid")):
-        print("○ wtalk not running — run 'wtalk start'")
+        if loaded:
+            print("◍ wtalk loading… (launchd agent up; Parakeet warming — check again in a moment)")
+        else:
+            print("○ wtalk not running — run 'wtalk install'")
         return
     if s.get("status") == "loading":
         print("◍ wtalk loading… (Parakeet warming up)")
@@ -72,94 +89,52 @@ def cmd_status():
     if hb:
         hb_age = (datetime.now(config.tzinfo()) - datetime.fromisoformat(hb)).total_seconds()
         if hb_age > 12:
-            print(f"  ! heartbeat {hb_age:.0f}s stale — restart with `wtalk stop && wtalk start`")
+            print(f"  ! heartbeat {hb_age:.0f}s stale — `wtalk restart`")
     if s.get("last_error"):
         print(f"  last error: {s['last_error']}")
 
 
-def cmd_start():
-    s = config.state_read()
-    if s and config.alive(s.get("pid")):
-        print("wtalk already running"); return
-    exe = _ensure_app()
-    logdir = os.path.expanduser("~/.wtalk"); os.makedirs(logdir, exist_ok=True)
-    logf = open(os.path.join(logdir, "daemon.log"), "a")
-    subprocess.Popen([exe, os.path.join(ROOT, "daemon.py")],
-                     stdout=logf, stderr=logf, start_new_session=True,
-                     env={**os.environ, **_daemon_env()})
-    print("starting wtalk…", end="", flush=True)
-    for _ in range(120):                         # up to ~60s for model load
-        time.sleep(0.5)
-        s = config.state_read()
-        if s and s.get("status") == "ready" and config.alive(s.get("pid")):
-            print(" ready"); return
-        print(".", end="", flush=True)
-    print(" (still loading — check `wtalk status` or ~/.wtalk/daemon.log)")
-
-
-def cmd_stop():
-    s = config.state_read()
-    if not s or not config.alive(s.get("pid")):
-        print("wtalk not running"); return
-    os.kill(s["pid"], signal.SIGTERM)
-    print("wtalk stopped")
-
-
-_AGENT = os.path.expanduser("~/Library/LaunchAgents/com.wtalk.agent.plist")
-_APP = os.path.join(ROOT, "wtalk.app")
-_APP_EXE = os.path.join(_APP, "Contents", "MacOS", "wtalk")
-
-
+# ====================== app build + signing ======================
 def _daemon_env():
     """Env for launching the daemon out of wtalk.app: the bundled interpreter
     lives outside .venv, so point it at the base stdlib (PYTHONHOME) + the venv
-    packages (PYTHONPATH). PYTHONPATH is taken straight from the project .venv so
-    it's correct no matter which interpreter is running this CLI."""
-    import glob
+    packages (PYTHONPATH)."""
     site = glob.glob(os.path.join(_VENV, "lib", "python*", "site-packages"))
     if not site:
-        raise SystemExit("wtalk: no .venv site-packages found — run ./setup.sh "
-                         "(or: uv venv && uv pip install -r requirements.txt)")
-    return {"PYTHONHOME": sys.base_prefix, "PYTHONPATH": site[0],
-            "PYTHONNOUSERSITE": "1"}        # keep ~/.local & conda user-site out of the bundle
+        raise SystemExit("wtalk: no .venv site-packages — run ./setup.sh")
+    return {"PYTHONHOME": sys.base_prefix, "PYTHONPATH": site[0], "PYTHONNOUSERSITE": "1"}
 
 
-_LAST_SIGN_IDENTITY = "-"   # set by _ensure_app to whatever codesign actually used
-
-
-def _signing_identity():
+def _sign_identity():
     """Pick a codesign identity via the shared picker (../sign-identity.sh):
-    Developer ID → stable self-signed ('Mac Utils Local Signing') → ad-hoc, exactly
-    like demonlock + settingslock. Override with CODESIGN_IDENTITY=…"""
+    Developer ID → stable self-signed → ad-hoc. Override with CODESIGN_IDENTITY."""
     forced = os.environ.get("CODESIGN_IDENTITY")
     if forced:
         return forced
-    sign_sh = os.path.join(os.path.dirname(str(ROOT)), "sign-identity.sh")
+    sign_sh = os.path.join(os.path.dirname(ROOT), "sign-identity.sh")
     if os.path.isfile(sign_sh):
-        try:                       # stdout = the identity; the picker's log flows to the terminal
+        try:
             out = subprocess.run(["bash", sign_sh], stdout=subprocess.PIPE, text=True).stdout
-            ident = (out or "").strip()
-            if ident:
-                return ident
+            if (out or "").strip():
+                return out.strip()
         except Exception:
             pass
     return "-"
 
 
-def _ensure_app(force_sign=False):
-    """Build wtalk.app — a REAL app bundle. macOS then shows permissions as a clean
-    'wtalk' (with the normal permission prompt) instead of a hidden .venv binary.
-    Its executable is a copy of the interpreter; it finds the venv via the
-    PYTHONHOME/PYTHONPATH we launch it with (see _daemon_env). Signed (identity
-    com.wtalk.daemon) with a Developer ID cert if you have one, else ad-hoc — a
-    signature is required on Apple Silicon to run at all. (With ad-hoc, re-grant
-    Microphone/Accessibility after a Python/venv update, since the ad-hoc identity
-    is the code-hash; a Developer ID identity stays stable across rebuilds.)"""
-    import plistlib
+def _ensure_app():
+    """Build + sign wtalk.app — a REAL app bundle so macOS shows the perms as a
+    clean 'wtalk'. Its executable is a copy of the interpreter; it finds the venv
+    via PYTHONHOME/PYTHONPATH (see _daemon_env).
+
+    CRITICAL: signed WITHOUT the hardened runtime. wtalk loads conda/venv C
+    extensions (fcntl, numpy, sounddevice) that are NOT signed with our Team ID;
+    the hardened runtime's library validation rejects those and the daemon dies
+    at `import fcntl`. A plain signature (Developer ID for stable TCC grants,
+    else ad-hoc) runs fine and still anchors the Microphone/Accessibility grants.
+    Returns (exe_path, identity_used)."""
     os.makedirs(os.path.join(_APP, "Contents", "MacOS"), exist_ok=True)
-    fresh = not os.path.exists(_APP_EXE)
-    if fresh or force_sign:        # re-copy on install so a rebuilt venv can't leave a stale binary
-        shutil.copy2(os.path.realpath(sys.executable), _APP_EXE)
+    shutil.copy2(os.path.realpath(sys.executable), _APP_EXE)
     with open(os.path.join(_APP, "Contents", "Info.plist"), "wb") as f:
         plistlib.dump({
             "CFBundleName": "wtalk",
@@ -171,84 +146,109 @@ def _ensure_app(force_sign=False):
             "LSUIElement": True,            # menu-bar app, no Dock icon
             "NSMicrophoneUsageDescription": "wtalk records your voice to transcribe it.",
         }, f)
-    if fresh or force_sign:
-        global _LAST_SIGN_IDENTITY
-        _LAST_SIGN_IDENTITY = _signing_identity()
-        cmd = ["codesign", "--force", "--sign", _LAST_SIGN_IDENTITY,
-               "--identifier", "com.wtalk.daemon"]
-        if _LAST_SIGN_IDENTITY != "-":          # Developer ID → hardened runtime + secure timestamp
-            cmd += ["--options", "runtime", "--timestamp"]
-        cmd.append(_APP)
-        r = subprocess.run(cmd, capture_output=True, text=True)
-        if r.returncode:
-            print(f"WARNING: codesign failed ({(r.stderr or '').strip()[:160]}) — "
-                  "the app may not launch (Apple Silicon requires a signature).")
-    return _APP_EXE
+    ident = _sign_identity()
+    r = subprocess.run(["codesign", "--force", "--sign", ident,   # NO --options runtime (see above)
+                        "--identifier", "com.wtalk.daemon", _APP],
+                       capture_output=True, text=True)
+    if r.returncode:
+        print(f"WARNING: codesign failed ({(r.stderr or '').strip()[:160]}) — "
+              "the app may not launch (Apple Silicon requires a signature).")
+    return _APP_EXE, ident
+
+
+# ====================== launchd (single mechanism) ======================
+def _agent_loaded():
+    return subprocess.run(["launchctl", "print", f"{_DOMAIN}/{_LABEL}"],
+                          capture_output=True).returncode == 0
+
+
+def _write_agent_plist(exe):
+    ff = shutil.which("ffmpeg")
+    path = ":".join(dict.fromkeys(filter(None, [
+        os.path.dirname(ff) if ff else "", os.path.expanduser("~/.local/bin"),
+        "/opt/homebrew/bin", "/usr/local/bin",
+        "/usr/bin", "/bin", "/usr/sbin", "/sbin"])))   # ~/.local/bin → finds fadepause/faderesume
+    os.makedirs(os.path.dirname(_AGENT), exist_ok=True)
+    os.makedirs(_LOGDIR, exist_ok=True)
+    with open(_AGENT, "wb") as f:
+        plistlib.dump({
+            "Label": _LABEL,
+            "ProgramArguments": [exe, _DAEMON],
+            "RunAtLoad": True,
+            "KeepAlive": {"SuccessfulExit": False},   # restart on crash, not on clean stop
+            "WorkingDirectory": ROOT,
+            "EnvironmentVariables": {"PATH": path, **_daemon_env()},
+            "StandardOutPath": os.path.join(_LOGDIR, "daemon.log"),
+            "StandardErrorPath": os.path.join(_LOGDIR, "daemon.log"),
+        }, f)
+
+
+def _load_agent():
+    """(Re)bootstrap the agent into the GUI domain. Modern launchctl, with a
+    legacy load fallback for older macOS."""
+    subprocess.run(["launchctl", "bootout", f"{_DOMAIN}/{_LABEL}"], capture_output=True)
+    r = subprocess.run(["launchctl", "bootstrap", _DOMAIN, _AGENT], capture_output=True, text=True)
+    if r.returncode != 0:
+        subprocess.run(["launchctl", "unload", _AGENT], capture_output=True)
+        r = subprocess.run(["launchctl", "load", "-w", _AGENT], capture_output=True, text=True)
+    return r
+
+
+def _prime_perms(exe):
+    """Run the app once in a tiny mode that fires BOTH permission prompts
+    (Accessibility dialog + Microphone dialog), attributed to 'wtalk'. Returns
+    quickly; it does NOT load Parakeet."""
+    subprocess.run([exe, _DAEMON, "--prime-perms"],
+                   env={**os.environ, **_daemon_env()},
+                   capture_output=True, text=True, timeout=30)
 
 
 def cmd_install():
-    """Run wtalk at login (and now), kept alive, via a launchd LaunchAgent."""
-    import plistlib
-    s = config.state_read()
-    if s and config.alive(s.get("pid")):
-        os.kill(int(s["pid"]), signal.SIGTERM); time.sleep(1)
-    exe = _ensure_app(force_sign=True)
-    ff = shutil.which("ffmpeg")
-    if not ff:
-        print("WARNING: ffmpeg not found — install it: brew install ffmpeg")
-    path = ":".join(dict.fromkeys(filter(None, [
-        os.path.dirname(ff) if ff else "", "/opt/homebrew/bin", "/usr/local/bin",
-        "/usr/bin", "/bin", "/usr/sbin", "/sbin"])))
-    os.makedirs(os.path.dirname(_AGENT), exist_ok=True)
-    logdir = os.path.expanduser("~/.wtalk"); os.makedirs(logdir, exist_ok=True)
-    with open(_AGENT, "wb") as f:
-        plistlib.dump({
-            "Label": "com.wtalk.agent",
-            "ProgramArguments": [exe, os.path.join(ROOT, "daemon.py")],
-            "RunAtLoad": True,
-            "KeepAlive": {"SuccessfulExit": False},
-            "WorkingDirectory": ROOT,
-            "EnvironmentVariables": {"PATH": path, **_daemon_env()},
-            "StandardOutPath": os.path.join(logdir, "daemon.log"),
-            "StandardErrorPath": os.path.join(logdir, "daemon.log"),
-        }, f)
-    subprocess.run(["launchctl", "unload", _AGENT], capture_output=True)
-    r = subprocess.run(["launchctl", "load", "-w", _AGENT], capture_output=True, text=True)
+    if not os.environ.get("GEMINI_API_KEY"):
+        print(f"⚠ No GEMINI_API_KEY in {config.ROOT/'.env'} — cleanup will paste the RAW transcript.")
+        print("  Add one (https://aistudio.google.com/apikey), then re-run `wtalk install`.\n")
+    exe, ident = _ensure_app()
+    print("▸ requesting permissions (approve BOTH dialogs as 'wtalk')…")
+    try:
+        _prime_perms(exe)
+    except Exception:
+        pass
+    _write_agent_plist(exe)
+    r = _load_agent()
     if r.returncode:
-        print("launchctl load failed:", r.stderr.strip()); return
-    print("installed — wtalk starts at login (and is starting now). Menu-bar icon = 🎙.")
-    print(f"  app:    {_APP}")
-    if _LAST_SIGN_IDENTITY == "-":
-        print("  signed: ad-hoc (no Developer ID cert found — works fine)")
-    else:
-        print(f"  signed: {_LAST_SIGN_IDENTITY}")
-    print("  On first dictation macOS prompts for Microphone, and an Accessibility")
-    print("  dialog pops on launch — both shown as 'wtalk'. Approve once.")
-    if _LAST_SIGN_IDENTITY == "-":
-        print("  (Re-grant after a Python/venv update — ad-hoc identity is the code hash;")
-        print("   a Developer ID cert would make the grants stick across rebuilds.)")
-    # API keys are read from .env at daemon startup — remind if they're missing.
-    env_path = config.ROOT / ".env"
-    if os.environ.get("GEMINI_API_KEY"):
-        fb = "GROQ fallback set" if os.environ.get("GROQ_API_KEY") else "no GROQ fallback (optional)"
-        print(f"  keys:   GEMINI_API_KEY found in {env_path} · {fb}")
-    else:
-        print(f"  ⚠ NO GEMINI_API_KEY in {env_path} — cleanup will paste the RAW transcript.")
-        print("    Add one (https://aistudio.google.com/apikey), then: wtalk stop && wtalk start")
+        print("launchctl failed:", (r.stderr or "").strip()); return
+    print(f"✓ installed — wtalk runs at login and is starting now (signed: "
+          f"{'ad-hoc' if ident == '-' else ident}).")
+    print("  Approve the Accessibility prompt now. NOTE: macOS often won't show the")
+    print("  Microphone prompt until your FIRST dictation (first real mic use) — that's")
+    print("  normal; just approve it then. Both appear as 'wtalk'.")
+    print("  Then bind F5 → `wtalk toggle` in Karabiner.  Check it:  wtalk status")
 
 
 def cmd_uninstall():
+    subprocess.run(["launchctl", "bootout", f"{_DOMAIN}/{_LABEL}"], capture_output=True)
     subprocess.run(["launchctl", "unload", _AGENT], capture_output=True)
     try:
-        os.remove(_AGENT); print("uninstalled — won't start at login.")
+        os.remove(_AGENT); print("✓ uninstalled — won't start at login.")
     except FileNotFoundError:
         print("not installed.")
 
 
+def cmd_restart():
+    if not os.path.exists(_AGENT):
+        print("not installed — run 'wtalk install'"); return
+    if _agent_loaded():
+        subprocess.run(["launchctl", "kickstart", "-k", f"{_DOMAIN}/{_LABEL}"], capture_output=True)
+    else:
+        _load_agent()
+    print("restarting wtalk… (check `wtalk status`)")
+
+
+# ====================== runtime signals ======================
 def _signal_daemon(sig, label):
     s = config.state_read()
     if not s or not config.alive(s.get("pid")):
-        print("wtalk not running — run 'wtalk start'"); return
+        print("wtalk not running — run 'wtalk install'"); return
     os.kill(int(s["pid"]), sig)
     time.sleep(0.3)
     s = config.state_read() or {}
@@ -261,37 +261,6 @@ def cmd_toggle():
 
 def cmd_cancel():
     _signal_daemon(signal.SIGUSR2, "→ cancelled")
-
-
-def cmd_cli():
-    """Test mode: record from mic, run ASR -> clean-race, print to stdout."""
-    import daemon as d
-    print("loading Parakeet + warming Gemini…", flush=True)
-    d.load_parakeet()
-    cleaner = d.Cleaner(notify=lambda m: print(f"  · {m}"))
-    cleaner.warm()
-    print("ready.  [Enter]=start recording · [Enter]=stop · Ctrl-C=quit\n")
-    try:
-        while True:
-            input("▶ Enter to START… ")
-            sess = d.Session(); sess.start()
-            print(f"🔴 recording from {sess.mic_name}  ([Enter] to STOP)")
-            input()
-            cap = sess.snapshot().transcribe()
-            plain, marked = cap["text"], cap["marked"]
-            print(f"\n  duration : {cap['duration']:.1f}s")
-            print(f"  heard    : {marked or '(nothing)'}")
-            if not plain:
-                print("  → empty\n"); continue
-            words = plain.split()
-            if (len(words) <= config.PASSTHROUGH_MAX_WORDS and not cap["pauses"]
-                    and cap["confidence"] >= config.PASSTHROUGH_CONFIDENCE):
-                print(f"  PASSTHROUGH : {plain}\n"); continue
-            who, out = cleaner.clean_race(marked)
-            print(f"  via      : {who}")
-            print(f"  CLEANED  : {plain if who == 'raw' else out}\n")
-    except KeyboardInterrupt:
-        print("\nbye")
 
 
 def cmd_history():
@@ -307,9 +276,8 @@ def cmd_history():
 def main():
     a = sys.argv[1:]
     cmd = a[0] if a else "status"
-    fns = {"status": cmd_status, "start": cmd_start, "stop": cmd_stop,
-           "install": cmd_install, "uninstall": cmd_uninstall,
-           "toggle": cmd_toggle, "cancel": cmd_cancel, "cli": cmd_cli,
+    fns = {"status": cmd_status, "install": cmd_install, "uninstall": cmd_uninstall,
+           "restart": cmd_restart, "toggle": cmd_toggle, "cancel": cmd_cancel,
            "history": cmd_history}
     if cmd in ("help", "-h", "--help"):
         print(HELP)

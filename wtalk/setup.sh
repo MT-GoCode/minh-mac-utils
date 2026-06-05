@@ -55,7 +55,7 @@ else
 fi
 
 echo
+echo "▸ wtalk install fires the Microphone + Accessibility prompts — approve both (shown as 'wtalk')."
 echo "▸ Last step (manual): bind F5 in Karabiner-Elements to run:"
 echo "      $HOME/.local/bin/wtalk toggle"
-echo "  (and optionally a key → 'wtalk cancel'). Then grant Microphone + Accessibility"
-echo "  to 'wtalk' when prompted. Done — press F5 to dictate."
+echo "  (and optionally a key → 'wtalk cancel'). Then press F5 to dictate."

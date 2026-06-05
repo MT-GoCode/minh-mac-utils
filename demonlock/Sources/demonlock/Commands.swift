@@ -47,6 +47,28 @@ func runStatus() {
     if let t = s.tree { print("\n  policy evaluation  (✓ true · ✗ false · · unknown):\n" + t.asText(indent: 2)) }
 }
 
+// MARK: - zones list (user, no GUI)
+
+func runZoneList() {
+    let zones = ZoneStore.load()
+    if zones.isEmpty {
+        print("no zones yet — create them with `demonlock zones` (the map).")
+        return
+    }
+    let w = zones.map { $0.name.count }.max() ?? 0
+    print("demonlock zones (\(zones.count)):")
+    for z in zones {
+        let pad = z.name.padding(toLength: max(w, 4), withPad: " ", startingAt: 0)
+        switch z.shape {
+        case .circle(let lat, let lon, let r):
+            print(String(format: "  • %@   circle · r%.0fm @ %.5f, %.5f", pad, r, lat, lon))
+        case .polygon(let pts):
+            print("  • \(pad)   polygon · \(pts.count) points")
+        }
+    }
+    print("\nUse a name verbatim in a policy, e.g. LOCATED_IN_ANY([\"\(zones[0].name)\"]).")
+}
+
 // MARK: - setpolicy (sudo)
 
 func runSetPolicy(_ policy: String) {
@@ -129,6 +151,7 @@ func printHelp() {
       status              Arm state, phase, verdict, reason, policy, zones, health + live policy tree
       zones               Map of your zones (streets, search, your location). Add a new circle/
                           polygon (needs admin) or Delete one (free — deleting only tightens policy)
+      zones list          Print zone names + shapes (no map) — `list-zones` also works
       scan                Continuously scan nearby Wi-Fi (SSID + BSSID) until Ctrl+C —
                           walk your office to capture every access point (run WITHOUT sudo)
       perm-ask            (Re)grant the Location permission the agent needs

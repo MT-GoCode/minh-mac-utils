@@ -19,6 +19,7 @@ import collections
 import fcntl
 import os
 import queue
+import shutil
 import signal
 import subprocess
 import sys
@@ -38,7 +39,6 @@ import config
 import ui
 
 _KARABINER_CLI = "/Library/Application Support/org.pqrs/Karabiner-Elements/bin/karabiner_cli"
-_FADE_DIR = os.path.expanduser("~/bin/fade-play-pause-chrome")
 _LOG_CAP_BYTES = 4 * 1024 * 1024
 _GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
@@ -61,11 +61,15 @@ def _notify(msg):
         pass
 
 
-def _fade(script):
-    """Run the user's independent fade pause/resume script, fire-and-forget."""
+def _fade(action):
+    """Fire the standalone fade-play-pause tool, fire-and-forget. Decoupled: it
+    just calls `fadepause`/`faderesume` off PATH (the tool's ./install.sh drops
+    those into ~/.local/bin). No-op if the tool isn't installed. action: 'pause'|'resume'."""
+    cmd = shutil.which("fade" + action)
+    if not cmd:
+        return
     try:
-        subprocess.Popen([os.path.join(_FADE_DIR, script)],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen([cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
 
@@ -108,6 +112,17 @@ def prompt_accessibility():
         return bool(AXIsProcessTrustedWithOptions({K: True}))
     except Exception:
         return True
+
+
+def prime_mic_permission():
+    """Open + immediately close a tiny input stream to trigger the macOS Microphone
+    TCC prompt (attributed to this signed 'wtalk' app). Best-effort; used by
+    `wtalk install` so the Mic dialog appears up front instead of on first record."""
+    try:
+        s = sd.InputStream(channels=1, samplerate=16000)
+        s.start(); sleep(0.15); s.stop(); s.close()
+    except Exception:
+        pass
 
 
 def paste(text):
@@ -563,14 +578,14 @@ class Daemon:
             try:
                 if action == "toggle":
                     if self.listening:
-                        _fade("faderesume-trigger.sh")
+                        _fade("resume")
                         self._stop_listening()
                     else:                                  # START: always allowed
-                        _fade("fadepause-trigger.sh")
+                        _fade("pause")
                         if not self._start_listening():
-                            _fade("faderesume-trigger.sh")
+                            _fade("resume")
                 elif action == "cancel" and self.listening:
-                    _fade("faderesume-trigger.sh")
+                    _fade("resume")
                     self._cancel_listening()
             except Exception as e:
                 self.last_error = f"control: {e}"
@@ -814,4 +829,10 @@ class Daemon:
 
 
 if __name__ == "__main__":
+    if "--prime-perms" in sys.argv:
+        # Fire both TCC prompts up front (used by `wtalk install`), then exit —
+        # does NOT load Parakeet.
+        prompt_accessibility()      # Accessibility dialog (paste at cursor)
+        prime_mic_permission()      # Microphone dialog (record)
+        sys.exit(0)
     Daemon().run()

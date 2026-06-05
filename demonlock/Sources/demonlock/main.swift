@@ -11,7 +11,8 @@ case "agent":                              runAgent()
 // user commands
 case "status":                             runStatus()
 case "scan":                               runScan()
-case "zones", "view-zones", "edit-zones":  runZones()
+case "zones", "view-zones", "edit-zones":  argv.dropFirst().contains("list") ? runZoneList() : runZones()
+case "list-zones":                         runZoneList()
 case "perm-ask":                           runPermAsk()
 
 // sudo commands

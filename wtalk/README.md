@@ -87,8 +87,8 @@ you. Grant these in **System Settings → Privacy & Security**:
 
 | Permission | Why | How it's requested |
 |---|---|---|
-| **Microphone** | record your voice | auto-prompts on first dictation → Allow |
-| **Accessibility** | synthesize ⌘V to paste | a dialog pops on launch → **Open System Settings** → toggle **wtalk** on |
+| **Microphone** | record your voice | `wtalk install` tries to prompt up front, but macOS **often defers it to your first dictation** (first real mic use) — approve it then |
+| **Accessibility** | synthesize ⌘V to paste | `wtalk install` pops the dialog → **Open System Settings** → toggle **wtalk** on |
 | ~~Input Monitoring~~ | not needed | Karabiner owns the keys |
 
 The daemon logs `WARNING: Accessibility NOT granted` at startup until you approve it,
@@ -111,10 +111,15 @@ Apple Silicon requires a signature to run at all. The installer auto-picks the b
 
 Override with `CODESIGN_IDENTITY="…"`.
 
-wtalk-specific: the `.app`'s executable is a per-machine copy of your Python interpreter (gitignored),
-so it's re-signed on each `wtalk install`. To carry a Developer ID to another Mac, export it from
-Keychain Access as a `.p12` and import it there. If you change the signature, an old Accessibility
-grant can go stale — remove the `wtalk` entry and re-add it.
+**wtalk signs WITHOUT the hardened runtime** (unlike demonlock/settingslock) — and must.
+Its interpreter loads conda/venv C-extensions (`fcntl`, `numpy`, `sounddevice`) that aren't
+signed with your Team ID; the hardened runtime's *library validation* would reject them and the
+daemon would die at `import fcntl`. A plain signature still anchors the Mic/Accessibility grants.
+
+The `.app`'s executable is a per-machine copy of your Python interpreter (gitignored), so it's
+re-signed on each `wtalk install`. To carry a Developer ID to another Mac, export it from Keychain
+Access as a `.p12` and import it there. If you change the signature, an old grant can go stale —
+remove the `wtalk` entry and re-add it.
 
 ---
 
@@ -137,8 +142,7 @@ rm -f ~/.local/bin/wtalk                          # the PATH symlink
 cd ~/code/wtalk
 uv venv && uv pip install -r requirements.txt     # only if .venv is gone
 ln -sf ~/code/wtalk/wtalk ~/.local/bin/wtalk
-wtalk install                                     # rebuilds wtalk.app, signs, starts
-# then approve Microphone (prompts on first dictation) + Accessibility (dialog on launch)
+wtalk install                                     # rebuilds wtalk.app, signs, loads, prompts both perms
 ```
 
 ---
@@ -146,18 +150,20 @@ wtalk install                                     # rebuilds wtalk.app, signs, s
 ## Use
 
 ```bash
-wtalk             # status (ready / loading / not running)
-wtalk start       # run the daemon now (foreground-spawned; `install` is the at-login version)
-wtalk stop        # stop it
-wtalk install     # run at login + keep alive (launchd)
-wtalk uninstall   # stop running at login
-wtalk status      # detailed: mic, queue, last error
+wtalk install     # build + sign the app, run at login (always-on), prompt for both perms
+wtalk uninstall   # stop and remove the login agent
+wtalk restart     # bounce the daemon (after editing config.txt or .env)
+wtalk             # status: ready / loading / not running
+wtalk status      # same as bare `wtalk`
 wtalk toggle      # what F5 does (start, or stop+clean+paste)
 wtalk cancel      # what Esc/cancel does
-wtalk cli         # TEST MODE: record -> print cleaned result (no paste/hotkeys)
 wtalk history     # last 20 dictations
 wtalk help
 ```
+
+One mechanism: a launchd LaunchAgent (`com.wtalk.agent`, runs at login, kept alive).
+`install`/`uninstall`/`restart` all act on that same agent — there's no separate manual
+daemon, so "is it running?" is never ambiguous.
 
 Then anywhere: **F5** = start/stop dictation. While listening, a small **hints** pill
 sits under the dot — click it to type spelling/term hints (variable names, jargon)
@@ -169,7 +175,7 @@ and Quit.
 
 ## Config — `config.txt`
 
-Edit, then `wtalk stop && wtalk start` (or restart the agent). Highlights:
+Edit, then `wtalk restart`. Highlights:
 
 - **Cleanup:** `gemini_model`, `groq_model`, `max_output_tokens`, and the escalation
   deadline (`deadline_floor_sec`, `deadline_multiplier`, `tok_per_sec`).
@@ -185,9 +191,9 @@ Edit, then `wtalk stop && wtalk start` (or restart the agent). Highlights:
 
 ## Troubleshooting
 
-- **Records but won't paste** → grant **Accessibility** to `wtalkd` (and after a
+- **Records but won't paste** → grant **Accessibility** to `wtalk` (and after a
   re-sign, toggle it off/on to refresh the grant).
-- **Mic error / nothing records** → grant **Microphone** to `wtalkd`; `wtalk status`
+- **Mic error / nothing records** → grant **Microphone** to `wtalk`; `wtalk status`
   shows the mic and last error.
 - **F5 does nothing** → check the Karabiner rule runs `wtalk toggle`; disable any Mac
   default on F5.

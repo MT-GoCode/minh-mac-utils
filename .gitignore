@@ -40,3 +40,6 @@ wtalk/.serve.pid
 #   ~/.local/share/betterat/betterat.db
 #   /usr/local/etc/sudome/Allpassword
 #   /usr/local/etc/nextdns-discipline/credentials
+
+# personal scratch (zone names) — never commit
+demonlock/yourpolicies.txt
