@@ -1,0 +1,121 @@
+#!/bin/bash
+#
+# nextdns-lockdownd — root enforcer for NextDNS Lockdown.
+#
+# Runs as a root LaunchDaemon (com.nextdnslockdown.enforcerd, KeepAlive=true).
+# While ARMED it continuously re-asserts, every $INTERVAL seconds, that:
+#   1. pf is enabled and OUR ruleset is loaded   (defeats `pfctl -d` / `pfctl -f`)
+#   2. travel-mode gateway allowance is current   (captive portals)
+#   3. the system DNS resolver is 127.0.0.1        (defeats changing DNS in Settings)
+#   4. the nextdns process is alive                (so DNS never dies)
+# While DISARMED it removes our ruleset once and idles.
+#
+# Fail-closed: if the ruleset ever fails validation it is NOT loaded, and the
+# event is logged, rather than loading something broken.
+#
+# Standalone bash + base-OS tools only (matches the rest of the discipline stack).
+
+set -u
+
+CONF="/usr/local/etc/nextdns-lockdown/nextdns-lockdown.conf"
+STATE="/Library/Application Support/NextDNSLockdown"
+ARMED="$STATE/armed"
+TRAVEL="$STATE/travel-until"
+LOG="/var/log/nextdns-lockdown.log"
+INTERVAL=5
+DESIRED_DNS="127.0.0.1"
+MARKER="nextdns-lockdown-dns53"   # signature rule used to detect our ruleset
+
+log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >>"$LOG" 2>/dev/null; }
+
+pf_enabled()     { pfctl -s info 2>/dev/null | grep -q 'Status: Enabled'; }
+pf_ours_loaded() { pfctl -sr   2>/dev/null | grep -q "$MARKER"; }
+
+assert_pf() {
+    if pf_enabled && pf_ours_loaded; then
+        return 0
+    fi
+    # Validate BEFORE loading — never load a broken ruleset.
+    if ! pfctl -n -f "$CONF" 2>>"$LOG"; then
+        log "ERROR: ruleset failed validation; refusing to load"
+        return 1
+    fi
+    pfctl -f "$CONF" >/dev/null 2>>"$LOG"
+    pfctl -e        >/dev/null 2>&1   # harmless 'already enabled' if it was
+    if pf_enabled && pf_ours_loaded; then
+        log "re-asserted pf ruleset (was tampered or not loaded)"
+    else
+        log "WARNING: pf re-assert attempted but state still off"
+    fi
+}
+
+restore_pf() {
+    # Only act if our rules are currently loaded (i.e., transition to disarmed).
+    if pf_ours_loaded; then
+        pfctl -f /etc/pf.conf >/dev/null 2>&1
+        pfctl -d              >/dev/null 2>&1
+        log "DISARMED: restored default pf ruleset and disabled pf"
+    fi
+}
+
+active_services() {
+    # Enabled network services only (skip header line and '*'-disabled ones).
+    networksetup -listallnetworkservices 2>/dev/null | tail -n +2 | grep -v '^\*'
+}
+
+assert_resolver() {
+    # Tighten only: force 127.0.0.1 as the primary resolver if it has drifted.
+    # Never loosens (disarm leaves the resolver as-is — NextDNS stays the resolver).
+    local svc cur
+    while IFS= read -r svc; do
+        [ -z "$svc" ] && continue
+        cur="$(networksetup -getdnsservers "$svc" 2>/dev/null | tr '\n' ' ')"
+        case "$cur" in
+            "$DESIRED_DNS"|"$DESIRED_DNS "*) : ;;   # already 127.0.0.1-first
+            *) if networksetup -setdnsservers "$svc" "$DESIRED_DNS" 2>>"$LOG"; then
+                   log "reset resolver on '$svc' (was: ${cur:-unset})"
+               fi ;;
+        esac
+    done < <(active_services)
+}
+
+assert_nextdns() {
+    if ! pgrep -x nextdns >/dev/null 2>&1; then
+        launchctl kickstart -k system/nextdns >/dev/null 2>&1
+        log "nextdns not running — kickstarted it"
+    fi
+}
+
+manage_travel() {
+    # Travel mode: allow the current default gateway's DNS for a limited window
+    # (so captive portals work). Auto-expires. Implemented via live table edits
+    # so no full ruleset reload is needed.
+    local now until gw
+    now="$(date +%s)"
+    if [ -f "$TRAVEL" ] && IFS= read -r until <"$TRAVEL" 2>/dev/null \
+            && [ "$until" -gt "$now" ] 2>/dev/null; then
+        gw="$(route -n get default 2>/dev/null | awk '/gateway/{print $2; exit}')"
+        if [ -n "$gw" ]; then
+            pfctl -t dns_allow -T replace -- "$gw" >/dev/null 2>&1
+        fi
+    else
+        # Expired or unset: ensure the allow table is empty.
+        if pfctl -t dns_allow -T show 2>/dev/null | grep -q '[0-9]'; then
+            pfctl -t dns_allow -T flush >/dev/null 2>&1
+            log "travel mode expired — flushed gateway DNS allowance"
+        fi
+        [ -f "$TRAVEL" ] && rm -f "$TRAVEL"
+    fi
+}
+
+log "nextdns-lockdownd started (interval=${INTERVAL}s)"
+while true; do
+    if [ -f "$ARMED" ]; then
+        assert_pf && manage_travel
+        assert_resolver
+        assert_nextdns
+    else
+        restore_pf
+    fi
+    sleep "$INTERVAL"
+done

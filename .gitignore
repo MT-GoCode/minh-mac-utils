@@ -1,0 +1,42 @@
+# =====================================================================
+# minh-mac-utils — keep the repo "just source". Build outputs + secrets are
+# regenerated/scaffolded by each tool's installer on the target Mac.
+# NOTE: git does NOT support inline comments — every comment is on its own line.
+# =====================================================================
+
+# ---------- common ----------
+.DS_Store
+*.pyc
+__pycache__/
+*.o
+*.swiftmodule
+*.swiftdoc
+
+# never commit secrets, anywhere (defense in depth)
+**/.env
+**/credentials
+**/Allpassword
+*.pem
+*.key
+
+# ---------- demonlock (Swift) ----------
+demonlock/.build/
+demonlock/Demonlock.app/
+# (demonlock/dist/Demonlock.app IS committed on purpose: Developer-ID-signed,
+#  no secrets, lets a toolchain-less Mac install by copy. Rebuilt when you have Xcode.)
+
+# ---------- settingslock (Swift) ----------
+settingslock/.build/
+settingslock/dist/
+
+# ---------- wtalk (Python) ----------
+wtalk/.venv/
+wtalk/wtalk.app/
+wtalk/.serve.pid
+
+# ---------- betterat / sudome / nextdns-discipline / nextdns-lockdown ----------
+# Pure source (bash; or C compiled to a temp dir at install) — nothing to ignore.
+# Runtime state + credentials live OUTSIDE the repo:
+#   ~/.local/share/betterat/betterat.db
+#   /usr/local/etc/sudome/Allpassword
+#   /usr/local/etc/nextdns-discipline/credentials

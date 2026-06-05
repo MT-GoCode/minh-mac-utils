@@ -1,0 +1,48 @@
+# wtalk — human-editable settings. Edit and restart: `wtalk stop && wtalk start`.
+#
+# Keys are NOT bound here — Karabiner binds F5 to `wtalk toggle` (and a key to
+# `wtalk cancel`). wtalk never captures keys itself.
+
+# ---- Cleanup pipeline ----
+# Routing: a transcript with <= passthrough_max_words AND every token confident
+# (>= passthrough_confidence) is pasted RAW with no model. Everything else goes
+# through the clean-race: Gemini first; if it's slow, Groq runs in parallel and
+# whichever returns first wins; if both stall, the raw transcript is pasted. You
+# always get text — a model stall is never a hang.
+gemini_model = gemini-3.1-flash-lite      # primary cleanup model
+groq_model = openai/gpt-oss-120b          # fallback when Gemini is slow
+groq_reasoning = low                      # reasoning effort for the Groq fallback (low/medium/high; blank to omit)
+max_output_tokens = 1024                  # cap on cleaned output
+
+# Deadline before escalating: max(deadline_floor_sec, deadline_multiplier * est_output_tokens / tok_per_sec).
+# Short clips wait the floor; long clips scale with length. The same deadline
+# gates Gemini, then Groq, then raw.
+tok_per_sec = 300
+deadline_multiplier = 2.0
+deadline_floor_sec = 2.0
+groq_tpm_limit = 8000                      # per Groq key, for the rate-limit guard (free tier = 8000)
+
+# Passthrough (skip all models, paste raw)
+passthrough_max_words = 10
+passthrough_confidence = 0.92              # min per-token Parakeet confidence (0-1)
+
+# ---- ASR ----
+parakeet_model = mlx-community/parakeet-tdt-0.6b-v2
+mic = builtin              # "builtin" = internal Mac mic (never flips a Bluetooth headset
+                           # into muffled hands-free mode). "default" follows the system
+                           # input; or a device-name substring to pin a specific mic.
+target_sample_rate = 16000
+pause_threshold_sec = 0.5  # silences longer than this become [pause-Xs] hints to cleanup
+chunk_over_sec = 480       # dictations longer than this use overlap-chunked transcription
+
+# ---- Hints pill ----
+# A click-to-type field under the red dot for spelling/term hints (e.g. variable
+# names) the cleanup should apply. Click to type; ⌘C/⌘V/⌘X/⌘A work inside it. If
+# you never click it, your cursor stays put. Hints ride in the user message.
+hints_enabled = true
+hints_max_chars = 150
+
+# ---- Storage / display ----
+db_path = ~/.wtalk/history.db
+state_path = ~/.wtalk/state.json
+timezone = local           # "local" or an IANA name like America/Los_Angeles

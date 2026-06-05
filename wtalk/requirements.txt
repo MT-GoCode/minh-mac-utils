@@ -1,0 +1,14 @@
+# wtalk dependencies — install into a per-project venv (see README).
+#   uv venv && uv pip install -r requirements.txt
+# Also needs the `ffmpeg` binary (brew install ffmpeg) and Karabiner-Elements.
+parakeet-mlx==0.5.1          # on-device ASR (Apple Silicon, MLX)
+mlx==0.31.2
+sounddevice==0.5.5           # mic capture (PortAudio)
+numpy==2.2.6
+scipy==1.15.3                # resampling
+httpx==0.28.1                # Gemini REST
+groq==1.2.0                  # Groq fallback
+pyobjc-core==12.1            # overlay + menu bar + paste (AppKit/Quartz/Foundation)
+pyobjc-framework-Cocoa==12.1
+pyobjc-framework-Quartz==12.1
+pyobjc-framework-ApplicationServices==12.1   # Accessibility check (AXIsProcessTrusted)

@@ -1,0 +1,64 @@
+#!/bin/bash
+# nextdns-test — resolve each domain through your local NextDNS resolver and
+# report whether it is reachable (ALLOWED) or blocked. Real DNS queries, run in
+# parallel. No API key or sudo needed.
+#
+#   nextdns-test instagram.com tiktok.com
+#   nextdns-test -f distractions.txt
+#   nextdns-test --blocked -f distractions.txt   # show only blocked
+#   nextdns-test --allowed instagram.com         # show only allowed
+#
+# Blocked = the resolver answers 0.0.0.0 (NextDNS's block reply) or nothing;
+# Allowed = it returns a real address.
+set -uo pipefail
+
+RESOLVER="@127.0.0.1"     # the local nextdns daemon
+PAR=20                    # parallel queries
+
+classify() {              # $1 = domain ; prints "VERDICT<TAB>domain"
+    local d="$1" r
+    r=$(dig +short +time=3 +tries=1 "$RESOLVER" A "$d" 2>/dev/null | grep -vE '^$')
+    if [ -z "$r" ] || ! printf '%s\n' "$r" | grep -qvE '^0\.0\.0\.0$'; then
+        printf 'BLOCKED\t%s\n' "$d"
+    else
+        printf 'ALLOWED\t%s\n' "$d"
+    fi
+}
+
+# internal single-domain mode (invoked by xargs)
+if [ "${1:-}" = "--one" ]; then classify "${2:-}"; exit 0; fi
+
+FILTER=all
+domains=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --blocked) FILTER=blocked ;;
+        --allowed) FILTER=allowed ;;
+        --all)     FILTER=all ;;
+        -h|--help)
+            echo "usage: nextdns-test [--blocked|--allowed|--all] [-f FILE] [domain ...]"
+            exit 0 ;;
+        -f)
+            shift; [ -n "${1:-}" ] || { echo "error: -f needs a file" >&2; exit 2; }
+            while IFS= read -r line; do
+                line="${line%%#*}"; line="$(printf '%s' "$line" | tr -d '[:space:]')"
+                [ -n "$line" ] && domains+=("$line")
+            done < "$1" ;;
+        -*) echo "error: unknown option $1" >&2; exit 2 ;;
+        *)  domains+=("$1") ;;
+    esac
+    shift
+done
+[ "${#domains[@]}" -gt 0 ] || { echo "error: no domains given" >&2; exit 2; }
+
+out=$(printf '%s\n' "${domains[@]}" | xargs -P "$PAR" -I{} "$0" --one {})
+
+case "$FILTER" in
+    blocked) printf '%s\n' "$out" | awk -F'\t' '$1=="BLOCKED"{printf "%-8s %s\n",$1,$2}' ;;
+    allowed) printf '%s\n' "$out" | awk -F'\t' '$1=="ALLOWED"{printf "%-8s %s\n",$1,$2}' ;;
+    *)       printf '%s\n' "$out" | awk -F'\t' '{printf "%-8s %s\n",$1,$2}' ;;
+esac
+
+nb=$(printf '%s\n' "$out" | grep -c '^BLOCKED' || true)
+na=$(printf '%s\n' "$out" | grep -c '^ALLOWED' || true)
+echo "tested ${#domains[@]}: $nb blocked, $na allowed" >&2

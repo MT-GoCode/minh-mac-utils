@@ -1,0 +1,137 @@
+#!/Users/minh/code/wtalk/.venv/bin/python
+"""fade-pause-play-replacement — a fading play/pause "button" for macOS.
+
+Each invocation is one press. It checks `nowplaying-cli get playbackRate`:
+  - playing (==1): fade output volume down over ~0.2s, pause, then restore the
+    volume (silent, since paused — so the next play is at full volume).
+  - paused (==0): note the volume, set it to 0, unpause, then fade the volume
+    back up to the original over ~0.2s.
+
+Spam-collapse: while a press's fade/pause sequence is running, extra invocations
+are counted; after the sequence, an ODD count triggers one more toggle, EVEN
+triggers none (a play/pause is a toggle, so even presses cancel out). Cross-
+process state is a counter file + an exclusive lock (one processor at a time).
+
+Needs: nowplaying-cli on PATH (detection) and pyobjc (the F8 media key).
+"""
+import fcntl
+import os
+import subprocess
+import sys
+import time
+
+STATE = os.path.expanduser("~/.fppr")
+LOCK = os.path.join(STATE, "lock")
+COUNTER = os.path.join(STATE, "counter")
+FADE_SEC = 0.2
+NOWPLAYING = "nowplaying-cli"
+
+
+# ---- cross-process counter (parity collapse) ----
+def _bump_counter():
+    os.makedirs(STATE, exist_ok=True)
+    with open(COUNTER, "a+") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.seek(0)
+        try:
+            n = int(f.read() or "0")
+        except ValueError:
+            n = 0
+        f.seek(0); f.truncate(); f.write(str(n + 1))
+        fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def _take_counter():
+    """Read the counter and reset it to 0; return the old value."""
+    with open(COUNTER, "a+") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.seek(0)
+        try:
+            n = int(f.read() or "0")
+        except ValueError:
+            n = 0
+        f.seek(0); f.truncate(); f.write("0")
+        fcntl.flock(f, fcntl.LOCK_UN)
+    return n
+
+
+# ---- primitives ----
+def _playback_rate():
+    try:
+        out = subprocess.run([NOWPLAYING, "get", "playbackRate"],
+                             capture_output=True, text=True, timeout=2)
+        return float(out.stdout.strip() or 0)
+    except Exception:
+        return None
+
+
+def _get_volume():
+    out = subprocess.run(["osascript", "-e", "output volume of (get volume settings)"],
+                         capture_output=True, text=True)
+    try:
+        return int(out.stdout.strip())
+    except ValueError:
+        return 50
+
+
+def _set_volume(v):
+    subprocess.run(["osascript", "-e",
+                    f"set volume output volume {max(0, min(100, int(round(v))))}"],
+                   capture_output=True)
+
+
+def _fade(frm, to, secs=FADE_SEC):
+    n = 8
+    dt = max(0.005, secs / n)
+    script = (f"set s to {frm}\nset e to {to}\nrepeat with i from 1 to {n}\n"
+              f"set volume output volume (round (s + (e - s) * i / {n}))\n"
+              f"delay {dt}\nend repeat")
+    subprocess.run(["osascript", "-e", script], capture_output=True)
+
+
+def _media_key():
+    """Play/pause media key (F8). Needs Accessibility."""
+    from AppKit import NSEvent
+    from Quartz import CGEventPost
+    for down in (True, False):
+        flags = 0xA00 if down else 0xB00
+        ev = NSEvent.otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2_(
+            14, (0.0, 0.0), flags, 0, 0, None, 8, (16 << 16) | flags, -1)
+        CGEventPost(0, ev.CGEvent())
+
+
+def do_one_toggle():
+    rate = _playback_rate()
+    if rate is None:                 # no nowplaying -> plain toggle, no fade
+        _media_key()
+        return
+    if rate >= 0.5:                  # playing -> fade out, pause, restore volume
+        v = _get_volume()
+        _fade(v, 0)
+        _media_key()
+        _set_volume(v)
+    else:                            # paused -> mute, unpause, fade in
+        v = _get_volume()
+        _set_volume(0)
+        _media_key()
+        _fade(0, v)
+
+
+def main():
+    _bump_counter()
+    lockf = open(LOCK, "w")
+    try:
+        fcntl.flock(lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return                       # another invocation is processing; we counted
+    while True:                      # processor: collapse by parity
+        n = _take_counter()
+        if n == 0:
+            break
+        if n % 2 == 1:
+            do_one_toggle()
+    fcntl.flock(lockf, fcntl.LOCK_UN)
+
+
+if __name__ == "__main__":
+    main()

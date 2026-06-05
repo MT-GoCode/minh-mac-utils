@@ -1,0 +1,159 @@
+#!/bin/bash
+#
+# nextdns-lockdown — control + diagnostics for NextDNS Lockdown.
+#
+#   nextdns-lockdown status        show current enforcement state           (any user)
+#   nextdns-lockdown selftest      actively probe real bypass vectors        (any user)
+#   nextdns-lockdown arm           turn enforcement ON                       (root/sudo)
+#   nextdns-lockdown disarm        turn enforcement OFF                      (root/sudo)
+#   nextdns-lockdown travel [min]  allow gateway DNS for N min (captive portal; default 15)
+#   nextdns-lockdown reload        re-validate + reload the pf ruleset       (root/sudo)
+#
+# The privileged subcommands require root. Getting root needs admin, and admin
+# is gated by Pluckeye/sudome — that delay is the whole point (see README).
+
+set -u
+
+STATE="/Library/Application Support/NextDNSLockdown"
+ARMED="$STATE/armed"
+TRAVEL="$STATE/travel-until"
+CONF="/usr/local/etc/nextdns-lockdown/nextdns-lockdown.conf"
+LABEL="com.nextdnslockdown.enforcerd"
+
+c_red=$'\033[31m'; c_grn=$'\033[32m'; c_yel=$'\033[33m'; c_dim=$'\033[2m'; c_rst=$'\033[0m'
+ok()   { printf '  %sPASS%s %s\n' "$c_grn" "$c_rst" "$*"; }
+bad()  { printf '  %sFAIL%s %s\n' "$c_red" "$c_rst" "$*"; }
+note() { printf '  %s%s%s\n' "$c_dim" "$*" "$c_rst"; }
+
+need_root() {
+    if [ "$(id -u)" != 0 ]; then
+        echo "error: '$1' requires root:  sudo nextdns-lockdown $1 ${2:-}" >&2
+        echo "(sudo needs admin, which Pluckeye/sudome gates — that delay is intentional.)" >&2
+        exit 1
+    fi
+}
+
+is_armed()       { [ -f "$ARMED" ]; }
+pf_enabled()     { pfctl -s info 2>/dev/null | grep -q 'Status: Enabled'; }
+pf_ours_loaded() { pfctl -sr   2>/dev/null | grep -q 'nextdns-lockdown-dns53'; }
+nudge_daemon()   { launchctl kickstart -k "system/$LABEL" >/dev/null 2>&1; }
+
+cmd_status() {
+    echo "== NextDNS Lockdown =="
+    is_armed       && echo "  state:        ARMED (enforcing)" || echo "  state:        disarmed"
+    pf_enabled     && echo "  pf:           enabled"           || echo "  pf:           disabled"
+    pf_ours_loaded && echo "  pf rules:     loaded"            || echo "  pf rules:     not loaded"
+    printf  '  resolver:     %s\n' "$(scutil --dns 2>/dev/null | awk '/nameserver\[0\]/{print $3; exit}')"
+    if pgrep -x nextdns >/dev/null; then echo "  nextdns proc: running"; else echo "  nextdns proc: NOT running"; fi
+    if launchctl print "system/$LABEL" >/dev/null 2>&1; then echo "  daemon:       loaded"; else echo "  daemon:       NOT loaded"; fi
+    if [ -f "$TRAVEL" ]; then
+        printf '  travel until: %s\n' "$(date -r "$(cat "$TRAVEL" 2>/dev/null)" 2>/dev/null)"
+    fi
+}
+
+# Probe the same bypass vectors used during the original investigation.
+# Reports each as OPEN / CLOSED and whether that matches the armed state.
+cmd_selftest() {
+    local armed_now; is_armed && armed_now=1 || armed_now=0
+    echo "== NextDNS Lockdown self-test =="
+    if [ "$armed_now" = 1 ]; then note "state ARMED  -> bypass vectors should be CLOSED"; else
+        note "state DISARMED -> bypass vectors will be OPEN (this is expected when off)"; fi
+    echo
+
+    # 1) plain DNS to a public resolver
+    local r
+    r="$(dig +time=3 +tries=1 @8.8.8.8 example.com +short 2>/dev/null | head -1)"
+    if [ -z "$r" ]; then ok "plain DNS to 8.8.8.8 is blocked"; else
+        if [ "$armed_now" = 1 ]; then bad "plain DNS to 8.8.8.8 LEAKS -> $r"; else note "plain DNS to 8.8.8.8 open ($r)"; fi; fi
+
+    # 2) plain DNS to 1.1.1.1
+    r="$(dig +time=3 +tries=1 @1.1.1.1 example.com +short 2>/dev/null | head -1)"
+    if [ -z "$r" ]; then ok "plain DNS to 1.1.1.1 is blocked"; else
+        if [ "$armed_now" = 1 ]; then bad "plain DNS to 1.1.1.1 LEAKS -> $r"; else note "plain DNS to 1.1.1.1 open ($r)"; fi; fi
+
+    # 3) DoH over HTTPS to a literal IP
+    r="$(curl -s --max-time 6 -H 'accept: application/dns-json' 'https://1.1.1.1/dns-query?name=example.com&type=A' 2>/dev/null)"
+    if [ -z "$r" ]; then ok "DoH to https://1.1.1.1 is blocked"; else
+        if [ "$armed_now" = 1 ]; then bad "DoH to https://1.1.1.1 LEAKS"; else note "DoH to https://1.1.1.1 open"; fi; fi
+
+    # 4) DoT port 853 reachability
+    if nc -z -G 3 -w 3 1.1.1.1 853 >/dev/null 2>&1; then
+        if [ "$armed_now" = 1 ]; then bad "DoT 853 to 1.1.1.1 reachable"; else note "DoT 853 to 1.1.1.1 reachable (open)"; fi
+    else ok "DoT 853 to 1.1.1.1 is blocked"; fi
+
+    # 5) resolver should be loopback
+    r="$(scutil --dns 2>/dev/null | awk '/nameserver\[0\]/{print $3; exit}')"
+    if [ "$r" = "127.0.0.1" ]; then ok "system resolver is 127.0.0.1 (NextDNS)"; else bad "system resolver is $r (expected 127.0.0.1)"; fi
+
+    # 6) NextDNS is actually enforcing its blocklist (duckdns.org -> 0.0.0.0)
+    r="$(dig +time=3 +tries=1 duckdns.org +short 2>/dev/null | head -1)"
+    if [ "$r" = "0.0.0.0" ]; then ok "NextDNS blocklist active (duckdns.org -> 0.0.0.0)"; else note "duckdns.org via NextDNS -> ${r:-no answer}"; fi
+
+    # 7) sanity: normal resolution still works (so we know DNS isn't just dead)
+    r="$(dig +time=3 +tries=1 apple.com +short 2>/dev/null | head -1)"
+    if [ -n "$r" ]; then ok "normal resolution works (apple.com -> $r)"; else bad "apple.com did not resolve — DNS may be down"; fi
+
+    echo
+    note "Run from a fresh shell; some apps cache DNS. 'curl --max-time' waits are normal."
+}
+
+cmd_arm() {
+    need_root arm
+    # Safety: arming locks ALL DNS to 127.0.0.1 and blocks every public resolver. If the local
+    # NextDNS resolver isn't actually answering on 127.0.0.1:53, arming would cause a total,
+    # inescapable DNS outage. Refuse unless it resolves.
+    if [ -z "$(dig +short +time=1 +tries=1 @127.0.0.1 apple.com 2>/dev/null)" ]; then
+        echo "✗ refusing to arm: nothing is answering DNS on 127.0.0.1:53." >&2
+        echo "  Install + start the NextDNS resolver first:" >&2
+        echo "    brew install nextdns/tap/nextdns && sudo nextdns install && sudo nextdns activate" >&2
+        echo "  Confirm with: dig @127.0.0.1 apple.com   — then re-run \`sudo nextdns-lockdown arm\`." >&2
+        exit 1
+    fi
+    mkdir -p "$STATE"; : >"$ARMED"; chmod 644 "$ARMED"; chown root:wheel "$ARMED" 2>/dev/null
+    nudge_daemon
+    echo "ARMED. Enforcement re-asserts within a few seconds."
+    echo "Verify with:  nextdns-lockdown selftest"
+}
+
+cmd_disarm() {
+    need_root disarm
+    rm -f "$ARMED" "$TRAVEL"
+    # Tear down NOW rather than waiting for the watchdog's next tick, so disarm
+    # works even if the daemon is stopped or wedged. Daemon (if running) will see
+    # the missing 'armed' flag and stay hands-off.
+    pfctl -t dns_allow -T flush >/dev/null 2>&1 || true
+    pfctl -f /etc/pf.conf       >/dev/null 2>&1 || true
+    pfctl -d                    >/dev/null 2>&1 || true
+    nudge_daemon
+    echo "Disarmed — pf restored to macOS defaults now (not on a delay)."
+    echo "Your resolver stays at 127.0.0.1, so NextDNS keeps filtering as before."
+}
+
+cmd_travel() {
+    need_root travel "[minutes]"
+    local mins="${1:-15}"
+    case "$mins" in (*[!0-9]*|'') echo "usage: nextdns-lockdown travel [minutes]" >&2; exit 1;; esac
+    mkdir -p "$STATE"
+    echo $(( $(date +%s) + mins * 60 )) >"$TRAVEL"; chmod 644 "$TRAVEL"
+    nudge_daemon
+    echo "Travel mode: the current network's gateway DNS is allowed for ${mins} min"
+    echo "(so captive-portal logins work). It auto-reverts; no need to disarm."
+}
+
+cmd_reload() {
+    need_root reload
+    if ! pfctl -n -f "$CONF"; then echo "ruleset FAILED validation — not reloaded" >&2; exit 1; fi
+    pfctl -f "$CONF" >/dev/null 2>&1
+    pfctl -e >/dev/null 2>&1 || true
+    echo "Ruleset re-validated and reloaded."
+}
+
+case "${1:-status}" in
+    status)   cmd_status ;;
+    selftest|test) cmd_selftest ;;
+    arm)      cmd_arm ;;
+    disarm)   cmd_disarm ;;
+    travel)   shift; cmd_travel "$@" ;;
+    reload)   cmd_reload ;;
+    *) echo "usage: nextdns-lockdown {status|selftest|arm|disarm|travel [min]|reload}" >&2; exit 1 ;;
+esac

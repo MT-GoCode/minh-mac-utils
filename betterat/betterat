@@ -1,0 +1,519 @@
+#!/bin/bash
+# betterat — a personal, no-sudo "better at(1)": schedule shell commands to run
+# at an exact Unix time (or a friendly duration from now), persisted in a SQLite
+# database and executed by a per-user launchd agent.
+#
+# Standalone: depends only on base-macOS tools — /bin/bash, /usr/bin/sqlite3,
+# launchctl, date, base64. No Python, no virtualenv, no third-party packages,
+# no sudo, no root. It runs entirely as you.
+#
+# The launchd agent fires the `run-due` tick periodically AND at login/boot
+# (RunAtLoad), so commands whose time arrived while the Mac was off/asleep are
+# caught up and run on next startup.
+#
+# Stored fields (command/label/stdout/stderr) are base64-encoded in the DB so
+# arbitrary shell text never has to be escaped into SQL.
+set -uo pipefail
+
+# --- absolute tool paths (never trust $PATH for core plumbing) ---------------
+SQLITE=/usr/bin/sqlite3
+B64=/usr/bin/base64
+DATE=/bin/date
+SHELL_BIN=/bin/zsh; [ -x "$SHELL_BIN" ] || SHELL_BIN=/bin/bash
+
+# --- locations ---------------------------------------------------------------
+DATA_DIR="$HOME/.local/share/betterat"
+DB="$DATA_DIR/betterat.db"
+DAEMON_OUT="$DATA_DIR/daemon.out"
+DAEMON_ERR="$DATA_DIR/daemon.err"
+INSTALL_BIN="$HOME/.local/bin/betterat"
+LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
+PLABEL="com.minh.betterat"
+PLIST="$LAUNCH_AGENTS/$PLABEL.plist"
+
+DEFAULT_INTERVAL=15           # seconds between daemon ticks
+MAX_CAPTURE=262144            # cap stored stdout/stderr per job (256 KiB)
+US=$'\037'                    # unit-separator for safe multi-column reads
+
+# --- tiny helpers ------------------------------------------------------------
+die() { printf 'betterat: %s\n' "$1" >&2; exit "${2:-2}"; }
+
+b64e() { printf '%s' "${1:-}" | "$B64" | tr -d '\n'; }
+b64d() { printf '%s' "${1:-}" | "$B64" --decode; }
+
+sq()     { "$SQLITE" -batch -cmd ".timeout 30000" "$DB" "$1"; }
+sqrows() { "$SQLITE" -batch -noheader -separator "$US" -cmd ".timeout 30000" "$DB" "$1"; }
+
+fmt_ts()   { if [ -z "${1:-}" ]; then printf '%s' "—"; else "$DATE" -r "$1" '+%m-%d %H:%M:%S'; fi; }
+fmt_tm()   { if [ -z "${1:-}" ]; then printf '%s' "—"; else "$DATE" -r "$1" '+%m-%d %H:%M';    fi; }
+fmt_full() { if [ -z "${1:-}" ]; then printf '%s' "—"; else "$DATE" -r "$1" '+%a %Y-%m-%d %H:%M:%S %Z'; fi; }
+
+trunc() { # $1=string $2=max
+    local s="$1" n="$2"
+    if [ "${#s}" -le "$n" ]; then printf '%s' "$s"; else printf '%s…' "${s:0:$((n-1))}"; fi
+}
+
+rel_phrase() { # $1 = signed seconds -> "in 2h30m" / "5m ago" / "now"
+    local s="$1" suf="in" out="" count=0 u sz
+    if [ "$s" -lt 0 ]; then suf="ago"; s=$(( -s )); fi
+    if [ "$s" -eq 0 ]; then printf 'now'; return; fi
+    for pair in d:86400 h:3600 m:60 s:1; do
+        u=${pair%%:*}; sz=${pair##*:}
+        if [ "$s" -ge "$sz" ]; then out="$out$((s/sz))$u"; s=$((s%sz)); count=$((count+1)); fi
+        [ "$count" -ge 2 ] && break
+    done
+    [ -z "$out" ] && out="0s"
+    if [ "$suf" = "ago" ]; then printf '%s ago' "$out"; else printf 'in %s' "$out"; fi
+}
+
+parse_duration() { # echo seconds, or return 1.  forms: 90s 15m 2h30m 1d12h ; bare int = seconds
+    local s n u total=0 rest
+    s=$(printf '%s' "${1:-}" | tr -d '[:space:]' | tr 'A-Z' 'a-z')
+    [ -n "$s" ] || return 1
+    case "$s" in *[!0-9dhms]*) return 1;; esac
+    case "$s" in
+        *[!0-9]*) ;;                       # has a unit letter -> parse below
+        *) printf '%s' "$s"; return 0;;    # all digits -> seconds
+    esac
+    rest="$s"
+    while [ -n "$rest" ]; do
+        if [[ "$rest" =~ ^([0-9]+)([dhms])(.*)$ ]]; then
+            n=${BASH_REMATCH[1]}; u=${BASH_REMATCH[2]}; rest=${BASH_REMATCH[3]}
+            case "$u" in
+                d) total=$((total + n*86400));;
+                h) total=$((total + n*3600));;
+                m) total=$((total + n*60));;
+                s) total=$((total + n));;
+            esac
+        else
+            return 1
+        fi
+    done
+    printf '%s' "$total"
+}
+
+parse_at() { # echo a positive integer unix timestamp, or return 1
+    case "${1:-}" in ''|*[!0-9]*) return 1;; esac
+    [ "$1" -gt 0 ] || return 1
+    printf '%s' "$1"
+}
+
+# --- database ----------------------------------------------------------------
+init_db() {
+    mkdir -p "$DATA_DIR"
+    "$SQLITE" -batch "$DB" "
+        PRAGMA journal_mode=WAL;
+        CREATE TABLE IF NOT EXISTS jobs (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            label       TEXT,        -- base64
+            command     TEXT NOT NULL,  -- base64
+            state       TEXT NOT NULL DEFAULT 'pending',  -- pending|running|done|failed|cancelled
+            queued_at   INTEGER NOT NULL,
+            run_at      INTEGER NOT NULL,
+            started_at  INTEGER,
+            finished_at INTEGER,
+            exit_code   INTEGER,
+            stdout      TEXT,        -- base64
+            stderr      TEXT         -- base64
+        );
+        CREATE INDEX IF NOT EXISTS idx_jobs_state  ON jobs(state);
+        CREATE INDEX IF NOT EXISTS idx_jobs_label  ON jobs(label);
+        CREATE INDEX IF NOT EXISTS idx_jobs_run_at ON jobs(run_at);
+    " >/dev/null
+}
+
+# --- schedule ----------------------------------------------------------------
+schedule() {
+    local label="" command="" in_dur="" at_ts="" have_in=0 have_at=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -label|--label|-l)     [ $# -ge 2 ] || die "$1 requires a value"; label="$2";   shift 2;;
+            -command|--command|-c) [ $# -ge 2 ] || die "$1 requires a value"; command="$2"; shift 2;;
+            -in|--in)
+                [ $# -ge 2 ] || die "$1 requires a value"
+                in_dur=$(parse_duration "$2") || die "bad duration '$2'; use e.g. 90s, 15m, 2h30m, 1d12h"
+                have_in=1; shift 2;;
+            -at|--at)
+                [ $# -ge 2 ] || die "$1 requires a value"
+                at_ts=$(parse_at "$2") || die "bad -at timestamp '$2' (expected unix seconds, e.g. 1735689600)"
+                have_at=1; shift 2;;
+            *) die "unknown option '$1' (run 'betterat help')";;
+        esac
+    done
+
+    [ -n "$command" ] || die 'nothing to schedule — provide -command "<cmd>"'
+    if [ "$have_in" -eq 0 ] && [ "$have_at" -eq 0 ]; then
+        die "specify when to run: -in <duration> or -at <unix-timestamp>"
+    fi
+    [ "$have_in" -eq 1 ] && [ "$have_at" -eq 1 ] && die "use only one of -in / -at"
+
+    local now run_at id tag
+    now=$("$DATE" +%s)
+    if [ "$have_at" -eq 1 ]; then run_at="$at_ts"; else run_at=$((now + in_dur)); fi
+
+    id=$(sq "INSERT INTO jobs(label,command,state,queued_at,run_at)
+             VALUES('$(b64e "$label")','$(b64e "$command")','pending',$now,$run_at);
+             SELECT last_insert_rowid();")
+
+    tag=""; [ -n "$label" ] && tag=" [$label]"
+    printf 'scheduled job #%s%s\n' "$id" "$tag"
+    printf '  command : %s\n' "$command"
+    printf '  runs at : %s  (%s)\n' "$(fmt_full "$run_at")" "$(rel_phrase $((run_at - now)))"
+    [ "$run_at" -le "$now" ] && printf '  note    : that time is now/past — it runs on the next daemon tick\n'
+    [ -f "$PLIST" ] || printf 'betterat: WARNING: daemon not installed — run `betterat install` so jobs actually fire\n' >&2
+}
+
+# --- queries -----------------------------------------------------------------
+cmd_check_queued() {
+    [ $# -ge 1 ] || die "usage: betterat check-queued <label>"
+    local line id state ra now
+    line=$(sqrows "SELECT id,state,run_at FROM jobs
+                   WHERE label='$(b64e "$1")' AND state IN ('pending','running')
+                   ORDER BY run_at LIMIT 1;")
+    if [ -n "$line" ]; then
+        IFS="$US" read -r id state ra <<EOF
+$line
+EOF
+        now=$("$DATE" +%s)
+        printf 'queued: job #%s [%s] %s, runs %s (%s)\n' "$id" "$1" "$state" "$(fmt_ts "$ra")" "$(rel_phrase $((ra - now)))"
+        exit 0
+    fi
+    printf "not queued: no pending job labeled '%s'\n" "$1"
+    exit 1
+}
+
+cmd_list() {
+    local full=0
+    for a in "$@"; do case "$a" in --full|--all) full=1;; esac; done
+    local now; now=$("$DATE" +%s)
+    local limit=50; [ "$full" -eq 1 ] && limit=1000000
+
+    local total; total=$(sq "SELECT COUNT(*) FROM jobs;")
+    if [ "${total:-0}" -eq 0 ]; then echo "(no jobs)"; return 0; fi
+
+    printf '%4s  %-9s %-12s %-14s %-24s %4s  %s\n' ID STATE LABEL QUEUED RUN/ETA EXIT COMMAND
+
+    local id label cmd state qa ra sa fa ec lbl cmdtxt ecs w d
+    print_rows() {
+        while IFS="$US" read -r id label cmd state qa ra sa fa ec; do
+            [ -n "$id" ] || continue
+            lbl=$(b64d "$label"); [ -z "$lbl" ] && lbl="—"
+            cmdtxt=$(b64d "$cmd" | tr '\n' ' ')
+            ecs="—"; [ -n "$ec" ] && ecs="$ec"
+            case "$state" in
+                pending) d=$((ra - now));
+                         if [ "$d" -le 0 ]; then w="$(fmt_ts "$ra") (due)"; else w="$(fmt_ts "$ra") ($(rel_phrase "$d"))"; fi;;
+                running) w="running…";;
+                *)       if [ -n "$fa" ]; then w="$(fmt_ts "$fa")"; else w="$(fmt_ts "$ra")"; fi;;
+            esac
+            [ "$full" -eq 0 ] && cmdtxt=$(trunc "$cmdtxt" 48)
+            printf '%4s  %-9s %-12s %-14s %-24s %4s  %s\n' \
+                "$id" "$state" "$(trunc "$lbl" 12)" "$(fmt_tm "$qa")" "$w" "$ecs" "$cmdtxt"
+        done
+    }
+    # active first (soonest run_at), then finished (most recent finish first)
+    print_rows < <(sqrows "SELECT id,label,command,state,queued_at,run_at,started_at,finished_at,exit_code
+                           FROM jobs WHERE state IN ('pending','running') ORDER BY run_at, id;")
+    print_rows < <(sqrows "SELECT id,label,command,state,queued_at,run_at,started_at,finished_at,exit_code
+                           FROM jobs WHERE state NOT IN ('pending','running')
+                           ORDER BY COALESCE(finished_at, run_at) DESC LIMIT $limit;")
+
+    if [ "$full" -eq 0 ]; then
+        local done_n; done_n=$(sq "SELECT COUNT(*) FROM jobs WHERE state NOT IN ('pending','running');")
+        [ "${done_n:-0}" -gt "$limit" ] && printf '… %s more finished job(s); use --full\n' "$((done_n - limit))"
+    fi
+}
+
+print_block() { # $1 = job id
+    local line jid label cmd state qa ra sa fa ec ob eb head out err ecs f
+    line=$(sqrows "SELECT id,label,command,state,queued_at,run_at,started_at,finished_at,exit_code,stdout,stderr
+                   FROM jobs WHERE id=$1;")
+    [ -n "$line" ] || return 1
+    IFS="$US" read -r jid label cmd state qa ra sa fa ec ob eb <<EOF
+$line
+EOF
+    head="=== job #$jid"
+    [ -n "$(b64d "$label")" ] && head="$head [$(b64d "$label")]"
+    ecs="—"; [ -n "$ec" ] && ecs="$ec"
+    printf '%s  state=%s  exit=%s\n' "$head" "$state" "$ecs"
+    printf '    queued  %s\n' "$(fmt_full "$qa")"
+    if [ -n "$sa" ]; then
+        f=""; [ -n "$fa" ] && f=" → $(fmt_ts "$fa")"
+        printf '    ran     %s%s\n' "$(fmt_full "$sa")" "$f"
+    fi
+    printf '    $ %s\n' "$(b64d "$cmd")"
+    out=$(b64d "$ob"); err=$(b64d "$eb")
+    [ -n "$out" ] && printf '%s\n' "$out"
+    if [ -n "$err" ]; then printf '    --- stderr ---\n'; printf '%s\n' "$err"; fi
+    if [ -z "$out" ] && [ -z "$err" ]; then
+        case "$state" in done|failed) printf '    (no output)\n';; esac
+    fi
+    printf '\n'
+}
+
+cmd_log() {
+    local n=20 target="" a
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -n|--lines) [ $# -ge 2 ] || die "-n requires a number"
+                        case "$2" in ''|*[!0-9]*) die "-n requires a number";; esac
+                        n="$2"; shift 2;;
+            *) target="$1"; shift;;
+        esac
+    done
+
+    if [ -n "$target" ]; then
+        local id
+        case "$target" in
+            ''|*[!0-9]*) id=$(sqrows "SELECT id FROM jobs WHERE label='$(b64e "$target")' ORDER BY id DESC LIMIT 1;");;
+            *)           id=$(sqrows "SELECT id FROM jobs WHERE id=$target;");;
+        esac
+        [ -n "$id" ] || die "no job matching '$target'" 1
+        print_block "$id"
+        return 0
+    fi
+
+    local ids i
+    ids=( $(sqrows "SELECT id FROM jobs WHERE state IN ('done','failed','running')
+                    ORDER BY COALESCE(started_at, run_at) DESC LIMIT $n;") )
+    if [ "${#ids[@]}" -eq 0 ]; then echo "(nothing has run yet)"; return 0; fi
+    for (( i=${#ids[@]}-1; i>=0; i-- )); do print_block "${ids[$i]}"; done
+}
+
+cmd_cancel() {
+    [ $# -ge 1 ] || die "usage: betterat cancel <label|id>"
+    local chg
+    case "$1" in
+        ''|*[!0-9]*) chg=$(sq "UPDATE jobs SET state='cancelled' WHERE label='$(b64e "$1")' AND state='pending'; SELECT changes();");;
+        *)           chg=$(sq "UPDATE jobs SET state='cancelled' WHERE id=$1 AND state='pending'; SELECT changes();");;
+    esac
+    printf 'cancelled %s pending job(s)\n' "$chg"
+    [ "${chg:-0}" -gt 0 ] && exit 0 || exit 1
+}
+
+cmd_abort() {
+    local chg
+    chg=$(sq "UPDATE jobs SET state='cancelled' WHERE state='pending'; SELECT changes();")
+    printf 'cancelled %s pending job(s)\n' "$chg"
+}
+
+cmd_status() {
+    local loaded="NOT loaded" interval="$DEFAULT_INTERVAL" counts nxt now
+    launchctl print "gui/$(id -u)/$PLABEL" >/dev/null 2>&1 && loaded="loaded"
+    if [ -f "$PLIST" ]; then
+        interval=$(/usr/bin/plutil -extract StartInterval raw "$PLIST" 2>/dev/null || echo "$DEFAULT_INTERVAL")
+    else
+        loaded="$loaded (not installed)"
+    fi
+    counts=$(sqrows "SELECT state || '=' || COUNT(*) FROM jobs GROUP BY state;" | tr '\n' ' ')
+    echo "betterat status"
+    printf '  daemon   : %s  (tick every %ss)\n' "$loaded" "$interval"
+    printf '  database : %s\n' "$DB"
+    printf '  jobs     : %s\n' "${counts:-none}"
+    nxt=$(sqrows "SELECT id,label,run_at FROM jobs WHERE state='pending' ORDER BY run_at LIMIT 1;")
+    if [ -n "$nxt" ]; then
+        local nid nlabel nra
+        IFS="$US" read -r nid nlabel nra <<EOF
+$nxt
+EOF
+        now=$("$DATE" +%s)
+        local dl=""; [ -n "$(b64d "$nlabel")" ] && dl=" [$(b64d "$nlabel")]"
+        printf '  next     : job #%s%s %s (%s)\n' "$nid" "$dl" "$(fmt_full "$nra")" "$(rel_phrase $((nra - now)))"
+    fi
+}
+
+# --- daemon tick -------------------------------------------------------------
+run_one() { # $1=id  $2=command(plaintext)
+    local id="$1" cmd="$2" out err rc ob eb fin st
+    out=$(mktemp); err=$(mktemp)
+    ( cd "$HOME" && "$SHELL_BIN" -lc "$cmd" ) >"$out" 2>"$err"
+    rc=$?
+    ob=$(head -c "$MAX_CAPTURE" "$out" | "$B64" | tr -d '\n')
+    eb=$(head -c "$MAX_CAPTURE" "$err" | "$B64" | tr -d '\n')
+    rm -f "$out" "$err"
+    fin=$("$DATE" +%s)
+    st=done; [ "$rc" -ne 0 ] && st=failed
+    sq "UPDATE jobs SET state='$st', finished_at=$fin, exit_code=$rc, stdout='$ob', stderr='$eb' WHERE id=$id;" >/dev/null
+}
+
+cmd_run_due() {
+    # Single-flight: never let two ticks (e.g. the launchd tick + a manual
+    # run-due) run at once, or the orphan-reclaim below would mark the other's
+    # running job as failed. mkdir is atomic; steal a lock left by a crash (>60m).
+    local lock="$DATA_DIR/run.lock"
+    if ! mkdir "$lock" 2>/dev/null; then
+        if [ -n "$(find "$lock" -prune -mmin +60 2>/dev/null)" ]; then
+            rmdir "$lock" 2>/dev/null || true
+            mkdir "$lock" 2>/dev/null || exit 0
+        else
+            exit 0
+        fi
+    fi
+    trap "rmdir '$lock' 2>/dev/null" EXIT
+
+    # Reclaim jobs left 'running' by a daemon that died/was killed (e.g. shutdown).
+    # A fresh tick can never own a legitimately-running job, so any are orphans.
+    local note; note=$(b64e "[betterat] interrupted before completion (daemon restart); not re-run automatically")
+    sq "UPDATE jobs SET state='failed', finished_at=$("$DATE" +%s), stderr='$note' WHERE state='running';" >/dev/null
+
+    # Run every due job; re-read 'now' each pass so jobs that come due during a
+    # long command are also picked up before we exit.
+    local now line id cb claimed
+    while :; do
+        now=$("$DATE" +%s)
+        line=$(sqrows "SELECT id,command FROM jobs WHERE state='pending' AND run_at<=$now ORDER BY run_at, id LIMIT 1;")
+        [ -n "$line" ] || break
+        id=${line%%"$US"*}; cb=${line#*"$US"}
+        # Atomic claim so a concurrent run-due can't double-execute it.
+        claimed=$(sq "UPDATE jobs SET state='running', started_at=$("$DATE" +%s) WHERE id=$id AND state='pending'; SELECT changes();")
+        [ "$claimed" = "1" ] || continue
+        run_one "$id" "$(b64d "$cb")"
+    done
+}
+
+# --- install / uninstall (no sudo) -------------------------------------------
+cmd_install() {
+    local interval="$DEFAULT_INTERVAL"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --interval) [ $# -ge 2 ] || die "--interval requires a number"
+                        case "$2" in ''|*[!0-9]*) die "--interval requires a number";; esac
+                        interval="$2"; shift 2;;
+            *) die "unknown install option '$1'";;
+        esac
+    done
+    [ "$interval" -ge 10 ] || die "--interval must be >= 10 (launchd throttles faster agents)"
+
+    # 1. Copy this script to ~/.local/bin/betterat (unless we already are it).
+    #    Resolve $0 robustly: a bare name (found via PATH) has no slash, so
+    #    dirname would wrongly give the cwd — use `command -v` in that case.
+    local src
+    case "$0" in
+        */*) src="$(cd "$(dirname "$0")" >/dev/null 2>&1 && pwd)/$(basename "$0")";;
+        *)   src="$(command -v "$0" 2>/dev/null)";;
+    esac
+    mkdir -p "$(dirname "$INSTALL_BIN")"
+    if [ "$src" != "$INSTALL_BIN" ]; then
+        [ -f "$src" ] || die "cannot find the betterat script to install (resolved '$src')"
+        cp "$src" "$INSTALL_BIN"
+    fi
+    chmod 755 "$INSTALL_BIN"
+
+    # Make `betterat` reachable on a fresh shell (it lives in ~/.local/bin, not /usr/local/bin).
+    case ":$PATH:" in
+        *":$HOME/.local/bin:"*) ;;
+        *)  _pl='export PATH="$HOME/.local/bin:$PATH"'
+            grep -qsF "$_pl" "$HOME/.zshrc" 2>/dev/null || printf '\n%s\n' "$_pl" >> "$HOME/.zshrc"
+            echo "→ added ~/.local/bin to PATH in ~/.zshrc — run \`source ~/.zshrc\` or open a new terminal";;
+    esac
+
+    # 2. Data dir + database.
+    init_db
+
+    # 3. LaunchAgent plist. Bake the *current* PATH in so scheduled commands find
+    #    the same tools your interactive shell does (conda, homebrew, ~/.local/bin…).
+    mkdir -p "$LAUNCH_AGENTS"
+    local pathval="${PATH//&/&amp;}"
+    pathval="${pathval//</&lt;}"
+    pathval="${pathval//>/&gt;}"
+    cat > "$PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>$PLABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$INSTALL_BIN</string>
+        <string>run-due</string>
+    </array>
+    <key>StartInterval</key><integer>$interval</integer>
+    <key>RunAtLoad</key><true/>
+    <key>ProcessType</key><string>Background</string>
+    <key>EnvironmentVariables</key>
+    <dict><key>PATH</key><string>$pathval</string></dict>
+    <key>StandardOutPath</key><string>$DAEMON_OUT</string>
+    <key>StandardErrorPath</key><string>$DAEMON_ERR</string>
+</dict>
+</plist>
+PLIST
+
+    # 4. (Re)load it in the per-user GUI domain — no sudo.
+    local dom="gui/$(id -u)"
+    launchctl bootout "$dom/$PLABEL" 2>/dev/null || true
+    launchctl bootstrap "$dom" "$PLIST" 2>/dev/null || launchctl load -w "$PLIST" 2>/dev/null || true
+    launchctl enable "$dom/$PLABEL" 2>/dev/null || true
+    launchctl kickstart "$dom/$PLABEL" 2>/dev/null || true
+
+    local loaded="NOT loaded"
+    launchctl print "$dom/$PLABEL" >/dev/null 2>&1 && loaded="loaded"
+    printf 'installed betterat → %s\n' "$INSTALL_BIN"
+    printf '  database : %s\n' "$DB"
+    printf '  agent    : %s  (%s, tick %ss)\n' "$PLIST" "$loaded" "$interval"
+    echo
+    echo "try it:"
+    echo '  betterat -label demo -command "date >> /tmp/betterat-demo.log" -in 30s'
+    echo "  betterat list"
+}
+
+cmd_uninstall() {
+    local purge=0
+    for a in "$@"; do case "$a" in --purge) purge=1;; esac; done
+    local dom="gui/$(id -u)"
+    launchctl bootout "$dom/$PLABEL" 2>/dev/null || true
+    [ -f "$PLIST" ] && rm -f "$PLIST"
+    echo "unloaded launchd agent and removed its plist."
+    if [ "$purge" -eq 1 ]; then
+        [ -d "$DATA_DIR" ] && rm -rf "$DATA_DIR"
+        [ -f "$INSTALL_BIN" ] && rm -f "$INSTALL_BIN"
+        echo "purged database and removed ~/.local/bin/betterat."
+    else
+        printf 'kept database in %s (use --purge to delete it and the binary).\n' "$DATA_DIR"
+    fi
+}
+
+# --- usage / dispatch --------------------------------------------------------
+usage() {
+    cat <<'EOF'
+betterat — schedule shell commands to run later (no sudo, persists across reboots)
+
+SCHEDULE:
+  betterat -command "<cmd>" [-label <label>] (-in <dur> | -at <unix-ts>)
+    -in    duration from now: 90s, 15m, 2h30m, 1d, 1d12h  (d/h/m/s, any order; bare int = seconds)
+    -at    absolute Unix timestamp in seconds, e.g. -at 1735689600
+    -label optional name you can later check / cancel by
+
+MANAGE:
+  betterat list [--full]            jobs table: ID STATE LABEL QUEUED RUN/ETA EXIT COMMAND
+  betterat log [<label|id>] [-n N]  stdout/stderr of commands that ran (default last 20)
+  betterat check-queued <label>     exit 0 if a pending/running job has that label, else exit 1
+  betterat cancel <label|id>        cancel matching pending job(s)   (exit 0 if any, else 1)
+  betterat abort                    cancel ALL pending jobs
+  betterat status                   daemon + queue summary
+  betterat install [--interval N]   copy to ~/.local/bin + load the launchd agent (no sudo)
+  betterat uninstall [--purge]      unload agent (--purge also deletes the database + binary)
+
+Scheduled commands run via `zsh -lc` from your home dir, with the PATH captured at install time.
+EOF
+}
+
+main() {
+    [ $# -eq 0 ] && { usage; exit 0; }
+    case "$1" in -h|--help|help) usage; exit 0;; esac
+    init_db
+    case "$1" in
+        -*)           schedule "$@";;
+        list)         shift; cmd_list "$@";;
+        log)          shift; cmd_log "$@";;
+        check-queued) shift; cmd_check_queued "$@";;
+        cancel)       shift; cmd_cancel "$@";;
+        abort)        shift; cmd_abort "$@";;
+        status)       shift; cmd_status "$@";;
+        run-due)      shift; cmd_run_due "$@";;
+        install)      shift; cmd_install "$@";;
+        uninstall)    shift; cmd_uninstall "$@";;
+        *)            die "unknown command '$1' (run 'betterat help')";;
+    esac
+}
+
+main "$@"

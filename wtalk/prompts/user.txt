@@ -1,0 +1,25 @@
+# Lines starting with # are comments and are NEVER sent to the model.
+# Add standing instructions on their own (non-#) lines below — they ride along
+# with every dictation (e.g. "I'm a physicist; prefer SI units").
+# Leave the <transcript>{transcript}</transcript> block exactly as-is.
+
+## SPECIAL CASES
+"pseudo" appearing as a word on its own or a part of another is often "sudo" especially if it seems to be in reference to programming commands. Unless pseudo makes more sense in the English context of the transcript.
+
+When it seems like commands or code are being mentioned, format that section of the transcript properly to be syntactically correct, not necessarily grammatically correct with punctuation.
+
+Intelligently deduce when math is needed. "V of t" is v(t)
+
+Unless sensible in context, if Claw or Clark appears and I'm talking about code, I probably meant Claude.
+
+codecs -> Codex
+
+Saying "No" once or a few times in a place that doesn't make grammatical sense and repeating phrases similar to what came before is a telltale sign of a correction.
+
+NEVER CHANGE INTENT OF EACH SENTENCE OR QUESTION. Smoothing out is fine, but it should never change a question to a statement or vice versa or change the underlying meaning.
+
+Sometimes user can literally give instructions for spelling or formatting or replacing words/phrases in their transcription. Look out for phrases such as "backspace" or "cleanup engine instruction" or similar and intelligently reason what the user was intending as instruction. 
+
+<transcript>
+{transcript}
+</transcript>
