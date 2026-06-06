@@ -28,9 +28,9 @@ The red dot tells the truth: 🔴 listening · ◌ spinner = transcribing/cleani
   (wtalk never captures keys itself).
 - **Gemini API key** (required) — [aistudio.google.com](https://aistudio.google.com/apikey).
 - **Groq API key(s)** (optional fallback) — [console.groq.com](https://console.groq.com/keys).
-- **`nowplaying-cli`** (optional) — `brew install nowplaying-cli`. If present, wtalk pauses any
-  actively-playing media when you start a dictation and resumes it when you stop (so music doesn't
-  bleed into the mic). No-op if it isn't installed.
+- **`nowplaying-cli`** (optional) — `brew install nowplaying-cli`. If present, wtalk fades the
+  system volume out and pauses any actively-playing media when you start a dictation, then resumes
+  it with a fade-in when you stop (so music doesn't bleed into the mic). No-op if it isn't installed.
 - Python 3.10 + [`uv`](https://docs.astral.sh/uv/).
 
 ---

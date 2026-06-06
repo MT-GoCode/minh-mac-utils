@@ -25,9 +25,10 @@ the credential files on the target machine and you fill them in.
 `disarm`, but betterat, wtalk, and fade-play-pause-chrome don't fit that mold, and that's fine.)
 
 **wtalk media auto-pause (optional):** if `nowplaying-cli` is on your `PATH`
-(`brew install nowplaying-cli`), wtalk pauses whatever's playing when you start a dictation and
-resumes it after (decoupled — it only toggles media it actually paused; no-op if nowplaying-cli
-isn't installed). fade-play-pause-chrome is a separate standalone tool — wtalk no longer drives it.
+(`brew install nowplaying-cli`), wtalk fades the system volume out + pauses whatever's playing when
+you start a dictation and fades it back in on stop (decoupled — it only toggles media it actually
+paused; no-op if nowplaying-cli isn't installed). fade-play-pause-chrome is a separate standalone
+tool — wtalk no longer drives it.
 
 ## Fresh-machine setup (in order)
 

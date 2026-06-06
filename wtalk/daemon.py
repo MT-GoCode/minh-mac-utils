@@ -61,40 +61,74 @@ def _notify(msg):
         pass
 
 
-def _np_pause_if_playing():
-    """At dictation START: if media is actively playing (`nowplaying-cli get
-    playbackRate` == 1), pause it with `nowplaying-cli togglePlayPause` so it doesn't
-    bleed into the mic. Returns True iff WE paused it — the caller remembers that and
-    resumes on stop. No-op / False when nowplaying-cli is absent or nothing's playing.
-    Best-effort; never raises (control thread, so a short blocking call is fine)."""
-    cli = shutil.which("nowplaying-cli")
-    if not cli:
-        return False
+# nowplaying-cli media control, with a quick system-volume fade wrapped around it.
+_VOL_STEP = 20            # output-volume units per fade step
+_VOL_DELAY = 0.01         # seconds per step  → "0.01 per 20 units"
+
+
+def _np_is_playing(cli):
+    """True iff media is actively playing (`nowplaying-cli get playbackRate` == 1)."""
     try:
         rate = subprocess.run([cli, "get", "playbackRate"],
                               capture_output=True, text=True, timeout=2).stdout.strip()
-        try:
-            playing = float(rate) == 1.0          # "1" / "1.000000" → playing at normal speed
-        except ValueError:
-            playing = False
-        if playing:
-            subprocess.run([cli, "togglePlayPause"],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
-            return True
+        return float(rate) == 1.0             # "1" / "1.000000" → playing at normal speed
     except Exception:
-        pass
-    return False
+        return False
 
 
-def _np_resume():
-    """Resume what `_np_pause_if_playing()` paused — a second togglePlayPause. The
-    caller invokes this only when our pause actually happened. Best-effort."""
-    cli = shutil.which("nowplaying-cli")
-    if not cli:
-        return
+def _np_toggle(cli):
+    """nowplaying-cli togglePlayPause, best-effort."""
     try:
         subprocess.run([cli, "togglePlayPause"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+    except Exception:
+        pass
+
+
+def _volume_fade_out():
+    """Fade macOS output volume down to 0 (in _VOL_STEP-unit steps, _VOL_DELAY s each)
+    in a SINGLE osascript spawn — as low-latency as a fade gets. Returns the pre-fade
+    volume (0-100) so the caller can fade back in later, or None on failure."""
+    script = (
+        "set v to output volume of (get volume settings)\n"
+        f"repeat with i from v to 0 by -{_VOL_STEP}\n"
+        "  set volume output volume i\n"
+        f"  delay {_VOL_DELAY}\n"
+        "end repeat\n"
+        "set volume output volume 0\n"
+        "return v"
+    )
+    try:
+        out = subprocess.run(["osascript", "-e", script],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+        return int(out)
+    except Exception:
+        return None
+
+
+def _volume_fade_in(target):
+    """Fade macOS output volume from 0 up to `target` (in _VOL_STEP-unit steps,
+    _VOL_DELAY s each) in a SINGLE osascript spawn. No-op if target is None."""
+    if target is None:
+        return
+    try:
+        target = max(0, min(100, int(target)))
+    except Exception:
+        return
+    script = (
+        "on run argv\n"
+        "  set t to (item 1 of argv) as integer\n"
+        "  set volume output volume 0\n"
+        f"  repeat with i from 0 to t by {_VOL_STEP}\n"
+        "    set volume output volume i\n"
+        f"    delay {_VOL_DELAY}\n"
+        "  end repeat\n"
+        "  set volume output volume t\n"
+        "end run"
+    )
+    try:
+        subprocess.run(["osascript", "-e", script, str(target)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
     except Exception:
         pass
 
@@ -578,6 +612,7 @@ class Daemon:
         self.done_kind = None              # 'clean' | 'raw' | 'error'
         self._rendered = None
         self._np_paused = False            # did WE pause media at dictation start? (resume on stop)
+        self._np_volume = None             # output volume before our fade-out, to fade back in
         self._ctrl_busy_since = 0.0
         self._last_state_write = 0.0
         self._threads = {}
@@ -598,14 +633,26 @@ class Daemon:
 
     # ---- media pause/resume around dictation (via nowplaying-cli) ----
     def _music_pause(self):
-        """Pause active media at dictation start; remember if WE paused it."""
-        self._np_paused = _np_pause_if_playing()
+        """At dictation start: if media is playing, fade the system volume out, then
+        pause it — remembering the original volume to fade back in on stop."""
+        cli = shutil.which("nowplaying-cli")
+        if not cli or not _np_is_playing(cli):
+            return
+        self._np_volume = _volume_fade_out()   # original output volume (0-100) or None
+        _np_toggle(cli)                         # pause (after the fade-out)
+        self._np_paused = True
 
     def _music_resume(self):
-        """Resume only the media WE paused; idempotent (safe to call twice)."""
-        if self._np_paused:
-            self._np_paused = False
-            _np_resume()
+        """Resume only the media WE paused: play, then fade the volume back in.
+        Idempotent (safe to call twice)."""
+        if not self._np_paused:
+            return
+        self._np_paused = False
+        cli = shutil.which("nowplaying-cli")
+        if cli:
+            _np_toggle(cli)                     # play (before the fade-in)
+        _volume_fade_in(self._np_volume)        # fade in to original (no-op if None)
+        self._np_volume = None
 
     # ---- control thread: start/stop the mic; never blocks on cleanup ----
     def _control_loop(self):
