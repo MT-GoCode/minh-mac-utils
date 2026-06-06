@@ -167,7 +167,7 @@ def _write_agent_plist(exe):
     path = ":".join(dict.fromkeys(filter(None, [
         os.path.dirname(ff) if ff else "", os.path.expanduser("~/.local/bin"),
         "/opt/homebrew/bin", "/usr/local/bin",
-        "/usr/bin", "/bin", "/usr/sbin", "/sbin"])))   # ~/.local/bin → finds fadepause/faderesume
+        "/usr/bin", "/bin", "/usr/sbin", "/sbin"])))   # homebrew bins → finds nowplaying-cli
     os.makedirs(os.path.dirname(_AGENT), exist_ok=True)
     os.makedirs(_LOGDIR, exist_ok=True)
     with open(_AGENT, "wb") as f:
@@ -223,6 +223,9 @@ def cmd_install():
     print("  Microphone prompt until your FIRST dictation (first real mic use) — that's")
     print("  normal; just approve it then. Both appear as 'wtalk'.")
     print("  Then bind F5 → `wtalk toggle` in Karabiner.  Check it:  wtalk status")
+    if not shutil.which("nowplaying-cli"):
+        print("  Optional: `brew install nowplaying-cli` so wtalk auto-pauses playing")
+        print("  media while you dictate (and resumes it after). Skipped if not installed.")
 
 
 def cmd_uninstall():

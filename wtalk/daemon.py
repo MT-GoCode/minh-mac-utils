@@ -61,15 +61,40 @@ def _notify(msg):
         pass
 
 
-def _fade(action):
-    """Fire the standalone fade-play-pause tool, fire-and-forget. Decoupled: it
-    just calls `fadepause`/`faderesume` off PATH (the tool's ./install.sh drops
-    those into ~/.local/bin). No-op if the tool isn't installed. action: 'pause'|'resume'."""
-    cmd = shutil.which("fade" + action)
-    if not cmd:
+def _np_pause_if_playing():
+    """At dictation START: if media is actively playing (`nowplaying-cli get
+    playbackRate` == 1), pause it with `nowplaying-cli togglePlayPause` so it doesn't
+    bleed into the mic. Returns True iff WE paused it — the caller remembers that and
+    resumes on stop. No-op / False when nowplaying-cli is absent or nothing's playing.
+    Best-effort; never raises (control thread, so a short blocking call is fine)."""
+    cli = shutil.which("nowplaying-cli")
+    if not cli:
+        return False
+    try:
+        rate = subprocess.run([cli, "get", "playbackRate"],
+                              capture_output=True, text=True, timeout=2).stdout.strip()
+        try:
+            playing = float(rate) == 1.0          # "1" / "1.000000" → playing at normal speed
+        except ValueError:
+            playing = False
+        if playing:
+            subprocess.run([cli, "togglePlayPause"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _np_resume():
+    """Resume what `_np_pause_if_playing()` paused — a second togglePlayPause. The
+    caller invokes this only when our pause actually happened. Best-effort."""
+    cli = shutil.which("nowplaying-cli")
+    if not cli:
         return
     try:
-        subprocess.Popen([cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run([cli, "togglePlayPause"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
     except Exception:
         pass
 
@@ -552,6 +577,7 @@ class Daemon:
         self.done_until = 0.0              # monotonic deadline for the ✅ badge
         self.done_kind = None              # 'clean' | 'raw' | 'error'
         self._rendered = None
+        self._np_paused = False            # did WE pause media at dictation start? (resume on stop)
         self._ctrl_busy_since = 0.0
         self._last_state_write = 0.0
         self._threads = {}
@@ -570,6 +596,17 @@ class Daemon:
         self.done_kind = kind
         self.done_until = monotonic() + 1.2
 
+    # ---- media pause/resume around dictation (via nowplaying-cli) ----
+    def _music_pause(self):
+        """Pause active media at dictation start; remember if WE paused it."""
+        self._np_paused = _np_pause_if_playing()
+
+    def _music_resume(self):
+        """Resume only the media WE paused; idempotent (safe to call twice)."""
+        if self._np_paused:
+            self._np_paused = False
+            _np_resume()
+
     # ---- control thread: start/stop the mic; never blocks on cleanup ----
     def _control_loop(self):
         while True:
@@ -578,14 +615,14 @@ class Daemon:
             try:
                 if action == "toggle":
                     if self.listening:
-                        _fade("resume")
+                        self._music_resume()
                         self._stop_listening()
                     else:                                  # START: always allowed
-                        _fade("pause")
+                        self._music_pause()
                         if not self._start_listening():
-                            _fade("resume")
+                            self._music_resume()
                 elif action == "cancel" and self.listening:
-                    _fade("resume")
+                    self._music_resume()
                     self._cancel_listening()
             except Exception as e:
                 self.last_error = f"control: {e}"

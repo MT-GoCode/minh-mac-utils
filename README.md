@@ -24,9 +24,10 @@ the credential files on the target machine and you fill them in.
 (They don't share one rigid interface — most lockers happen to have `install`/`uninstall`/`arm`/
 `disarm`, but betterat, wtalk, and fade-play-pause-chrome don't fit that mold, and that's fine.)
 
-**wtalk ↔ fade (optional):** if you `./install.sh` fade-play-pause-chrome, it puts `fadepause`/
-`faderesume` on your `PATH`, and wtalk auto-fires them on dictation start/stop (decoupled — wtalk
-just calls them by name; no-op if fade isn't installed).
+**wtalk media auto-pause (optional):** if `nowplaying-cli` is on your `PATH`
+(`brew install nowplaying-cli`), wtalk pauses whatever's playing when you start a dictation and
+resumes it after (decoupled — it only toggles media it actually paused; no-op if nowplaying-cli
+isn't installed). fade-play-pause-chrome is a separate standalone tool — wtalk no longer drives it.
 
 ## Fresh-machine setup (in order)
 
