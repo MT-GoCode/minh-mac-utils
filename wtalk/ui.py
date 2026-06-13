@@ -65,6 +65,9 @@ _PILL_MIN = 110
 _PILL_MAX = 360
 _PILL_PAD = 30
 _PILL_GAP = 12
+_VB_W = 92              # the "Verbatim" button, to the right of the dot
+_VB_H = 26
+_VB_GAP = 12           # gap between the dot and the Verbatim button
 _MASK = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
 
 _dot = None
@@ -75,6 +78,7 @@ _badge_layer = None
 _pill = None
 _field = None
 _delegate = None
+_verbatim = None
 _cur = None
 
 # hint state (plain Python; read off-thread at stop)
@@ -82,6 +86,7 @@ _hint_text = ""
 _took_focus = False
 _prev_app = None
 _on_submit = None
+_on_verbatim = None
 
 _DOT_RGBA = {
     "listening":    (1.00, 0.23, 0.19, 0.95),
@@ -313,6 +318,66 @@ def set_submit_handler(fn):
     _on_submit = fn
 
 
+# ===================== the Verbatim button =====================
+class _VerbatimView(NSView):
+    """The clickable 'Verbatim' pill. A plain view (NOT an NSButton) so it can take a
+    click in a non-activating panel WITHOUT ever becoming first responder or activating
+    wtalk — clicking it must never steal focus from, or alt-tab away from, whatever
+    you're dictating into. acceptsFirstMouse makes the very first click count even
+    though wtalk is a background accessory app."""
+
+    def acceptsFirstMouse_(self, event):
+        return True
+
+    def mouseDown_(self, event):
+        try:
+            self.window().setAlphaValue_(0.55)      # quick press feedback
+        except Exception:
+            pass
+        if _on_verbatim is not None:
+            _on_verbatim()
+
+
+def _build_verbatim():
+    rect = NSMakeRect(0, 0, _VB_W, _VB_H)
+    panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+        rect, _MASK, NSBackingStoreBuffered, False)
+    panel.setLevel_(NSFloatingWindowLevel)
+    panel.setOpaque_(False)
+    panel.setBackgroundColor_(NSColor.clearColor())
+    panel.setHasShadow_(True)
+    panel.setAlphaValue_(0.0)
+
+    bg = NSVisualEffectView.alloc().initWithFrame_(rect)
+    bg.setMaterial_(13)                               # HUD window — matches the hints pill
+    bg.setBlendingMode_(0)
+    bg.setState_(1)
+    bg.setWantsLayer_(True)
+    bg.layer().setCornerRadius_(_VB_H / 2.0)
+    bg.layer().setMasksToBounds_(True)
+    panel.setContentView_(bg)
+
+    label = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 4, _VB_W, 18))
+    label.setBezeled_(False); label.setBordered_(False); label.setDrawsBackground_(False)
+    label.setEditable_(False); label.setSelectable_(False)
+    label.setFont_(NSFont.systemFontOfSize_(12))
+    label.setTextColor_(NSColor.labelColor())
+    label.setAlignment_(NSTextAlignmentCenter)
+    label.setStringValue_("Verbatim")
+    bg.addSubview_(label)
+
+    # a transparent overlay on TOP catches the click (the label shows through it),
+    # so neither the label nor the visual-effect view can swallow the mouseDown.
+    overlay = _VerbatimView.alloc().initWithFrame_(rect)
+    bg.addSubview_(overlay)
+    return panel
+
+
+def set_verbatim_handler(fn):
+    global _on_verbatim
+    _on_verbatim = fn
+
+
 # ===================== geometry + fade =====================
 def _position():
     scr = NSScreen.mainScreen().frame()
@@ -320,6 +385,9 @@ def _position():
     _dot.setFrameOrigin_((x, _DOT_Y))
     # badge sits up-and-left of the dot with a clear gap (no overlap)
     _badge.setFrameOrigin_((x - _BADGE - _BADGE_GAP, _DOT_Y + _DIAM - _BADGE + 2))
+    if _verbatim is not None:
+        # the Verbatim button sits to the right of the dot, vertically centered on it
+        _verbatim.setFrameOrigin_((x + _DIAM + _VB_GAP, _DOT_Y + (_DIAM - _VB_H) / 2.0))
 
 
 def _fade(panel, target, out=False):
@@ -334,13 +402,14 @@ def _fade(panel, target, out=False):
 
 def render(phase):
     """Idempotent: bring the UI to `phase`. Main thread only."""
-    global _dot, _layer, _spinner, _badge, _badge_layer, _pill, _cur
+    global _dot, _layer, _spinner, _badge, _badge_layer, _pill, _verbatim, _cur
     if phase == _cur:
         return
     _cur = phase
     if _dot is None:
         _dot, _layer, _spinner = _build_dot()
         _badge, _badge_layer = _build_badge()
+        _verbatim = _build_verbatim()
         if config.HINTS_ENABLED:
             _pill = _build_pill()
 
@@ -348,6 +417,7 @@ def render(phase):
         _spinner.stopAnimation_(None); _breathe(False)
         if _pill is not None:
             _finalize_pill(); _fade(_pill, 0.0, out=True)
+        _fade(_verbatim, 0.0, out=True)
         _fade(_badge, 0.0, out=True)
         _fade(_dot, 0.0, out=True)
         return
@@ -356,10 +426,12 @@ def render(phase):
     _set_dot_color(phase)
     if phase == "listening":
         _spinner.stopAnimation_(None); _breathe(True)
+        _verbatim.orderFrontRegardless(); _fade(_verbatim, 1.0)
         if _pill is not None:
             _reset_pill(); _resize_pill()
             _pill.orderFrontRegardless(); _fade(_pill, 1.0)
     else:
+        _fade(_verbatim, 0.0, out=True)        # Verbatim is a listening-only control
         if _pill is not None:
             _finalize_pill(); _fade(_pill, 0.0, out=True)
         # spinner = still working (transcribing OR cleaning); off once pasted/done

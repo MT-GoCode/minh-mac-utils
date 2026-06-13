@@ -85,6 +85,17 @@ def _np_toggle(cli):
         pass
 
 
+def _output_volume():
+    """Read the current macOS output volume (0-100), or None on failure. Fast single spawn —
+    used to capture the pre-fade volume BEFORE fading, so a slow/timed-out fade can't strand it."""
+    try:
+        out = subprocess.run(["osascript", "-e", "output volume of (get volume settings)"],
+                             capture_output=True, text=True, timeout=2).stdout.strip()
+        return int(out)
+    except Exception:
+        return None
+
+
 def _volume_fade_out():
     """Fade macOS output volume down to 0 (in _VOL_STEP-unit steps, _VOL_DELAY s each)
     in a SINGLE osascript spawn — as low-latency as a fade gets. Returns the pre-fade
@@ -197,14 +208,30 @@ def paste(text):
         return False
     from Quartz import (CGEventCreateKeyboardEvent, CGEventPost, CGEventSetFlags,
                         kCGEventFlagMaskCommand, kCGHIDEventTap)
+    try:
+        from Quartz import CGEventSourceCreate, kCGEventSourceStateHIDSystemState
+        src = CGEventSourceCreate(kCGEventSourceStateHIDSystemState)
+    except Exception:
+        src = None
     time.sleep(0.02)  # let the pasteboard settle
-    down = CGEventCreateKeyboardEvent(None, 9, True)   # 'v'
-    CGEventSetFlags(down, kCGEventFlagMaskCommand)
-    up = CGEventCreateKeyboardEvent(None, 9, False)
-    CGEventSetFlags(up, kCGEventFlagMaskCommand)
-    CGEventPost(kCGHIDEventTap, down)
-    time.sleep(0.005)
-    CGEventPost(kCGHIDEventTap, up)
+    # Synthesize a full, BALANCED ⌘V: Command key down → V → Command key UP. The
+    # explicit Command key-up is the point. The old version set the Command FLAG on
+    # the V events but never released the Command KEY, which could leave Command
+    # "stuck down" in the window server after the paste — so your next Tab read as
+    # ⌘Tab and switched apps (the "alt-tab at the end of a dictation" bug). Pressing
+    # and releasing the modifier as its own key events can't leave it held.
+    CMD = 0x37  # left Command key code
+    cmd_down = CGEventCreateKeyboardEvent(src, CMD, True)
+    CGEventSetFlags(cmd_down, kCGEventFlagMaskCommand)
+    v_down = CGEventCreateKeyboardEvent(src, 9, True)   # 'v'
+    CGEventSetFlags(v_down, kCGEventFlagMaskCommand)
+    v_up = CGEventCreateKeyboardEvent(src, 9, False)
+    CGEventSetFlags(v_up, kCGEventFlagMaskCommand)
+    cmd_up = CGEventCreateKeyboardEvent(src, CMD, False)
+    CGEventSetFlags(cmd_up, 0)                          # release: no modifiers left held
+    for ev in (cmd_down, v_down, v_up, cmd_up):
+        CGEventPost(kCGHIDEventTap, ev)
+        time.sleep(0.005)
     return True
 
 
@@ -601,6 +628,7 @@ class Daemon:
         self.session = None
         self.jobs = queue.Queue()
         self.control = queue.Queue()
+        self.media = queue.Queue()         # pause/resume run here, OFF the control path
         self.started_at = now_iso()
         self.ready_at = None
         self.current_mic = None
@@ -632,13 +660,31 @@ class Daemon:
         self.done_until = monotonic() + 1.2
 
     # ---- media pause/resume around dictation (via nowplaying-cli) ----
+    # These run ONLY on the dedicated media thread (_media_loop), never on the
+    # control thread — `nowplaying-cli get playbackRate` can take ~2.7s, and we
+    # must never make the red dot (or the next stop/cancel) wait on it. The media
+    # thread is single-FIFO, so _np_paused/_np_volume need no locking.
+    def _media_loop(self):
+        while True:
+            action = self.media.get()
+            try:
+                if action == "pause":
+                    self._music_pause()
+                elif action == "resume":
+                    self._music_resume()
+            except Exception as e:
+                _log(f"media error: {e}")
+
     def _music_pause(self):
         """At dictation start: if media is playing, fade the system volume out, then
         pause it — remembering the original volume to fade back in on stop."""
         cli = shutil.which("nowplaying-cli")
         if not cli or not _np_is_playing(cli):
             return
-        self._np_volume = _volume_fade_out()   # original output volume (0-100) or None
+        # Capture the volume BEFORE fading so resume can always restore it, even if the fade-out
+        # osascript times out partway down (which would otherwise strand the volume near 0).
+        self._np_volume = _output_volume()      # original output volume (0-100) or None
+        _volume_fade_out()                      # fade to 0 (return value no longer trusted)
         _np_toggle(cli)                         # pause (after the fade-out)
         self._np_paused = True
 
@@ -662,15 +708,17 @@ class Daemon:
             try:
                 if action == "toggle":
                     if self.listening:
-                        self._music_resume()
-                        self._stop_listening()
+                        self._stop_listening()             # red dot off FIRST
+                        self.media.put("resume")           # un-pause media in the background
                     else:                                  # START: always allowed
-                        self._music_pause()
-                        if not self._start_listening():
-                            self._music_resume()
+                        if self._start_listening():        # red dot ON FIRST
+                            self.media.put("pause")         # pause media in the background
+                elif action == "verbatim" and self.listening:
+                    self._stop_listening(verbatim=True)    # stop like toggle, but paste raw (skip AI)
+                    self.media.put("resume")               # un-pause media in the background
                 elif action == "cancel" and self.listening:
-                    self._music_resume()
                     self._cancel_listening()
+                    self.media.put("resume")
             except Exception as e:
                 self.last_error = f"control: {e}"
                 _log(f"control error: {e}")
@@ -713,14 +761,14 @@ class Daemon:
         self.write_state()
         return False
 
-    def _stop_listening(self):
+    def _stop_listening(self, verbatim=False):
         _set_kb_listening(False)
         sess, self.session = self.session, None
         hints = ui.hint_text() if config.HINTS_ENABLED else ""
         self.worker_busy = True       # so the overlay goes listening -> working, no flicker
         self.listening = False
         sess.snapshot()               # fast: closes the mic on a detached thread
-        self.jobs.put((sess, hints))
+        self.jobs.put((sess, hints, verbatim))
         self.write_state()
 
     def _cancel_listening(self):
@@ -735,12 +783,12 @@ class Daemon:
     # ---- worker thread: transcribe -> route -> clean-race -> paste ----
     def _worker(self):
         while True:
-            sess, hints = self.jobs.get()
+            sess, hints, verbatim = self.jobs.get()
             self.worker_busy = True
             self.stage = "transcribing"
             self.write_state()
             try:
-                self._process(sess, hints)
+                self._process(sess, hints, verbatim)
             except Exception as e:
                 self.last_error = f"worker: {e}"
                 _log(f"worker error: {e}")
@@ -765,7 +813,7 @@ class Daemon:
         self._mark_done(kind if ok else "error")
         return ok
 
-    def _process(self, sess, hints=""):
+    def _process(self, sess, hints="", verbatim=False):
         cap = sess.transcribe()
         plain, marked, dur = cap["text"], cap["marked"], cap["duration"]
         pauses, conf = cap["pauses"], cap["confidence"]
@@ -779,6 +827,13 @@ class Daemon:
                 and conf >= config.PASSTHROUGH_CONFIDENCE):
             ok = self._deliver(plain, "clean")
             config.db_insert(dur, marked, plain, "passthrough", "passthrough" if ok else "no_paste")
+            return
+        # verbatim: the user clicked "Verbatim" / double-tapped v. Everything above ran
+        # identically (transcribe, empty-check, passthrough) — we just stop here, BEFORE
+        # any HTTP request to a cleanup model, and paste the raw transcript as-is.
+        if verbatim:
+            ok = self._deliver(plain, "clean")
+            config.db_insert(dur, marked, plain, "verbatim", "verbatim" if ok else "no_paste")
             return
 
         self.stage = "cleaning"            # real cleanup starts -> green dot lights up
@@ -821,11 +876,22 @@ class Daemon:
             self.write_state()
 
     # ---- lifecycle ----
+    def _resume_media_on_exit(self):
+        # Media pause/resume is async on the media thread, so a 'resume' can be queued-but-undrained
+        # (or a pause still in flight) when we're told to die. Restore synchronously here so we never
+        # leave the machine with music paused and the volume faded to 0 and no relaunch to fix it.
+        try:
+            self._music_resume()
+        except Exception:
+            pass
+
     def quit(self):
+        self._resume_media_on_exit()
         config.state_clear()
         os._exit(0)
 
     def _shutdown(self, *_):
+        self._resume_media_on_exit()
         config.state_clear()
         os._exit(0)
 
@@ -892,12 +958,15 @@ class Daemon:
 
         self._spawn("control", self._control_loop)
         self._spawn("worker", self._worker)
+        self._spawn("media", self._media_loop)     # pause/resume off the control path
         signal.signal(signal.SIGTERM, self._shutdown)
         signal.signal(signal.SIGINT, self._shutdown)
         signal.signal(signal.SIGUSR1, lambda *_: self.control.put("toggle"))
         signal.signal(signal.SIGUSR2, lambda *_: self.control.put("cancel"))
+        signal.signal(signal.SIGWINCH, lambda *_: self.control.put("verbatim"))  # `wtalk verbatim` CLI
 
-        ui.set_submit_handler(lambda: self.control.put("toggle"))  # Enter in pill = stop+send
+        ui.set_submit_handler(lambda: self.control.put("toggle"))    # Enter in pill = stop+send
+        ui.set_verbatim_handler(lambda: self.control.put("verbatim"))  # "Verbatim" pill = stop+raw
         app = ui.ensure_app()
         try:
             ui.build_menu(self)

@@ -79,6 +79,14 @@ Karabiner owns the keys; wtalk just reacts to signals. Add a complex modificatio
 Optionally bind another key to `wtalk cancel`. If F5 already does something on your
 Mac, turn off its default in **Settings → Keyboard → Keyboard Shortcuts**.
 
+**Verbatim.** While dictating, click the **“Verbatim”** pill next to the red dot to
+stop and paste the **raw** transcript with no AI cleanup. It runs the **exact same**
+pipeline as a normal stop (transcribe, empty/passthrough checks) and only diverges
+right before the cleanup model — no HTTP request is made; the raw transcript is pasted
+as-is. If you'd rather drive it from the keyboard, `wtalk verbatim` is bindable to a
+key of your choice in Karabiner (pick a non-letter key — a plain letter would get
+swallowed while dictating).
+
 ---
 
 ## Permissions (one-time)

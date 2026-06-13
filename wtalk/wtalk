@@ -47,6 +47,8 @@ HELP = """wtalk — local dictation: F5 to speak, F5 again to paste a cleaned ve
   wtalk status      same as bare `wtalk`
   wtalk toggle      what F5 does: start dictation; run again to stop + clean + paste
   wtalk cancel      what Esc does: cancel the current dictation
+  wtalk verbatim    stop + paste the RAW transcript, no AI cleanup (also: the "Verbatim"
+                    pill by the red dot. Bindable to a key of your choice in Karabiner.)
   wtalk history     last 20 dictations
   wtalk help        this message
 
@@ -266,6 +268,13 @@ def cmd_cancel():
     _signal_daemon(signal.SIGUSR2, "→ cancelled")
 
 
+def cmd_verbatim():
+    # Stop the current dictation but paste the RAW transcript (skip the AI cleanup).
+    # The "Verbatim" pill triggers this in-process; this CLI path (SIGWINCH) lets you
+    # also bind it to a key in Karabiner if you want a keyboard trigger.
+    _signal_daemon(signal.SIGWINCH, "→ verbatim (stop + paste raw)")
+
+
 def cmd_history():
     rows = config.db_recent(20)
     if not rows:
@@ -281,7 +290,7 @@ def main():
     cmd = a[0] if a else "status"
     fns = {"status": cmd_status, "install": cmd_install, "uninstall": cmd_uninstall,
            "restart": cmd_restart, "toggle": cmd_toggle, "cancel": cmd_cancel,
-           "history": cmd_history}
+           "verbatim": cmd_verbatim, "history": cmd_history}
     if cmd in ("help", "-h", "--help"):
         print(HELP)
     elif cmd in fns:
