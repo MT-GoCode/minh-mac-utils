@@ -34,17 +34,9 @@ func runStatus() {
         let f = DateFormatter(); f.dateFormat = "EEE HH:mm"
         print("  snooze        : until \(f.string(from: Date(timeIntervalSince1970: sn)))")
     }
-    if !s.insideZones.isEmpty { print("  inside zones  : \(s.insideZones.joined(separator: ", "))") }
     print("  policy        : \(s.policyString.isEmpty ? "(none set)" : s.policyString)")
-
-    let h = s.health
-    print("  health:")
-    print("    agent feed  : \(h.agentFeedFresh ? "fresh" : "STALE")" + (h.lastFixAgeSec.map { String(format: " (%.0fs old)", $0) } ?? ""))
-    print("    location    : \(h.locState)" + (h.needsPermAsk ? "  ← run: demonlock perm-ask" : ""))
-    print("    wifi        : \(h.wifiOn ? "on" : "off")")
-    print("    scan        : \(h.scanFresh ? "fresh" : "stale/none")")
-
     if let t = s.tree { print("\n  policy evaluation  (✓ true · ✗ false · · unknown):\n" + t.asText(indent: 2)) }
+    if !s.health.locationTrail.isEmpty { print("\n  location:\n" + s.health.locationTrail.joined(separator: "\n")) }
 }
 
 // MARK: - zones list (user, no GUI)

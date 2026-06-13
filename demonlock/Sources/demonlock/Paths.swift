@@ -13,6 +13,7 @@ enum Paths {
     static let armedFile       = supportDir + "/armed"
     static let snoozeFile      = supportDir + "/snooze"
     static let stateFile       = supportDir + "/state.json"
+    static let heldFixFile     = supportDir + "/heldfix.json"
     static let logsDir         = supportDir + "/logs"
     static let enforcerdLog    = logsDir + "/enforcerd.log"
 

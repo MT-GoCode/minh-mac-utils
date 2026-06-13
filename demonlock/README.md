@@ -113,6 +113,19 @@ policy. **BSSID** (AP hardware MAC) is used over the SSID name because names are
 - **Sensing under TCC.** The agent's CoreLocation `authorizedAlways` grant is what un-redacts both
   the location fix *and* CoreWLAN BSSID scans (macOS redacts SSIDs/BSSIDs to any process without a
   Location grant — which is also why `scan` refuses to run as root: root has no grant).
+- **Location model: held fix + Wi‑Fi anchor (see `LOCATION-MODEL.md`, the design of record).**
+  Macs position from Wi‑Fi only; CoreLocation goes silent when nothing changes, so a fix is **never
+  judged by age**. The enforcer adopts each genuine fix together with the stable **BSSIDs** (per-AP
+  hardware MACs, not network names) visible at that moment — its *anchor* — and trusts it until
+  *positive* evidence of leaving: a fresh scan in which **none** of the anchor BSSIDs appear (seeing
+  even one = still here; moving to a different physical router, even on the same SSID, drops it to
+  zero). On "moved" it coasts `graceSeconds` for a fresh fix, then fail-closes. A **missing/stale
+  scan does not lock you** — the fix is trusted (graceful degradation), because macOS throttles Wi‑Fi
+  scanning for background apps; so the agent runs **foreground (`.regular`, dock icon)** and uses the
+  **associated-AP BSSID** (available with no scan) as the dependable anchor. The held fix persists
+  root-owned (`heldfix.json`) across reboot/sleep — login/wake need no special cases, and the user
+  can't forge it. The only clock-based staleness is *transport* (`staleSeconds`): a killed agent goes
+  silent ⇒ unknown ⇒ fail-closed.
 - **Wi‑Fi keep-on.** While armed, each tick re-enables the radio via `networksetup
   -setairportpower` if it's off — CoreLocation positions from Wi‑Fi, so the radio must stay on.
 - **Logout.** At countdown zero, armed → `launchctl bootout gui/<uid>` (a true session logout to
@@ -139,9 +152,10 @@ Wi‑Fi check pins BSSIDs.
 User (no sudo): `status` · `zones` (`view-zones`/`edit-zones` alias it) · `scan` · `perm-ask` ·
 `help`. Sudo: `setpolicy` · `arm` · `disarm` · `snoozetonight` (stands down until the next
 `snoozeHHMM`, default 05:00, then auto-clears; `arm` clears an active snooze). Settings live in
-`settings.json` (`pollSeconds`, `countdownSeconds`, `snoozeHHMM`, `staleSeconds`, `scanSeconds`,
-`initMaxSeconds`, `enforcedUser` [username **or** uid — the logout target], `wifiKeepOn`,
-`wifiDevice`).
+`settings.json` (`pollSeconds`, `countdownSeconds`, `snoozeHHMM`, `staleSeconds`, `graceSeconds`,
+`maxAccuracyMeters`, `scanSeconds`, `initMaxSeconds`, `enforcedUser` [username **or** uid — the
+logout target], `wifiKeepOn`, `wifiDevice`). There is deliberately **no fix-age knob** — see
+`LOCATION-MODEL.md`.
 
 ## Code signing
 

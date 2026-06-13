@@ -135,9 +135,11 @@ final class AgentApp: NSObject, NSApplicationDelegate {
         paint(color, big, s.reason)
         statusItem.button?.title = menuGlyph(s.phase)
 
-        treeView.string = s.tree?.asText() ?? "(no policy / no evaluation)"
+        let policy = "POLICY\n" + (s.tree?.asText() ?? "(no policy / no evaluation)")
+        let locMap = s.health.locationTrail.isEmpty ? "" : "\n\nLOCATION\n" + s.health.locationTrail.joined(separator: "\n")
+        treeView.string = policy + locMap                 // location section (ending in `zones:`) is last
         let h = s.health
-        healthLabel.stringValue = "feed \(h.agentFeedFresh ? "fresh" : "STALE") · location \(h.locState) · wifi \(h.wifiOn ? "on" : "off") · scan \(h.scanFresh ? "fresh" : "stale")"
+        healthLabel.stringValue = ""                       // removed the redundant feed/location/wifi/scan strip
         permButton.isHidden = !h.needsPermAsk
         disarmButton.isHidden = !s.armed
 
@@ -199,7 +201,10 @@ final class PanelWindow: NSWindow {
 
 func runAgent() {
     let app = NSApplication.shared
-    app.setActivationPolicy(.accessory)
+    // FOREGROUND (.regular, dock icon) — macOS 26 throttles Wi-Fi scanForNetworks for a background
+    // accessory app; a foreground app is far more likely to get live scans. We do NOT activate/steal
+    // focus. Killing/quitting it just fails the enforcer closed (feed goes stale), so it stays secure.
+    app.setActivationPolicy(.regular)
     let delegate = AgentApp()
     app.delegate = delegate
     app.run()

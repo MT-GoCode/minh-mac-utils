@@ -138,13 +138,6 @@ private final class ScanController: NSObject, CLLocationManagerDelegate {
     }
 }
 
-/// A BSSID is a stable hardware MAC (universally administered) when bit 0x02 of the first
-/// octet is clear; otherwise it's a locally-administered (random/virtual) address that can rotate.
-private func isStableBSSID(_ mac: String) -> Bool {
-    guard let first = mac.split(separator: ":").first, let v = UInt8(first, radix: 16) else { return false }
-    return (v & 0x02) == 0
-}
-
 func runScan() {
     // Must run as your user — root has no Location grant, so macOS redacts every BSSID.
     if geteuid() == 0 {

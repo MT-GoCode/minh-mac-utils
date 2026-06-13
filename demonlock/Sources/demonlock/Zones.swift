@@ -13,14 +13,17 @@ struct Zone: Codable, Equatable {
     var name: String
     var shape: ZoneShape
 
-    /// True if (lat,lon) is inside this zone. `accuracy` (meters) widens a circle so a
-    /// fuzzy fix near the edge isn't a false "outside".
-    func contains(lat: Double, lon: Double, accuracy: Double) -> Bool {
+    /// True if (lat,lon) is inside this zone — EXACT geometry, no fuzz. We deliberately
+    /// do NOT widen the circle by the fix's accuracy: widening is fail-OPEN (it grants a
+    /// halo of access around every zone whenever the fix is uncertain). Fix *quality* is
+    /// gated upstream in the enforcer instead — a too-fuzzy or stale fix is rejected as
+    /// "unknown" → fail-closed, never silently expanded into an allow.
+    func contains(lat: Double, lon: Double) -> Bool {
         switch shape {
         case .circle(let clat, let clon, let r):
             let here = CLLocation(latitude: lat, longitude: lon)
             let center = CLLocation(latitude: clat, longitude: clon)
-            return here.distance(from: center) <= r + max(accuracy, 0)
+            return here.distance(from: center) <= r
         case .polygon(let pts):
             return Zone.pointInPolygon(lat: lat, lon: lon, points: pts)
         }
@@ -55,9 +58,9 @@ enum ZoneStore {
         try enc.encode(zones).write(to: URL(fileURLWithPath: path), options: .atomic)
     }
 
-    /// Names of all zones containing the point.
-    static func containing(lat: Double, lon: Double, accuracy: Double, zones: [Zone]) -> [String] {
-        zones.filter { $0.contains(lat: lat, lon: lon, accuracy: accuracy) }.map(\.name)
+    /// Names of all zones containing the point (exact geometry).
+    static func containing(lat: Double, lon: Double, zones: [Zone]) -> [String] {
+        zones.filter { $0.contains(lat: lat, lon: lon) }.map(\.name)
     }
 
     static func hasZone(named name: String, in zones: [Zone]) -> Bool {

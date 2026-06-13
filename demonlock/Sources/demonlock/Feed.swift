@@ -74,6 +74,10 @@ final class SecureFeedServer {
         lock.lock(); defer { lock.unlock() }; return _latest
     }
 
+    /// Forget the last payload (called on console-session change) so a new session starts with
+    /// a genuinely empty feed rather than inheriting a dead session's last packet.
+    func clear() { lock.lock(); _latest = nil; lock.unlock() }
+
     func start() {
         Thread.detachNewThread { [weak self] in self?.serve() }
     }
@@ -141,7 +145,18 @@ final class FeedSender {
         connectIfNeeded()
         guard fd >= 0, var data = try? encoder.encode(payload) else { return }
         data.append(0x0A)
-        let wrote = data.withUnsafeBytes { write(fd, $0.baseAddress, data.count) }
-        if wrote <= 0 { close(fd); fd = -1 }     // drop & reconnect next time
+        // write() may return a SHORT count (send buffer full); loop until the whole line is out,
+        // else a truncated line breaks the server's newline framing and the feed silently stalls.
+        let ok = data.withUnsafeBytes { raw -> Bool in
+            guard var ptr = raw.baseAddress else { return false }
+            var remaining = raw.count
+            while remaining > 0 {
+                let n = write(fd, ptr, remaining)
+                if n <= 0 { return false }
+                ptr = ptr.advanced(by: n); remaining -= n
+            }
+            return true
+        }
+        if !ok { close(fd); fd = -1 }     // drop & reconnect next time
     }
 }

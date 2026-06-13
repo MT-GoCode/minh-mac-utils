@@ -60,22 +60,16 @@ echo "▸ seeding $SUPPORT (defaults only if absent)"
 mkdir -p "$SUPPORT/logs"
 WIFI_DEV="$(/usr/sbin/networksetup -listallhardwareports | awk '/Wi-Fi/{getline; print $2; exit}')"
 [ -n "$WIFI_DEV" ] || WIFI_DEV="en0"
-if [ ! -f "$SUPPORT/settings.json" ]; then
-  cat > "$SUPPORT/settings.json" <<EOF
+# Seed ONLY the per-machine keys; every behavioral tunable is owned by the code defaults
+# (Settings.swift / LOCATION-MODEL.md) and decoded leniently, so changing a default actually
+# takes effect instead of being shadowed by a stale file. Rewritten each install to pick up
+# enforcedUser/wifiDevice; behavior keys deliberately absent.
+cat > "$SUPPORT/settings.json" <<EOF
 {
-  "pollSeconds" : 1,
-  "countdownPollSeconds" : 0.5,
-  "countdownSeconds" : 10,
-  "snoozeHHMM" : "0500",
-  "staleSeconds" : 30,
-  "scanSeconds" : 20,
-  "initMaxSeconds" : 90,
   "enforcedUser" : "$USER_NAME",
-  "wifiKeepOn" : true,
   "wifiDevice" : "$WIFI_DEV"
 }
 EOF
-fi
 [ -f "$SUPPORT/armed" ]      || printf '0'    > "$SUPPORT/armed"     # installs DISARMED
 [ -f "$SUPPORT/snooze" ]     || printf 'null' > "$SUPPORT/snooze"
 [ -f "$SUPPORT/zones.json" ] || printf '[]'   > "$SUPPORT/zones.json"

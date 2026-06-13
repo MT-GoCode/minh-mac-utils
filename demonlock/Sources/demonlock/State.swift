@@ -19,15 +19,11 @@ struct EvalNode: Codable {
 // MARK: - Health (for status + UI, computed by the daemon from the feed)
 
 struct Health: Codable {
-    var enforcerdLoaded = true
-    var agentFeedFresh = false
-    var agentReady = false
-    var lastFixAgeSec: Double?
-    var locState = "unknown"     // ok | notDetermined | denied | restricted | servicesOff | noFix
-    var wifiOn = false
-    var scanFresh = false
-    var lastScanAgeSec: Double?
+    var agentFeedFresh = false   // transport: is the agent process reporting? (anti-kill)
+    var fixReason: String?       // why location is not driving an allow (re-confirming / left-the-Wi-Fi / too-fuzzy)
+    var locState = "unknown"     // ok | reduced | notDetermined | denied | restricted | noFix
     var needsPermAsk = false
+    var locationTrail: [String] = []   // the per-tick decision map (the user-facing detail; see locationTrail())
 }
 
 // MARK: - Published snapshot (state.json — the single UI/status read surface)
@@ -53,15 +49,49 @@ struct StateSnapshot: Codable {
 // MARK: - Feed payload (agent → root over the trusted socket)
 
 struct FeedPayload: Codable {
-    var ts: Double               // when the agent emitted this
-    var ready: Bool              // sensors initialized AND a valid current fix exists
-    var lat: Double?
-    var lon: Double?
-    var acc: Double?
-    var bssids: [String]?        // nil ⇒ scan unavailable/redacted (location input = unknown)
-    var locState: String         // ok | notDetermined | denied | restricted | servicesOff | noFix
-    var wifiOn: Bool
+    // Raw sensor truth — the agent reports; the ROOT enforcer is the sole judge and sole
+    // state-holder (held fix + anchor live root-side so the user can't forge them).
+    var ts: Double               // when the agent emitted this packet
+    var lat: Double?             // latest ACCEPTED fix (measured after the agent's launch/wake epoch —
+    var lon: Double?             //   the agent rejects Apple's cached re-deliveries at the source)
+    var acc: Double?             // horizontalAccuracy (m), REAL value — negative = invalid (Apple sentinel)
+    var fixTs: Double?           // the fix's REAL CoreLocation timestamp — the enforcer's "new fix?" key
+    var bssids: [String]?        // current scan, all MACs (policy input). nil ⇒ scan unavailable/redacted
+    var locState: String         // ok | reduced | notDetermined | denied | restricted | noFix
     var scanTs: Double?
+}
+
+// MARK: - Held fix (root-owned, persisted — survives reboot/sleep so login needs nothing special)
+
+/// The one location truth, and a DURABLE high-water record. `fixTs` is both the last adopted
+/// fix's CoreLocation timestamp AND the adoption high-water mark: we adopt only a STRICTLY
+/// newer fix, so a fix whose grace expired can never be re-adopted from the agent's unchanging
+/// stream (the resurrection fail-open). The record is therefore never deleted — `graceUntil`
+/// carries its trust:
+///   • nil               → anchor confirms → trusted.
+///   • set, now < it      → anchor lost, coasting (still trusted) until a newer fix or expiry.
+///   • set, now ≥ it      → expired → NOT trusted (fail-closed), but kept as the high-water tombstone.
+/// `graceUntil` is persisted (absolute wall-clock) so a reboot can't reset the coast window.
+struct HeldFix: Codable {
+    var lat: Double
+    var lon: Double
+    var fixTs: Double
+    var acc: Double              // horizontalAccuracy at adoption (status display)
+    var anchor: [String]         // stable BSSIDs seen at adoption; the liveness signal
+    var graceUntil: Double?
+
+    func trusted(now: Double) -> Bool { graceUntil.map { now < $0 } ?? true }
+}
+
+enum HeldFixStore {
+    static func read() -> HeldFix? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: Paths.heldFixFile)) else { return nil }
+        return try? JSONDecoder().decode(HeldFix.self, from: data)
+    }
+    static func write(_ h: HeldFix) {
+        guard let data = try? JSONEncoder().encode(h) else { return }
+        try? data.write(to: URL(fileURLWithPath: Paths.heldFixFile), options: .atomic)
+    }
 }
 
 // MARK: - Small root-owned scalar files

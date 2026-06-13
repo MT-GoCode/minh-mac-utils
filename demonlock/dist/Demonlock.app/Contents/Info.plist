@@ -10,7 +10,8 @@
     <key>CFBundleShortVersionString</key>   <string>0.1</string>
     <key>CFBundleVersion</key>              <string>1</string>
     <key>LSMinimumSystemVersion</key>       <string>13.0</string>
-    <key>LSUIElement</key>                  <true/>
+    <!-- NOT LSUIElement: the agent runs .regular (foreground, dock icon) so macOS lets it
+         scan Wi-Fi; the old LSUIElement=true made it a background agent and fought that. -->
     <key>NSLocationUsageDescription</key>
         <string>Demonlock reads nearby Wi-Fi access-point identifiers (BSSIDs) to confirm you are at an allowed location.</string>
     <key>NSLocationWhenInUseUsageDescription</key>

@@ -47,7 +47,7 @@ struct TimeWindow {
 
 struct PolicyInputs {
     var now: Date
-    var fix: (lat: Double, lon: Double, accuracy: Double)?   // nil ⇒ unknown
+    var fix: (lat: Double, lon: Double)?   // nil ⇒ unknown. Exact containment — accuracy is gated upstream.
     var bssids: Set<String>?                                 // nil ⇒ unknown (normalized lowercase)
     var zones: [Zone]
 }
@@ -89,7 +89,7 @@ enum PolicyEngine {
             guard let fix = inp.fix else {
                 return (.unknown, EvalNode(kind: "LOCATED_IN_ANY", label: label, result: nil, detail: "no location fix"))
             }
-            let inside = ZoneStore.containing(lat: fix.lat, lon: fix.lon, accuracy: fix.accuracy, zones: inp.zones)
+            let inside = ZoneStore.containing(lat: fix.lat, lon: fix.lon, zones: inp.zones)
             let match = names.first { inside.contains($0) }
             let r: Tri = match != nil ? .t : .f
             let detail = match.map { "inside \"\($0)\"" }
