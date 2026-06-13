@@ -23,6 +23,12 @@ struct Settings: Codable {
                                        // live band is always current; this is just the all-bands sweep rate.
                                        // A full sweep sees ALL radios at once, so the anchor snapshot is rich
                                        // (both bands of a dual-band router) → band-steering keeps overlap.
+    var scanWindowSeconds: Double      // rolling-log window: the agent reports the UNION of every BSSID seen in
+                                       // the last this-many seconds (ages out, NOT cleared on Wi-Fi off). An
+                                       // EMPTY window (no BSSID at all for this long — Wi-Fi off / unjoined /
+                                       // left RF range) is POSITIVE signal-loss → enforcer treats it as zero
+                                       // overlap → grace → fail-closed. Safe because the unthrottled
+                                       // associated-AP read yields ≥1 BSSID whenever you're joined.
     var initMaxSeconds: Double         // agent-STARTUP transport grace: how long after session start
                                        // "agent not reporting" shows INITIALIZING instead of a countdown.
                                        // Once the feed has been fresh, an agent kill counts down at once.
@@ -32,13 +38,14 @@ struct Settings: Codable {
 
     init(pollSeconds: Double = 1.0, countdownPollSeconds: Double = 0.5, countdownSeconds: Double = 10,
          snoozeHHMM: String = "0500", staleSeconds: Double = 30, graceSeconds: Double = 90,
-         maxAccuracyMeters: Double = 150, scanSeconds: Double = 6,
+         maxAccuracyMeters: Double = 150, scanSeconds: Double = 6, scanWindowSeconds: Double = 30,
          initMaxSeconds: Double = 30, enforcedUser: String = "", wifiKeepOn: Bool = true,
          wifiDevice: String = "en0") {
         self.pollSeconds = pollSeconds; self.countdownPollSeconds = countdownPollSeconds
         self.countdownSeconds = countdownSeconds; self.snoozeHHMM = snoozeHHMM
         self.staleSeconds = staleSeconds; self.graceSeconds = graceSeconds
         self.maxAccuracyMeters = maxAccuracyMeters; self.scanSeconds = scanSeconds
+        self.scanWindowSeconds = scanWindowSeconds
         self.initMaxSeconds = initMaxSeconds; self.enforcedUser = enforcedUser
         self.wifiKeepOn = wifiKeepOn; self.wifiDevice = wifiDevice
     }
@@ -54,6 +61,7 @@ struct Settings: Codable {
         graceSeconds         = (try? c.decode(Double.self, forKey: .graceSeconds)) ?? d.graceSeconds
         maxAccuracyMeters    = (try? c.decode(Double.self, forKey: .maxAccuracyMeters)) ?? d.maxAccuracyMeters
         scanSeconds          = (try? c.decode(Double.self, forKey: .scanSeconds)) ?? d.scanSeconds
+        scanWindowSeconds    = (try? c.decode(Double.self, forKey: .scanWindowSeconds)) ?? d.scanWindowSeconds
         initMaxSeconds       = (try? c.decode(Double.self, forKey: .initMaxSeconds)) ?? d.initMaxSeconds
         enforcedUser         = (try? c.decode(String.self, forKey: .enforcedUser)) ?? d.enforcedUser
         wifiKeepOn           = (try? c.decode(Bool.self,   forKey: .wifiKeepOn)) ?? d.wifiKeepOn

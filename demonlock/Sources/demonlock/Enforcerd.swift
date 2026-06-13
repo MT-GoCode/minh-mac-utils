@@ -92,7 +92,9 @@ final class Enforcer {
                 var stable: Set<String>?
                 if let b = p.bssids, !b.isEmpty, let st = p.scanTs {
                     let scanAge = nowSec - st
-                    if scanAge >= 0 && scanAge < max(settings.scanSeconds * 2, 30) {
+                    // Backstop only — the agent already prunes to scanWindowSeconds; allow delivery slack so a
+                    // just-in-window union isn't wrongly rejected (a rejected scan now reads as signal-loss).
+                    if scanAge >= 0 && scanAge < settings.scanWindowSeconds + 10 {
                         scanAgeSec = scanAge
                         bssids = Set(b.map { $0.lowercased() })        // policy input (FOUND_IN_NEARBY_BSSID)
                         stable = bssids!.filter(isStableBSSID)         // liveness anchor signal
@@ -219,19 +221,17 @@ final class Enforcer {
 
         if adopted {
             t.append("this tick:  NEW fix → valid · anchored to \(held.anchor.count) nearby BSSIDs.")
-        } else if let stable {
+        } else if held.anchor.isEmpty {
+            t.append("this tick:  no new fix · last fix had no scan (empty anchor) → can't check APs → trusting last fix.")
+        } else if let stable, bssidOverlapOK(anchor: held.anchor, current: stable) {
             let shared = held.anchor.filter(stable.contains).count
-            if held.anchor.isEmpty {
-                t.append("this tick:  no new fix · last fix had no scan (empty anchor) → can't check APs → trusting last fix.")
-            } else if bssidOverlapOK(anchor: held.anchor, current: stable) {
-                t.append("this tick:  no new fix → BSSIDs overlap last-fix set (\(shared)/\(held.anchor.count)) → last fix still valid.")
-            } else if let g = held.graceUntil, now < g {
-                t.append("this tick:  no new fix → BSSIDs do NOT overlap (0/\(held.anchor.count)) → may be invalid → grace, \(Int((g-now).rounded()))s remaining.")
-            } else {
-                t.append("this tick:  no new fix → BSSIDs do NOT overlap → grace over → FAIL-CLOSE initiated.")
-            }
+            t.append("this tick:  no new fix → BSSIDs overlap last-fix set (\(shared)/\(held.anchor.count)) → last fix still valid.")
+        } else if let g = held.graceUntil, now < g {
+            let why = stable == nil ? "NO Wi-Fi signal at all (off / left range)"
+                                    : "BSSIDs do NOT overlap (0/\(held.anchor.count))"
+            t.append("this tick:  no new fix → \(why) → may have left → grace, \(Int((g-now).rounded()))s remaining.")
         } else {
-            t.append("this tick:  no new fix · no fresh scan to check BSSIDs → trusting last fix.")
+            t.append("this tick:  no new fix → lost the known Wi-Fi → grace over → FAIL-CLOSE initiated.")
         }
         t.append("verdict:    " + (fix != nil ? "TRUSTED" : "UNKNOWN → fail-closed"))
         return withZones(t)
@@ -331,24 +331,34 @@ func judgeLocation(held: HeldFix?, payload p: FeedPayload, stable: Set<String>?,
     var fix: (lat: Double, lon: Double)?
     var movedAway = false
     if var h = held {
-        movedAway = stable != nil && !h.anchor.isEmpty && !bssidOverlapOK(anchor: h.anchor, current: stable!)
-        if movedAway {
-            if h.graceUntil == nil { h.graceUntil = now + settings.graceSeconds; persist = true }   // not reset if already set
+        if !h.anchor.isEmpty {
+            // Liveness check: the rolling-window scan must VOUCH for the anchor (overlap ≥1). It fails to
+            // vouch if it shows only foreign APs (you moved) OR is empty (no Wi-Fi at all for the whole
+            // window — off / unjoined / left RF range). BOTH are positive "can't confirm I'm here" → grace
+            // → fail-closed. An empty window is real signal-loss, not a throttle blip: the agent's
+            // unthrottled associated-AP read logs ≥1 BSSID whenever you're joined, so "nothing for 30s" means
+            // the Wi-Fi is genuinely gone — we no longer blindly trust through it.
+            let vouched = stable.map { bssidOverlapOK(anchor: h.anchor, current: $0) } ?? false
+            movedAway = !vouched
+            if movedAway {
+                if h.graceUntil == nil { h.graceUntil = now + settings.graceSeconds; persist = true }   // not reset if already set
+            } else {
+                if h.graceUntil != nil { h.graceUntil = nil; persist = true }
+            }
         } else {
-            // Confirmed, or can't disprove (no fresh scan / empty anchor) → trust. We do NOT backfill an
-            // empty anchor from the current scan: after an offline move that would anchor the held (old)
-            // coordinates to the NEW place's APs and "confirm" forever there — a fail-open. An empty anchor
-            // stays empty (trusted via degradation) until a genuinely new fix re-anchors.
+            // Empty anchor (no scan captured at adoption) → nothing to check → trust (degradation). We never
+            // backfill it: after an offline move that would anchor the held (old) coords to the NEW place's
+            // APs and "confirm" forever — a fail-open. It stays empty until a genuinely new fix re-anchors.
             if h.graceUntil != nil { h.graceUntil = nil; persist = true }
         }
         held = h
         if h.trusted(now: now) {
             fix = (h.lat, h.lon)
             if movedAway, let g = h.graceUntil {
-                reason = String(format: "Wi-Fi changed — re-confirming location (%.0fs before lock)", g - now)
+                reason = String(format: "Wi-Fi changed or lost — re-checking location (%.0fs before lock)", g - now)
             }
         } else {
-            reason = "left the known Wi-Fi and no fresh fix arrived — locked"
+            reason = "left/lost the known Wi-Fi and no fresh fix arrived — locked"
         }
     }
     return LocationJudgment(held: held, persist: persist, fix: fix, reason: reason, adopted: adopted)

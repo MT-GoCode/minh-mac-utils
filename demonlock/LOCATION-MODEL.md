@@ -54,10 +54,11 @@ Apple's documented cached re-delivery and clock-skew wedges). Scans BSSIDs EAGER
 sources, never the OS cache: (1) the AP it's **associated** with (`iface.bssid()`) — re-read every
 ~2s, no scan/throttle, so the band you're on *right now* is always current; (2) a full
 `scanForNetworks` every `scanSeconds` — richer (ALL bands of ALL nearby APs at once), but macOS
-throttles it for a background app (the reason for `.regular`). The fed "current BSSIDs" = the live
-associated AP ∪ the most recent full sweep. Heartbeats a FeedPayload ~1/s. It holds nothing as truth
-and makes no decisions — a user can kill it (feed goes stale ⇒ fail-closed) but can't make it lie
-(cdhash-pinned socket, signed binary).
+throttles it for a background app (the reason for `.regular`). The fed "current BSSIDs" = the **union
+of everything seen in the last `scanWindowSeconds`** — a rolling log that ages out and is NOT cleared
+on Wi-Fi off; an **empty** union (nothing for the whole window) is reported as no-scan = signal-loss.
+Heartbeats a FeedPayload ~1/s. It holds nothing as truth and makes no decisions — a user can kill it
+(feed goes stale ⇒ fail-closed) but can't make it lie (cdhash-pinned socket, signed binary).
 
 **The enforcer (root, sole judge + sole state-holder).** Holds the one truth in root-owned
 `heldfix.json` (`HeldFix{lat,lon,fixTs,acc,anchor,graceUntil?}`), persisted so login/reboot
@@ -67,16 +68,19 @@ need nothing special and the user can't forge it. Per tick the pure `judgeLocati
    capturing the stable BSSIDs visible now as its anchor (or `[]` if no scan). A new fix REPLACES the
    record outright (fresh coords, fresh anchor snapshot, grace cleared). The anchor is then **frozen** —
    never grown afterward (growing it post-adoption let an offline move poison it with a new place's APs).
-   It is still RICH because the agent feeds the live associated AP ∪ the most recent full sweep, and a
+   It is still RICH because the agent feeds the union of BSSIDs seen in the last `scanWindowSeconds`, and a
    full sweep returns ALL radios of ALL nearby APs at once — so both BSSIDs of a dual-band router land in
    the snapshot. The strict `>` is the anti-resurrection gate — a grace-expired fix keeps its `fixTs` as a
    high-water tombstone, so the agent re-streaming it can't revive it; only a genuinely new measurement can.
-2. **Trust the held fix unless POSITIVE evidence of leaving.** "Moved" = a FRESH scan exists **and**
-   the anchor is non-empty **and** *no* anchor BSSID is in the current scan. On "moved", start
-   `graceSeconds` (persisted in the fix, not reset on reboot); a fresh fix at any point clears it.
-   Grace expired ⇒ the fix is untrusted (fail-closed) but KEPT as the high-water tombstone. A
-   stale/missing scan, or an empty anchor, can't prove you left ⇒ **TRUST** (graceful degradation):
-   requiring a scan would fail-close you at home whenever macOS throttles it (the bug that proved it).
+2. **Trust the held fix unless evidence of leaving — OR loss of signal.** With a non-empty anchor, the
+   rolling-window scan must VOUCH for it (≥1 overlap). It fails to vouch if it shows only foreign APs
+   (you moved) **or** is empty (no Wi-Fi at all for the whole window — off / unjoined / left RF range).
+   EITHER ⇒ start `graceSeconds` (persisted, not reset on reboot); a vouching scan or a fresh fix clears
+   it; expiry ⇒ untrusted (fail-closed), record KEPT as the high-water tombstone. The empty window is
+   treated as signal-loss, **not** "can't tell", because the unthrottled associated-AP read logs ≥1 BSSID
+   whenever you're joined — so "nothing for `scanWindowSeconds`" is genuine loss, and trusting through it
+   was the Wi-Fi-off bypass. Only an **empty anchor** (a fix adopted with no scan at all — rare, since a
+   Mac fix needs Wi-Fi) still degrades to **TRUST**, and is never backfilled.
 3. **Evaluate** the (lat,lon) against every zone → feed the three-valued policy.
 
 The enforcer ticks ~1s for the clock-driven inputs (countdown, `TIME_IS_ANY`, snooze, console, dead
@@ -131,14 +135,15 @@ in practice, and never a fail-open.
 
 ## Accepted residuals (honest, signed off)
 
-1. **Leaving an allowed place fully offline** stays allowed up to `graceSeconds` + the agent's
-   sweep-cache linger (~12s, while the just-left APs are still in the fed set) + countdown ≈ **110s**
-   — and only once a FRESH scan positively shows you left; a missing scan trusts the held fix
-   indefinitely (degradation). Online, an out-of-zone fix lands in tens of seconds → countdown.
-2. **Background scan is unreliable** (macOS 26 throttles `scanForNetworks` even for a foreground-ish
-   app). The **associated-AP BSSID** is the dependable anchor, so leave-detection is strongest when
-   you're joined to Wi-Fi. On Ethernet with no association and a throttled scan, the anchor is often
-   absent ⇒ location runs on CoreLocation fixes + held-fix alone (the anchor is a bonus, not a backbone).
+1. **Leaving an allowed place fully offline** (Wi-Fi off, so no scan AND no new fix) stays allowed only
+   up to the rolling window `scanWindowSeconds` (the just-left APs aging out) + `graceSeconds` + countdown
+   ≈ **130s**, then **fail-closes** — it no longer trusts indefinitely (that was the Wi-Fi-off bypass).
+   Online, an out-of-zone fix lands in tens of seconds → countdown.
+2. **`scanForNetworks` throttling is tolerated by the associated-AP floor:** while joined to Wi-Fi, the
+   unthrottled `iface.bssid()` read logs ≥1 BSSID every ~2s, so the rolling window is never empty from
+   throttling alone — only from genuine signal-loss (Wi-Fi off / unjoined / out of range), which is the
+   intended fail-closed trigger. On Ethernet-only with Wi-Fi off, the window empties ⇒ fail-closed (a
+   Wi-Fi locker needs Wi-Fi); when armed, `wifiKeepOn` forces the radio back on.
 3. **Within one router's coverage** (~100m) you aren't flagged as moved — small area.
 4. **Rural stale-single-AP fix with deceptively good accuracy** could briefly mislocate you.
 5. **A mobile AP that travels with you** (a phone hotspot you carry; a train's own router) keeps the
@@ -152,8 +157,11 @@ in practice, and never a fail-open.
 - `scanSeconds = 6` — full `scanForNetworks` (all-bands) cadence (CoreWLAN floor ~4s). The agent ALSO
   re-reads the associated AP every ~2s, so the live band is current between sweeps. A full sweep grabs
   both radios of a dual-band router at once → rich anchor snapshot + rich live check (band-steering fix).
+- `scanWindowSeconds = 30` — rolling-log window: the agent reports the union of BSSIDs seen in this span
+  (ages out, not cleared on Wi-Fi off). An empty window = positive signal-loss → grace → fail-closed.
 - `initMaxSeconds = 30` — startup grace (agent coming up OR no held fix yet).
 - `staleSeconds = 30` — TRANSPORT staleness (is the agent alive?). There is **no fix-age knob**.
 
-The anchor is a **bonus, not a backbone**: location works on CoreLocation fixes alone (degradation),
-and the BSSID anchor tightens "did I leave" whenever a live scan / associated AP is available.
+The anchor is the **liveness backbone now**: while joined, the unthrottled associated AP keeps it fed, so
+a sustained empty scan means you genuinely lost Wi-Fi → fail-closed (only an empty-at-adoption anchor, or
+an out-of-zone CoreLocation fix, falls back to fix-only judgement).

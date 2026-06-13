@@ -90,16 +90,23 @@ func runPolicyTest() {
     let j6 = judgeLocation(held: j4.held, payload: okFix(200, 0, 0), stable: awayAPs, settings: st, now: 2100)
     check("newer fix revives location",                   j6.fix != nil && j6.held?.fixTs == 200)
 
-    // GRACEFUL DEGRADATION: a fresh fix with NO scan is still adopted + trusted (macOS-26 scan
-    // is flaky; a stale/missing scan must not lock you out of an allowed spot).
+    // EMPTY-ANCHOR DEGRADATION: a fix adopted with NO scan (rare on a Mac — a fix needs Wi-Fi, which
+    // yields ≥1 BSSID) has an empty anchor; with nothing to check it's trusted (and never backfilled).
     let j7 = judgeLocation(held: nil, payload: okFix(100), stable: nil, settings: st, now: 100)
-    check("no scan at adoption → adopt + trust (degrade)", j7.held != nil && j7.fix != nil)
-    let j8 = judgeLocation(held: j1.held, payload: okFix(100), stable: nil, settings: st, now: 5000)
-    check("held fix + stale scan → trusted (not locked)",  j8.fix != nil)
-    // empty anchor is NOT backfilled — backfilling from a later scan would anchor the OLD coords
-    // to a NEW place's APs after an offline move (fail-open). It stays empty (trusted via degradation).
+    check("no scan at adoption → adopt + trust (empty anchor)", j7.held != nil && j7.fix != nil)
+    // empty anchor is NOT backfilled — would anchor OLD coords to a NEW place's APs after an offline move.
     let j9 = judgeLocation(held: j7.held, payload: okFix(100), stable: awayAPs, settings: st, now: 200)
     check("empty anchor NOT backfilled (no fail-open)",    j9.held?.anchor.isEmpty == true && j9.fix != nil)
+
+    // NO-SCAN = SIGNAL-LOSS: a NON-empty anchor with no scan (Wi-Fi off / left RF range) no longer trusts
+    // blindly — it's positive "can't confirm here" → grace → fail-closed. (The agent's 30s rolling log +
+    // unthrottled associated-AP read make an empty scan real signal-loss, not a throttle blip.)
+    let n1 = judgeLocation(held: j1.held, payload: okFix(100), stable: nil, settings: st, now: 5000)
+    check("no scan + anchor → grace starts (allowed briefly)", n1.fix != nil && n1.held?.graceUntil != nil)
+    let n2 = judgeLocation(held: n1.held, payload: okFix(100), stable: nil, settings: st, now: 5200)
+    check("sustained no scan → grace over → fail-closed",  n2.fix == nil)
+    let n3 = judgeLocation(held: j1.held, payload: okFix(100), stable: homeAPs, settings: st, now: 6000)
+    check("rolling log still vouches (overlap) → no grace", n3.fix != nil && n3.held?.graceUntil == nil)
 
     // BAND-STEERING — the at-home false-lockout. A dual-band router shows two BSSIDs (f9=2.4GHz,
     // fa=5GHz). The agent feeds (associated AP ∪ last full sweep), and a full sweep returns BOTH at
