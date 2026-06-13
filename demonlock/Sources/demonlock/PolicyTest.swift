@@ -101,6 +101,20 @@ func runPolicyTest() {
     let j9 = judgeLocation(held: j7.held, payload: okFix(100), stable: awayAPs, settings: st, now: 200)
     check("empty anchor NOT backfilled (no fail-open)",    j9.held?.anchor.isEmpty == true && j9.fix != nil)
 
+    // BAND-STEERING — the at-home false-lockout. A dual-band router shows two BSSIDs (f9=2.4GHz,
+    // fa=5GHz). The agent feeds (associated AP ∪ last full sweep), and a full sweep returns BOTH at
+    // once, so BOTH the adoption snapshot and the live scan are rich → overlap survives steering.
+    let fa = "f8:cf:c5:fe:16:fa", f9 = "f8:cf:c5:fe:16:f9"
+    // (a) rich anchor (both bands captured at adoption), Mac later reports only the band it's on:
+    let s1 = judgeLocation(held: nil,     payload: okFix(100), stable: [fa, f9], settings: st, now: 100)
+    check("band-steer: anchor caught both bands",         s1.held?.anchor.count == 2)
+    let s2 = judgeLocation(held: s1.held, payload: okFix(100), stable: [f9], settings: st, now: 1000)
+    check("band-steer: on one band → still overlaps",     s2.fix != nil && s2.held?.graceUntil == nil)
+    // (b) even a thin anchor survives because the live scan is rich (full sweep ∪ associated):
+    let s3 = judgeLocation(held: nil,     payload: okFix(100), stable: [fa], settings: st, now: 100)
+    let s4 = judgeLocation(held: s3.held, payload: okFix(100), stable: [fa, f9], settings: st, now: 1000)
+    check("band-steer: rich live scan re-overlaps thin anchor", s4.fix != nil && s4.held?.graceUntil == nil)
+
     // too-fuzzy / invalid fixes are not adopted
     check("too-fuzzy fix not adopted",   judgeLocation(held: nil, payload: okFix(100, acc: 999), stable: homeAPs, settings: st, now: 100).held == nil)
     check("invalid (neg acc) not adopted", judgeLocation(held: nil, payload: okFix(100, acc: -1), stable: homeAPs, settings: st, now: 100).held == nil)

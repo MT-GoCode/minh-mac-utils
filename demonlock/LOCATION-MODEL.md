@@ -50,21 +50,27 @@ live in the memory note `corelocation-macos-contract`.
 
 **The watcher (agent, foreground `.regular` so macOS lets it scan; shows a dock icon).** Streams
 genuine CoreLocation fixes — only those measured after launch/wake and not future-stamped (rejects
-Apple's documented cached re-delivery and clock-skew wedges). Scans BSSIDs from two LIVE sources,
-never the OS cache: (1) the AP it's **associated** with (`iface.bssid()`) — available in the
-background with no scan/throttle, the dependable anchor when joined to Wi-Fi; (2) a full
-`scanForNetworks` — richer, but macOS throttles it for a background app (the reason for `.regular`).
-Heartbeats a FeedPayload ~1/s. It holds nothing as truth and makes no decisions — a user can kill it
-(feed goes stale ⇒ fail-closed) but can't make it lie (cdhash-pinned socket, signed binary).
+Apple's documented cached re-delivery and clock-skew wedges). Scans BSSIDs EAGERLY from two LIVE
+sources, never the OS cache: (1) the AP it's **associated** with (`iface.bssid()`) — re-read every
+~2s, no scan/throttle, so the band you're on *right now* is always current; (2) a full
+`scanForNetworks` every `scanSeconds` — richer (ALL bands of ALL nearby APs at once), but macOS
+throttles it for a background app (the reason for `.regular`). The fed "current BSSIDs" = the live
+associated AP ∪ the most recent full sweep. Heartbeats a FeedPayload ~1/s. It holds nothing as truth
+and makes no decisions — a user can kill it (feed goes stale ⇒ fail-closed) but can't make it lie
+(cdhash-pinned socket, signed binary).
 
 **The enforcer (root, sole judge + sole state-holder).** Holds the one truth in root-owned
-`heldfix.json` (`HeldFix{lat,lon,fixTs,acc,anchor,graceUntil?}`), persisted so login/reboot need
-nothing special and the user can't forge it. Per tick the pure `judgeLocation()`:
+`heldfix.json` (`HeldFix{lat,lon,fixTs,acc,anchor,graceUntil?}`), persisted so login/reboot
+need nothing special and the user can't forge it. Per tick the pure `judgeLocation()`:
 
 1. **Adopt** any STRICTLY-newer valid fix (`ts > held.fixTs`; finite coords; `0 ≤ acc ≤ maxAccuracyMeters`),
-   capturing the stable BSSIDs visible now as its anchor (or `[]` if no scan). The strict `>` is the
-   anti-resurrection gate — a grace-expired fix keeps its `fixTs` as a high-water tombstone, so the
-   agent re-streaming it can't revive it; only a genuinely new measurement can.
+   capturing the stable BSSIDs visible now as its anchor (or `[]` if no scan). A new fix REPLACES the
+   record outright (fresh coords, fresh anchor snapshot, grace cleared). The anchor is then **frozen** —
+   never grown afterward (growing it post-adoption let an offline move poison it with a new place's APs).
+   It is still RICH because the agent feeds the live associated AP ∪ the most recent full sweep, and a
+   full sweep returns ALL radios of ALL nearby APs at once — so both BSSIDs of a dual-band router land in
+   the snapshot. The strict `>` is the anti-resurrection gate — a grace-expired fix keeps its `fixTs` as a
+   high-water tombstone, so the agent re-streaming it can't revive it; only a genuinely new measurement can.
 2. **Trust the held fix unless POSITIVE evidence of leaving.** "Moved" = a FRESH scan exists **and**
    the anchor is non-empty **and** *no* anchor BSSID is in the current scan. On "moved", start
    `graceSeconds` (persisted in the fix, not reset on reboot); a fresh fix at any point clears it.
@@ -93,6 +99,17 @@ background agent sparse, inconsistent scans (often just the associated AP); dema
 once you leave the ~range (~100m) of *all* anchor APs; inside a big zone the next CoreLocation fix just
 re-anchors you, so you stay allowed while routers/roaming change (online).
 
+**Dual-band / band-steering** is handled by feeding RICH scans on both ends of the check. A router
+exposes a separate BSSID per radio (`…:f9` on 2.4 GHz, `…:fa` on 5 GHz); the original lockout happened
+because the agent fed only one instantaneous BSSID, so the anchor was `{…:fa}` while the Mac had steered
+onto `…:f9` → zero overlap → false "moved". The fix: the agent feeds `associated AP ∪ most-recent full
+sweep`, and a full sweep returns **both** radios at once. So **both** the frozen anchor snapshot **and**
+every live overlap check include both bands → steering between radios can never drop overlap to zero.
+This needs a full sweep to have landed recently (≤ the agent's sweep-cache window, ~12s); with sweeps
+running every `scanSeconds` that's effectively always, and if a sweep drought ever does coincide with a
+steer, the worst case is a transient `graceSeconds` coast that the next sweep or fix clears — never a lock
+in practice, and never a fail-open.
+
 ### No requirement, no backfill (both were fail-modes)
 
 - **A fresh fix is authoritative on its own** — adopted/trusted with or without a scan.
@@ -114,7 +131,8 @@ re-anchors you, so you stay allowed while routers/roaming change (online).
 
 ## Accepted residuals (honest, signed off)
 
-1. **Leaving an allowed place fully offline** stays allowed up to `graceSeconds` (+countdown ≈ 100s)
+1. **Leaving an allowed place fully offline** stays allowed up to `graceSeconds` + the agent's
+   sweep-cache linger (~12s, while the just-left APs are still in the fed set) + countdown ≈ **110s**
    — and only once a FRESH scan positively shows you left; a missing scan trusts the held fix
    indefinitely (degradation). Online, an out-of-zone fix lands in tens of seconds → countdown.
 2. **Background scan is unreliable** (macOS 26 throttles `scanForNetworks` even for a foreground-ish
@@ -131,7 +149,9 @@ re-anchors you, so you stay allowed while routers/roaming change (online).
 
 - `graceSeconds = 90` — coast after a positive "moved" before fail-close; the offline-leave bound.
 - `maxAccuracyMeters = 150` — fix quality gate + the rural wrong-fix defense.
-- `scanSeconds = 10` — BSSID rescan cadence (CoreWLAN rate-limits ~4s; don't hammer).
+- `scanSeconds = 6` — full `scanForNetworks` (all-bands) cadence (CoreWLAN floor ~4s). The agent ALSO
+  re-reads the associated AP every ~2s, so the live band is current between sweeps. A full sweep grabs
+  both radios of a dual-band router at once → rich anchor snapshot + rich live check (band-steering fix).
 - `initMaxSeconds = 30` — startup grace (agent coming up OR no held fix yet).
 - `staleSeconds = 30` — TRANSPORT staleness (is the agent alive?). There is **no fix-age knob**.
 

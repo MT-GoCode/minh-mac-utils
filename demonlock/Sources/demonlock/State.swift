@@ -72,12 +72,18 @@ struct FeedPayload: Codable {
 ///   • set, now < it      → anchor lost, coasting (still trusted) until a newer fix or expiry.
 ///   • set, now ≥ it      → expired → NOT trusted (fail-closed), but kept as the high-water tombstone.
 /// `graceUntil` is persisted (absolute wall-clock) so a reboot can't reset the coast window.
+///
+/// The anchor is a FROZEN snapshot taken once, at adoption — it is never grown afterward (growing
+/// it post-adoption let an offline move poison it with a new place's APs). It's still RICH because
+/// the agent feeds the live associated AP ∪ the most recent full sweep, and a full sweep sees ALL
+/// radios of ALL nearby APs at once — so a dual-band router's both BSSIDs land in the snapshot and
+/// band-steering keeps overlap ≥1. See LOCATION-MODEL.md.
 struct HeldFix: Codable {
     var lat: Double
     var lon: Double
     var fixTs: Double
     var acc: Double              // horizontalAccuracy at adoption (status display)
-    var anchor: [String]         // stable BSSIDs seen at adoption; the liveness signal
+    var anchor: [String]         // stable BSSIDs seen at adoption; the liveness signal (frozen snapshot)
     var graceUntil: Double?
 
     func trusted(now: Double) -> Bool { graceUntil.map { now < $0 } ?? true }

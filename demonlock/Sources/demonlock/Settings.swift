@@ -18,7 +18,11 @@ struct Settings: Codable {
     var maxAccuracyMeters: Double      // a fix fuzzier than this is not adopted. Macs are Wi-Fi-only
                                        // (±60–100m typical), so keep generous; this also rejects the
                                        // rural single-stale-AP wrong fix (it reports poor accuracy).
-    var scanSeconds: Double            // CoreWLAN rescan cadence = leave-detection latency floor
+    var scanSeconds: Double            // full scanForNetworks cadence (CoreWLAN floor ~4s). The agent ALSO
+                                       // samples the associated-AP BSSID every ~2s between full scans, so the
+                                       // live band is always current; this is just the all-bands sweep rate.
+                                       // A full sweep sees ALL radios at once, so the anchor snapshot is rich
+                                       // (both bands of a dual-band router) → band-steering keeps overlap.
     var initMaxSeconds: Double         // agent-STARTUP transport grace: how long after session start
                                        // "agent not reporting" shows INITIALIZING instead of a countdown.
                                        // Once the feed has been fresh, an agent kill counts down at once.
@@ -28,7 +32,7 @@ struct Settings: Codable {
 
     init(pollSeconds: Double = 1.0, countdownPollSeconds: Double = 0.5, countdownSeconds: Double = 10,
          snoozeHHMM: String = "0500", staleSeconds: Double = 30, graceSeconds: Double = 90,
-         maxAccuracyMeters: Double = 150, scanSeconds: Double = 10,
+         maxAccuracyMeters: Double = 150, scanSeconds: Double = 6,
          initMaxSeconds: Double = 30, enforcedUser: String = "", wifiKeepOn: Bool = true,
          wifiDevice: String = "en0") {
         self.pollSeconds = pollSeconds; self.countdownPollSeconds = countdownPollSeconds

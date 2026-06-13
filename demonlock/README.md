@@ -105,6 +105,28 @@ policy. **BSSID** (AP hardware MAC) is used over the SSID name because names are
 
 (`/Library/Application Support/Demonlock/` is `755 root:wheel`.)
 
+### Moving your zones (and policy) to a new machine
+
+Everything you author lives in `/Library/Application Support/Demonlock/`. The two files worth
+carrying over are **`zones.json`** (your named circles/polygons) and **`policy.txt`** (the rule
+string). They're plain text, root-owned `644` — readable by anyone, writable only by root. To
+clone them onto a freshly-installed Mac:
+
+```bash
+# on the OLD machine — grab the files (no sudo needed to read)
+cp "/Library/Application Support/Demonlock/zones.json"  ~/Desktop/
+cp "/Library/Application Support/Demonlock/policy.txt"  ~/Desktop/
+
+# on the NEW machine — after `sudo ./install.sh` has created the support dir:
+sudo cp ~/Desktop/zones.json "/Library/Application Support/Demonlock/zones.json"
+sudo demonlock setpolicy "$(cat ~/Desktop/policy.txt)"   # validates names + dry-runs before it lands
+```
+
+`sudo cp` is required on the destination because the support dir is root-writable only (that's the
+lock). Use `setpolicy` rather than copying `policy.txt` directly so it re-checks every zone name
+exists and dry-runs the tree first. The daemon picks up the new `zones.json` on its next tick — no
+reload needed.
+
 ## OS interactions & enforcement
 
 - **Poll loop.** `enforcerd` ticks immediately, then every `pollSeconds` (1s), tightening to

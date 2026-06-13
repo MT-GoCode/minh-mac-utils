@@ -9,7 +9,9 @@ import Foundation
 ///   1. Stream GENUINE CoreLocation fixes: accept a delivery only if it was measured after
 ///      our launch/wake epoch (Apple documentedly re-delivers a CACHED fix on (re)start —
 ///      the original "ALLOWED at UCLA" fail-open) and is a valid measurement.
-///   2. Scan nearby BSSIDs (~every scanSeconds) — the enforcer's liveness anchor + policy input.
+///   2. Scan nearby BSSIDs eagerly (associated AP every ~2s + full sweep every scanSeconds, fed as
+///      their union) — a full sweep returns both bands of a dual-band router at once, so the
+///      enforcer's anchor snapshot is rich (band-steering survives) + the policy input.
 ///   3. Heartbeat a FeedPayload ~1/s — packet arrival is the enforcer's "agent alive" signal.
 /// No held-truth logic here, no expiry, no overlap decisions: a user can kill this process
 /// (feed goes stale ⇒ fail-closed) but can't make it lie (cdhash-pinned socket, signed binary).
@@ -22,8 +24,13 @@ final class SensorFeeder: NSObject, CLLocationManagerDelegate {
 
     private var lastFix: CLLocation?       // newest ACCEPTED fix (measured after acquireEpoch) — held, no expiry
     private var acquireEpoch = nowEpoch()  // when we last (re)started acquiring: launch or wake
-    private var lastBSSIDs: [String]?      // nil ⇒ no usable scan (redacted/unauthorized) ⇒ unknown
-    private var lastScanTs: Double?
+    private var assoc: String?             // the ASSOCIATED AP's BSSID — re-read every ~2s (unthrottled, the
+                                           // live band you're on right now); nil on Ethernet/unassociated
+    private var assocTs: Double = 0        // when `assoc` was last read (for honest scan freshness)
+    private var fullScan: Set<String> = [] // last full scanForNetworks (ALL bands of ALL nearby APs at once)
+    private var fullScanTs: Double = 0     // when that full scan landed
+    private var radioOn = false            // Wi-Fi power; radio off ⇒ we report no scan (unknown)
+    private let assocSampleSeconds = 2.0   // associated-AP re-read cadence (the eager live signal)
     private let settings: Settings
 
     init(settings: Settings) { self.settings = settings }
@@ -105,39 +112,43 @@ final class SensorFeeder: NSObject, CLLocationManagerDelegate {
 
     // MARK: Wi-Fi scan
 
+    /// Scan EAGERLY: re-read the associated AP every ~2s (unthrottled, so the live band is always
+    /// current), and run a full all-bands scanForNetworks every scanSeconds (CoreWLAN's ~4s floor).
+    /// A full sweep returns BOTH radios of a dual-band router at once; feed() unions it with the live
+    /// associated AP, so the set is rich (both bands) — that richness is the band-steering fix (the
+    /// anchor snapshot and every live overlap check both see all bands). On a full-scan tick the ~4s
+    /// blocking scan stretches that one cycle, so the associated re-read is ~6s that tick, ~2s otherwise.
     private func startScanLoop() {
         scanQueue.async { [weak self] in
             guard let self else { return }
+            var lastFull = 0.0
             while true {
-                self.scanOnce()
-                Thread.sleep(forTimeInterval: max(self.settings.scanSeconds, 4))
+                let doFull = nowEpoch() - lastFull >= self.settings.scanSeconds
+                self.sampleWifi(full: doFull)
+                if doFull { lastFull = nowEpoch() }
+                Thread.sleep(forTimeInterval: self.assocSampleSeconds)
             }
         }
     }
 
-    private func scanOnce() {
+    private func sampleWifi(full: Bool) {
         // ALL CoreWLAN access happens here on scanQueue — the wifi client/interface is not
-        // thread-safe, so feed() must never touch it.
-        let iface = wifi.interface()
-        let on = iface?.powerOn() ?? false
-        if !on { lock.lock(); lastBSSIDs = nil; lock.unlock() }
-        guard on, let iface else { return }                              // radio off ⇒ no usable scan
-        // Two BSSID sources, both LIVE (never the OS cache):
-        //   1. the AP we're ASSOCIATED with — available in the background with no scan/throttle
-        //      (the reliable anchor when joined to Wi-Fi; nil on Ethernet/unassociated);
-        //   2. a full scanForNetworks — richer, but macOS throttles it unless we're foreground.
-        var macs: [String] = []
-        if let assoc = iface.bssid()?.lowercased(), !assoc.isEmpty { macs.append(assoc) }
-        if let nets = try? iface.scanForNetworks(withName: nil) {
-            macs += nets.compactMap { $0.bssid?.lowercased() }.filter { !$0.isEmpty }
+        // thread-safe, so feed() must never touch it (it reads the cached fields below).
+        guard let iface = wifi.interface(), iface.powerOn() else {
+            lock.lock(); radioOn = false; assoc = nil; assocTs = 0; fullScan = []; fullScanTs = 0; lock.unlock()
+            return                                                       // radio off ⇒ no scan, clear all of it
         }
+        let a = iface.bssid()?.lowercased()                              // associated AP — unthrottled
+        var scanned: Set<String>?
+        if full, let nets = try? iface.scanForNetworks(withName: nil) {  // ~4s, throttled; grabs ALL bands at once
+            scanned = Set(nets.compactMap { $0.bssid?.lowercased() }.filter { !$0.isEmpty })
+        }
+        let now = nowEpoch()
         lock.lock()
-        if macs.isEmpty {
-            lastBSSIDs = nil                       // visible-but-redacted or none ⇒ unknown
-        } else {
-            lastBSSIDs = Array(Set(macs))
-            lastScanTs = nowEpoch()
-        }
+        radioOn = true
+        assoc = (a?.isEmpty == false) ? a : nil
+        if assoc != nil { assocTs = now }
+        if let scanned { fullScan = scanned; fullScanTs = now }
         lock.unlock()
     }
 
@@ -168,19 +179,32 @@ final class SensorFeeder: NSObject, CLLocationManagerDelegate {
     private func feed() {
         let loc = currentFix()
         let state = locState(loc)
+        // Current BSSIDs = the live associated AP ∪ the most recent full scan, the latter kept valid for
+        // a couple sweep cycles so the set stays rich (both bands) between the ~6s sweeps. Radio off, or
+        // nothing visible ⇒ nil (unknown). scanTs is the freshest INCLUDED component's real observation
+        // time (not "now"), so the enforcer's freshness gate sees the true age of what it's judging.
+        let now = nowEpoch()
         lock.lock()
-        let macs = lastBSSIDs; let scanTs = lastScanTs
+        let on = radioOn
+        let a = assoc; let aTs = assocTs
+        let fullValid = (now - fullScanTs) < max(settings.scanSeconds * 2, 12)
+        let full = fullValid ? fullScan : []
+        let fTs = fullScanTs
         lock.unlock()
+        var macs = full
+        var freshest = fullValid ? fTs : 0
+        if let a { macs.insert(a); freshest = max(freshest, aTs) }
+        let bssids: [String]? = (on && !macs.isEmpty) ? Array(macs) : nil
 
         let payload = FeedPayload(
-            ts: nowEpoch(),
+            ts: now,
             lat: loc?.coordinate.latitude,
             lon: loc?.coordinate.longitude,
             acc: loc.map { $0.horizontalAccuracy },   // already validated ≥ 0 at acceptance
             fixTs: loc.map { $0.timestamp.timeIntervalSince1970 },
-            bssids: macs,
+            bssids: bssids,
             locState: state,
-            scanTs: scanTs
+            scanTs: bssids == nil ? nil : freshest
         )
         sender.send(payload)
     }

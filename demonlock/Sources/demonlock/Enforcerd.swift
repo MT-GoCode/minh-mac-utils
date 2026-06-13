@@ -218,11 +218,11 @@ final class Enforcer {
             : "last scan:  none recent — macOS isn't letting the background agent scan")
 
         if adopted {
-            t.append("this tick:  NEW fix returned → it is valid.")
+            t.append("this tick:  NEW fix → valid · anchored to \(held.anchor.count) nearby BSSIDs.")
         } else if let stable {
             let shared = held.anchor.filter(stable.contains).count
             if held.anchor.isEmpty {
-                t.append("this tick:  no new fix · capturing current BSSIDs as the anchor.")
+                t.append("this tick:  no new fix · last fix had no scan (empty anchor) → can't check APs → trusting last fix.")
             } else if bssidOverlapOK(anchor: held.anchor, current: stable) {
                 t.append("this tick:  no new fix → BSSIDs overlap last-fix set (\(shared)/\(held.anchor.count)) → last fix still valid.")
             } else if let g = held.graceUntil, now < g {
@@ -318,6 +318,7 @@ func judgeLocation(held: HeldFix?, payload p: FeedPayload, stable: Set<String>?,
             if held == nil || abs(lat - held!.lat) > 2.5e-4 || abs(lon - held!.lon) > 2.5e-4 || anchor != held!.anchor {
                 persist = true
             }
+            // A new fix REPLACES the record outright (fresh coords, fresh anchor snapshot, grace cleared).
             held = HeldFix(lat: lat, lon: lon, fixTs: ts, acc: p.acc!, anchor: anchor, graceUntil: nil)
             adopted = true
         }
@@ -328,15 +329,16 @@ func judgeLocation(held: HeldFix?, payload p: FeedPayload, stable: Set<String>?,
     //     prove you left, so we trust the fix (degrading to the plain held-fix model — the Wi-Fi
     //     anchor tightens "did I leave" when the scan works, but is never required). Never deleted.
     var fix: (lat: Double, lon: Double)?
+    var movedAway = false
     if var h = held {
-        let movedAway = stable != nil && !h.anchor.isEmpty && !bssidOverlapOK(anchor: h.anchor, current: stable!)
+        movedAway = stable != nil && !h.anchor.isEmpty && !bssidOverlapOK(anchor: h.anchor, current: stable!)
         if movedAway {
             if h.graceUntil == nil { h.graceUntil = now + settings.graceSeconds; persist = true }   // not reset if already set
         } else {
-            // Confirmed, or can't disprove (no fresh scan / empty anchor) → trust. We do NOT backfill
-            // an empty anchor from the current scan: after an offline move that would anchor the held
-            // (old) coordinates to the NEW place's APs and "confirm" forever there — a fail-open. An
-            // empty anchor stays empty (trusted via degradation) until a genuinely new fix re-anchors.
+            // Confirmed, or can't disprove (no fresh scan / empty anchor) → trust. We do NOT backfill an
+            // empty anchor from the current scan: after an offline move that would anchor the held (old)
+            // coordinates to the NEW place's APs and "confirm" forever there — a fail-open. An empty anchor
+            // stays empty (trusted via degradation) until a genuinely new fix re-anchors.
             if h.graceUntil != nil { h.graceUntil = nil; persist = true }
         }
         held = h
