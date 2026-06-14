@@ -1,31 +1,40 @@
 import Foundation
 
-/// The root enforcer daemon — sole judge AND sole state-holder. Implements the per-tick
-/// watcher logic of LOCATION-MODEL.md: a NEW fix is adopted (with the stable BSSIDs visible
-/// at that moment as its "anchor") and evaluated; with no new fix, the held fix stays valid
-/// exactly as long as enough anchor APs persist in the current scan — never judged by age
-/// (stationary silence is CoreLocation's "unchanged"). When the anchor stops matching, a
-/// bounded GRACE-PERIOD-LOCATION awaits a fresh fix; expiry kills the held fix ⇒ fail-closed.
-/// The held fix persists root-owned across reboot/sleep, so login/wake need nothing special —
-/// and the user can't forge it (root file; cdhash-pinned feed; signed agent).
-/// Ticks ~1s because time is an input (countdown, TIME_IS_ANY, snooze, console, dead-agent);
-/// at countdown zero, armed ⇒ `launchctl bootout gui/<uid>`. Countdown cancels the instant a
-/// tick allows, so transients self-heal.
+/// The root enforcer daemon — sole judge AND sole state-holder. ONE question per tick: is the user
+/// PROVABLY in policy right now? Confident YES → allow; anything else (out of policy, or can't tell)
+/// → 10 s countdown → LOCKED. Fail-closed by default; there are no open-ended reprieves.
+///
+/// Location truth is the held fix (persisted root-owned) with ONE confidence timer (`confirmedUntil`):
+/// a new fix or the anchor still overlapping the live scan CONFIRMS it (pushes the timer); anything
+/// that doesn't confirm — Wi-Fi off, anchor mismatch, agent dead, agent starting, just-woke — lets it
+/// run out → STALE → location unknown → fail-closed. One timer, every "no signal" case coasts the same.
+///
+/// LOCKED enforcement = root force-kills the user's GUI apps EXCEPT the agent (so the sensor survives and
+/// recovery is detected instantly); if the agent itself is dead, `killall WindowServer` (nuclear, rate-
+/// limited so the agent can relaunch). sshd/tmux survive → you can SSH in and `sudo demonlock disarm`.
 final class Enforcer {
     private let server = SecureFeedServer()
     private var settings = Settings.load()
 
-    private var sessionUID: uid_t?       // console session tracking (standby + countdown reset)
-    private var everFeedFresh = false    // transport ever up this session? gates the startup grace
-    private var sessionStart = Date()
-    private var countdownDeadline: Date?
+    private var sessionUID: uid_t?          // console session tracking (standby + countdown reset)
+    private var countdownDeadline: Date?    // set on entering a block; nil while allowed
+    private var nextNuclear: Date?          // rate-limit for the nuclear (agent-dead) WindowServer kill
 
     // The one location truth (persisted root-owned; survives restarts — login "just works").
-    // Grace lives INSIDE it (held.graceUntil), so it survives restarts too.
     private var held: HeldFix? = HeldFixStore.read()
+    private var lastHeldPersist = Date.distantPast   // throttle for heartbeat-persisting confirmedUntil
+    private lazy var bonjourName: String? = localBonjourName()   // stable .local SSH target (cached)
+
+    private static let feedFreshSeconds = 5.0        // no packet within this ⇒ agent considered dead
+    private static let nuclearRelockSeconds = 15.0   // WS-kill cadence when the agent is dead: long enough for
+                                                     // KeepAlive to relaunch the agent + report (~10s), short
+                                                     // enough that kill-looping the agent doesn't buy free GUI
+    private static let heldPersistSeconds = 30.0     // re-persist a confirmed fix at least this often, so an
+                                                     // enforcer restart reads a still-LIVE confirmedUntil (not a
+                                                     // stale one written only on the last material location change)
 
     func run() {
-        if geteuid() != 0 { log("WARNING: not running as root — bootout will fail") }
+        if geteuid() != 0 { log("WARNING: not running as root — the GUI lockout (kill) will fail") }
         log("enforcerd starting (uid \(getuid()))")
         server.start()
         while true {
@@ -43,7 +52,7 @@ final class Enforcer {
         let cdpoll = settings.countdownPollSeconds
         let armed = ArmStore.isArmed()
 
-        // Only act for the configured user's live console session.
+        // STANDBY: only enforce the configured user's live console session.
         guard let consoleUID = consoleUser() else {
             resetSession(nil)
             publish(phase: "standby", verdict: nil, reason: "no user logged in", now: now, armed: armed)
@@ -59,10 +68,10 @@ final class Enforcer {
 
         if armed && settings.wifiKeepOn { Wifi.ensureOn(settings.wifiDevice) }
 
-        // Snooze: force-allow until the snooze time, then auto-clear.
+        // SNOOZED: force-allow until the snooze time, then auto-clear.
         if let snooze = SnoozeStore.until() {
             if now < snooze {
-                countdownDeadline = nil
+                clearCountdown()
                 publish(phase: "snoozed", verdict: nil, reason: "snoozed until \(timeStr(snooze))",
                         now: now, armed: armed, snoozeUntil: snooze)
                 return poll
@@ -70,46 +79,55 @@ final class Enforcer {
             try? SnoozeStore.set(nil)
         }
 
-        // Build inputs from the trusted feed (availability, not perms, decides unknown).
-        let feed = server.latest()
-        let fresh = feed.map { now.timeIntervalSince($0.at) < settings.staleSeconds } ?? false
+        // Process the agent feed ONLY if it's reporting right now (recent packet). A stale packet (agent
+        // dead) is NOT processed — so it can't confirm the held fix; confirmedUntil just coasts → lock.
         let nowSec = now.timeIntervalSince1970
-        var fix: (lat: Double, lon: Double)?
+        let feed = server.latest()
+        let agentLive = feed.map { now.timeIntervalSince($0.at) < Self.feedFreshSeconds } ?? false
         var bssids: Set<String>?
-        var stableScan: Set<String>?     // kept for the decision-map display
-        var scanAgeSec: Double?          // how old the live scan is (display)
+        var stableScan: Set<String>?
+        var scanAgeSec: Double?
         var adoptedThisTick = false
-        var health = Health()
-        if let (p, _) = feed {
-            if fresh { everFeedFresh = true }
-            health.agentFeedFresh = fresh
-            health.locState = p.locState
-            health.needsPermAsk = ["denied", "restricted", "notDetermined", "reduced"].contains(p.locState)
-            if fresh {
-                // Fresh stable scan = the OPTIONAL "did I leave" check. Scans expire (the loop re-runs
-                // every scanSeconds). A stale/missing scan does NOT lock you — judgeLocation only locks
-                // on a fresh scan that positively contradicts the anchor (see (2) there).
-                var stable: Set<String>?
-                if let b = p.bssids, !b.isEmpty, let st = p.scanTs {
-                    let scanAge = nowSec - st
-                    // Backstop only — the agent already prunes to scanWindowSeconds; allow delivery slack so a
-                    // just-in-window union isn't wrongly rejected (a rejected scan now reads as signal-loss).
-                    if scanAge >= 0 && scanAge < settings.scanWindowSeconds + 10 {
-                        scanAgeSec = scanAge
-                        bssids = Set(b.map { $0.lowercased() })        // policy input (FOUND_IN_NEARBY_BSSID)
-                        stable = bssids!.filter(isStableBSSID)         // liveness anchor signal
-                    }
+        var confirmedThisTick = false
+        var guiKillList: [Int32] = []
+        var locState = "unknown"
+        var locReason: String?
+        var needsPermAsk = false
+        if let (p, _) = feed, agentLive {
+            guiKillList = p.guiPids
+            locState = p.locState
+            needsPermAsk = ["denied", "restricted", "notDetermined", "reduced"].contains(p.locState)
+            var stable: Set<String>?
+            if let b = p.bssids, !b.isEmpty, let st = p.scanTs {
+                let scanAge = nowSec - st
+                // Backstop only — the agent already prunes to scanWindowSeconds; allow delivery slack.
+                if scanAge >= 0 && scanAge < settings.scanWindowSeconds + 10 {
+                    scanAgeSec = scanAge
+                    bssids = Set(b.map { $0.lowercased() })        // policy input (FOUND_IN_NEARBY_BSSID)
+                    stable = bssids!.filter(isStableBSSID)         // liveness anchor signal
                 }
-                stableScan = stable
-
-                let j = judgeLocation(held: held, payload: p, stable: stable, settings: settings, now: nowSec)
-                held = j.held
-                adoptedThisTick = j.adopted
-                if j.persist, let h = held { HeldFixStore.write(h) }
-                fix = j.fix
-                health.fixReason = j.reason
+            }
+            stableScan = stable
+            let j = judgeLocation(held: held, payload: p, stable: stable, settings: settings, now: nowSec)
+            held = j.held
+            adoptedThisTick = j.adopted
+            confirmedThisTick = j.confirmed
+            locReason = j.reason
+            // Persist on a material change (coords/anchor) AND as a heartbeat at least every
+            // heldPersistSeconds while merely confirming — otherwise the in-memory confirmedUntil bumps
+            // never reach disk, and an enforcer restart would read a stale (expired) timer and falsely
+            // lock you while you sat still. The heartbeat keeps the on-disk timer within ~30s of live.
+            if let h = held, j.persist || (j.confirmed && now.timeIntervalSince(lastHeldPersist) >= Self.heldPersistSeconds) {
+                HeldFixStore.write(h); lastHeldPersist = now
             }
         }
+        // else: agent not reporting → no confirmation → held.confirmedUntil coasts → eventually STALE.
+
+        // The location truth: a LIVE held fix, or nil (unknown → fail-closed).
+        let fix: (lat: Double, lon: Double)? = {
+            guard let h = held, h.live(now: nowSec) else { return nil }
+            return (h.lat, h.lon)
+        }()
 
         // Evaluate the policy (three-valued).
         let zones = ZoneStore.load()
@@ -128,59 +146,70 @@ final class Enforcer {
 
         let inside = fix.map { ZoneStore.containing(lat: $0.lat, lon: $0.lon, zones: zones) } ?? []
         let policyStr = policyText ?? ""
-        health.locationTrail = locationTrail(health, held: held, fix: fix, stable: stableScan,
-                                             scanAge: scanAgeSec, inside: inside, adopted: adoptedThisTick, now: nowSec)
+        let ssh = sshHint(consoleUID: consoleUID)
+        var health = Health()
+        health.agentFeedFresh = agentLive
+        health.locState = locState
+        health.needsPermAsk = needsPermAsk
+        health.fixReason = locReason
+        health.locationTrail = locationTrail(agentLive: agentLive, locState: locState, held: held, fix: fix,
+                                             stable: stableScan, scanAge: scanAgeSec, adopted: adoptedThisTick,
+                                             confirmed: confirmedThisTick, inside: inside, now: nowSec)
 
         // Single block path — out-of-policy and can't-determine both arrive here.
         func enterBlock(_ reason: String) -> Double {
             if countdownDeadline == nil { countdownDeadline = now.addingTimeInterval(settings.countdownSeconds) }
-            publish(phase: "countdown", verdict: "block", reason: reason, now: now, armed: armed,
-                    deadline: countdownDeadline, tree: tree, inside: inside, policy: policyStr, health: health)
-            if let dl = countdownDeadline, now >= dl, armed {
-                log("countdown elapsed — bootout gui/\(consoleUID). reason: \(reason)")
-                logout(consoleUID)
+            let elapsed = countdownDeadline.map { now >= $0 } ?? false
+            if elapsed, armed {
+                lockOut(agentLive: agentLive, guiPids: guiKillList, now: now)
+            } else {
+                nextNuclear = nil          // still warning; not locked yet
             }
+            publish(phase: elapsed ? "locked" : "countdown", verdict: "block", reason: reason, now: now,
+                    armed: armed, deadline: countdownDeadline, tree: tree, inside: inside, policy: policyStr,
+                    ssh: ssh, health: health)
             return cdpoll
         }
 
         switch result {
         case .t:
-            countdownDeadline = nil
+            clearCountdown()
             publish(phase: "monitoring", verdict: "allow", reason: "in policy", now: now, armed: armed,
-                    tree: tree, inside: inside, policy: policyStr, health: health)
+                    tree: tree, inside: inside, policy: policyStr, ssh: ssh, health: health)
             return poll
-
         case .f:
             return enterBlock(staticReason.isEmpty ? "out of policy" : staticReason)
-
         case .unknown:
-            // Startup transport grace ONLY: at session start the agent process needs a few seconds
-            // to launch and connect — show INITIALIZING instead of a countdown, bounded by
-            // initMaxSeconds and only until the feed has been fresh once. After that, every
-            // indeterminate verdict (agent killed, no held fix, grace expired) counts down.
-            // INITIALIZING (no countdown) while we're still warming up: either the agent process
-            // isn't reporting yet (!everFeedFresh) OR no location truth exists yet (held == nil, e.g.
-            // first-ever run before CoreLocation's first fix lands — which can lag 10–30s on a Wi-Fi
-            // Mac). Bounded by initMaxSeconds; once a held fix exists it drives the verdict directly.
-            if (!everFeedFresh || held == nil), now.timeIntervalSince(sessionStart) < settings.initMaxSeconds {
-                countdownDeadline = nil
-                publish(phase: "initializing", verdict: nil, reason: "starting up — \(unknownReason(health))",
-                        now: now, armed: armed, tree: tree, inside: inside, policy: policyStr, health: health)
-                return poll
-            }
             return enterBlock(staticReason.isEmpty ? unknownReason(health) : staticReason)
+        }
+    }
+
+    // MARK: enforcement
+
+    /// LOCKED action. Agent alive → SIGKILL the user's GUI apps it reported (it excluded itself, so the
+    /// sensor survives → instant recovery). Agent dead → nuclear `killall WindowServer` (also relaunches
+    /// the agent via KeepAlive), rate-limited so it gets a window to come back and report.
+    private func lockOut(agentLive: Bool, guiPids: [Int32], now: Date) {
+        if agentLive {
+            for pid in guiPids where pid > 1 { kill(pid, SIGKILL) }
+            nextNuclear = nil
+        } else if nextNuclear == nil || now >= nextNuclear! {
+            log("LOCKED + agent not reporting → killall WindowServer (nuclear; also relaunches the agent)")
+            Proc.run("/usr/bin/killall", ["WindowServer"])
+            nextNuclear = now.addingTimeInterval(Self.nuclearRelockSeconds)
         }
     }
 
     // MARK: helpers
 
+    private func clearCountdown() { countdownDeadline = nil; nextNuclear = nil }
+
     private func resetSession(_ uid: uid_t?) {
-        // New console session: reset the countdown and the startup grace. Drop the previous
-        // session's last feed packet so a fast logout→login can't inherit it as "fresh" and
-        // forfeit the new agent's startup grace. The held fix is KEPT — location doesn't change
-        // because a different user logged in.
-        sessionUID = uid; countdownDeadline = nil
-        sessionStart = Date(); everFeedFresh = false
+        // New console session: reset the countdown. Drop the previous session's last feed packet so a
+        // fast logout→login can't inherit it as "fresh". The held fix is KEPT — it persists across logins
+        // and is judged on its own confidence timer (no per-login reprieve, so no oscillation).
+        sessionUID = uid
+        clearCountdown()
         server.clear()
     }
 
@@ -190,48 +219,69 @@ final class Enforcer {
         return st.st_uid == 0 ? nil : st.st_uid
     }
 
-    private func logout(_ uid: uid_t) {
-        Proc.run("/bin/launchctl", ["bootout", "gui/\(uid)"])
+    private func userName(_ uid: uid_t) -> String? {
+        guard let pw = getpwuid(uid) else { return nil }
+        return String(cString: pw.pointee.pw_name)
+    }
+
+    /// "ssh minh@192.168.1.42 · minh@minhs-mac.local" — shown so you can SSH in (sshd/tmux survive a
+    /// lockout) and `sudo demonlock disarm`. IP recomputed each tick (cheap); .local name cached.
+    private func sshHint(consoleUID: uid_t) -> String? {
+        let user = userName(consoleUID) ?? settings.enforcedUser
+        var targets: [String] = []
+        if let ip = localIPv4s().first { targets.append(ip) }
+        if let b = bonjourName { targets.append(b) }
+        guard !targets.isEmpty, !user.isEmpty else { return nil }
+        return "ssh " + targets.map { "\(user)@\($0)" }.joined(separator: "  ·  ")
     }
 
     private static let fixClock: DateFormatter = { let f = DateFormatter(); f.dateFormat = "h:mm:ss a · MMM d"; return f }()
 
-    /// The per-tick decision trace, so status/UI always show exactly WHY location is what it is —
-    /// last fix + which branch this tick took (new fix / anchor match / anchor mismatch→grace /
-    /// grace over / scan unavailable→trust). No surprises.
-    private func locationTrail(_ h: Health, held: HeldFix?, fix: (lat: Double, lon: Double)?,
-                              stable: Set<String>?, scanAge: Double?, inside: [String], adopted: Bool, now: Double) -> [String] {
+    /// The per-tick decision trace, so status/UI always show exactly WHY location is what it is — last fix
+    /// + which branch this tick took (new fix / anchor overlap → confirmed / coasting / expired → lock).
+    private func locationTrail(agentLive: Bool, locState: String, held: HeldFix?, fix: (lat: Double, lon: Double)?,
+                               stable: Set<String>?, scanAge: Double?, adopted: Bool, confirmed: Bool,
+                               inside: [String], now: Double) -> [String] {
         func withZones(_ lines: [String]) -> [String] {
             lines + ["zones:      " + (inside.isEmpty ? "[]" : "[" + inside.joined(separator: ", ") + "]")]
         }
-        if !h.agentFeedFresh { return withZones(["agent NOT reporting → fail-closed"]) }
-        switch h.locState {
-        case "reduced": return withZones(["Precise Location is OFF (approximate only) → run: demonlock perm-ask"])
-        case "denied", "restricted", "notDetermined": return withZones(["Location permission OFF → run: demonlock perm-ask"])
-        default: break
+        guard let held else {
+            return withZones([agentLive ? "waiting for the first location fix → fail-closed"
+                                        : "agent NOT reporting & no fix yet → fail-closed"])
         }
-        guard let held else { return withZones(["no CoreLocation fix yet → fail-closed"]) }
+        if agentLive {
+            switch locState {
+            case "reduced": return withZones(["Precise Location is OFF (approximate only) → run: demonlock perm-ask"])
+            case "denied", "restricted", "notDetermined": return withZones(["Location permission OFF → run: demonlock perm-ask"])
+            default: break
+            }
+        }
 
         let when = Self.fixClock.string(from: Date(timeIntervalSince1970: held.fixTs))
         let ann = held.anchor.isEmpty ? "no BSSIDs annotated yet" : "annotated with \(held.anchor.count) BSSIDs"
         var t = [String(format: "last fix:   %@  ·  %.5f, %.5f  ·  ±%.0fm  ·  %@", when, held.lat, held.lon, held.acc, ann)]
-        t.append(stable != nil && scanAge != nil
-            ? "last scan:  \(Int(scanAge!.rounded()))s ago · \(stable!.count) BSSIDs (live)"
-            : "last scan:  none recent — macOS isn't letting the background agent scan")
-
-        if adopted {
-            t.append("this tick:  NEW fix → valid · anchored to \(held.anchor.count) nearby BSSIDs.")
-        } else if held.anchor.isEmpty {
-            t.append("this tick:  no new fix · last fix had no scan (empty anchor) → can't check APs → trusting last fix.")
-        } else if let stable, bssidOverlapOK(anchor: held.anchor, current: stable) {
-            let shared = held.anchor.filter(stable.contains).count
-            t.append("this tick:  no new fix → BSSIDs overlap last-fix set (\(shared)/\(held.anchor.count)) → last fix still valid.")
-        } else if let g = held.graceUntil, now < g {
-            let why = stable == nil ? "NO Wi-Fi signal at all (off / left range)"
-                                    : "BSSIDs do NOT overlap (0/\(held.anchor.count))"
-            t.append("this tick:  no new fix → \(why) → may have left → grace, \(Int((g-now).rounded()))s remaining.")
+        if !agentLive {
+            t.append("last scan:  agent NOT reporting")
+        } else if let stable, let scanAge {
+            t.append("last scan:  \(Int(scanAge.rounded()))s ago · \(stable.count) BSSIDs (live)")
         } else {
-            t.append("this tick:  no new fix → lost the known Wi-Fi → grace over → FAIL-CLOSE initiated.")
+            t.append("last scan:  none recent")
+        }
+
+        let left = max(0, Int((held.confirmedUntil - now).rounded()))
+        if adopted {
+            t.append("this tick:  NEW fix → confirmed · valid \(Int(settings.graceSeconds))s")
+        } else if confirmed, let stable {
+            let shared = held.anchor.filter(stable.contains).count
+            t.append("this tick:  anchor overlaps live scan (\(shared)/\(held.anchor.count)) → confirmed · \(left)s left")
+        } else {
+            let why = !agentLive ? "agent not reporting"
+                    : (held.anchor.isEmpty ? "last fix had no scan (empty anchor)"
+                    : (stable == nil ? "no Wi-Fi signal at all (off / left range)"
+                    : "BSSIDs do NOT overlap (0/\(held.anchor.count))"))
+            t.append(held.live(now: now)
+                ? "this tick:  \(why) → coasting, \(left)s of confidence left"
+                : "this tick:  \(why) → confidence expired → FAIL-CLOSE")
         }
         t.append("verdict:    " + (fix != nil ? "TRUSTED" : "UNKNOWN → fail-closed"))
         return withZones(t)
@@ -239,7 +289,7 @@ final class Enforcer {
 
     private func unknownReason(_ h: Health) -> String {
         if !h.agentFeedFresh { return "agent not reporting (is it running?)" }
-        if let r = h.fixReason { return r }   // a held-fix reason (grace / left-the-Wi-Fi / too-fuzzy) wins
+        if let r = h.fixReason { return r }
         switch h.locState {
         case "denied", "restricted": return "Location permission is off"
         case "notDetermined": return "Location permission not granted yet"
@@ -259,7 +309,7 @@ final class Enforcer {
     private func publish(phase: String, verdict: String?, reason: String, now: Date,
                          armed: Bool, snoozeUntil: Date? = nil, deadline: Date? = nil,
                          tree: EvalNode? = nil, inside: [String] = [], policy: String = "",
-                         health: Health = Health()) {
+                         ssh: String? = nil, health: Health = Health()) {
         StateStore.write(StateSnapshot(
             updatedEpoch: nowEpoch(),
             lastCheckEpoch: now.timeIntervalSince1970,
@@ -275,6 +325,7 @@ final class Enforcer {
             policyString: policy,
             tree: tree,
             insideZones: inside,
+            sshAddr: ssh,
             health: health))
     }
 }
@@ -282,28 +333,28 @@ final class Enforcer {
 // MARK: - Location state machine (pure — the security-critical core, isolated for testing)
 
 struct LocationJudgment {
-    var held: HeldFix?                       // updated record (adoption / grace), to be persisted iff `persist`
-    var persist: Bool                        // held changed materially → write it to disk
-    var fix: (lat: Double, lon: Double)?     // point to evaluate, or nil ⇒ location unknown ⇒ fail-closed
-    var reason: String?                      // why location isn't driving an allow (status/UI)
-    var adopted = false                      // a NEW fix was adopted this tick (for the decision trace)
+    var held: HeldFix?      // updated record (adoption / confirmation), to be persisted iff `persist`
+    var persist: Bool       // held changed materially (coords/anchor) → write it to disk
+    var adopted: Bool       // a NEW fix was adopted this tick
+    var confirmed: Bool     // the held fix was positively confirmed this tick (new fix OR anchor overlap)
+    var reason: String?     // why location isn't confirmed (status/UI)
 }
 
-/// One tick of the held-fix/anchor/grace state machine (LOCATION-MODEL.md). Pure: same inputs →
-/// same outputs, no I/O, no clock — so every transition is unit-tested (the resurrection fail-open
-/// was an untested transition). `stable` is the current fresh stable-BSSID scan, nil if none.
+/// One tick of the held-fix / anchor / confidence state machine (MODEL.md). Pure: same inputs → same
+/// outputs, no I/O, no clock — every transition is unit-tested. Called ONLY when the agent is reporting;
+/// `stable` is the current rolling-window stable-BSSID scan, nil if none this window. The caller decides
+/// LIVE/STALE from `held.confirmedUntil`; this function only adopts new fixes and pushes that timer on
+/// positive confirmation (a new fix, or the anchor still overlapping the live scan).
 func judgeLocation(held: HeldFix?, payload p: FeedPayload, stable: Set<String>?,
                    settings: Settings, now: Double) -> LocationJudgment {
     var held = held
     var persist = false
-    var reason: String?
     var adopted = false
+    var confirmed = false
+    var reason: String?
 
-    // (1) Adopt any STRICTLY-newer valid fix. A fresh CoreLocation fix is authoritative on its own —
-    //     we do NOT require a Wi-Fi scan to use it; the scan is an optional "still here" check for
-    //     later. anchor = the stable APs visible now, or [] if no scan (backfilled in (2)). The strict
-    //     `>` is the anti-resurrection gate: a grace-expired fix's ts stays the high-water mark and the
-    //     agent re-streams that same ts forever, so it can't be re-adopted — only a new measurement.
+    // (1) Adopt any STRICTLY-newer valid fix — itself a confirmation. The strict `>` is the
+    //     anti-resurrection gate: a stale fix re-streamed with the same ts can't masquerade as new.
     if p.locState == "ok", let lat = p.lat, let lon = p.lon, let ts = p.fixTs,
        ts > (held?.fixTs ?? -.infinity) {
         if !lat.isFinite || !lon.isFinite || (p.acc ?? -1) < 0 {
@@ -311,55 +362,33 @@ func judgeLocation(held: HeldFix?, payload p: FeedPayload, stable: Set<String>?,
         } else if let acc = p.acc, acc > settings.maxAccuracyMeters {
             reason = String(format: "new fix too fuzzy (±%.0fm) — not adopted", acc)
         } else {
-            let anchor = (stable ?? []).sorted()
-            // Persist only on a MATERIAL change — the in-memory record advances every fix (so the
-            // high-water/anti-resurrection check is always current), but a moving vehicle must not
-            // write heldfix.json on every fix. ~25m or an anchor change is material.
+            let anchor = (stable ?? []).sorted()       // FROZEN snapshot; never grown afterward
+            // Persist only on a MATERIAL change (~25m or anchor change) — a moving vehicle must not write
+            // heldfix.json every fix, and confirmedUntil bumps alone (every tick at home) must not either.
             if held == nil || abs(lat - held!.lat) > 2.5e-4 || abs(lon - held!.lon) > 2.5e-4 || anchor != held!.anchor {
                 persist = true
             }
-            // A new fix REPLACES the record outright (fresh coords, fresh anchor snapshot, grace cleared).
-            held = HeldFix(lat: lat, lon: lon, fixTs: ts, acc: p.acc!, anchor: anchor, graceUntil: nil)
-            adopted = true
+            held = HeldFix(lat: lat, lon: lon, fixTs: ts, acc: p.acc!, anchor: anchor, confirmedUntil: now + settings.graceSeconds)
+            adopted = true; confirmed = true
         }
     }
 
-    // (2) Trust the held fix. It locks ONLY on POSITIVE evidence of leaving — a FRESH scan that
-    //     doesn't overlap a known (non-empty) anchor. A stale/missing scan or an empty anchor can't
-    //     prove you left, so we trust the fix (degrading to the plain held-fix model — the Wi-Fi
-    //     anchor tightens "did I leave" when the scan works, but is never required). Never deleted.
-    var fix: (lat: Double, lon: Double)?
-    var movedAway = false
-    if var h = held {
-        if !h.anchor.isEmpty {
-            // Liveness check: the rolling-window scan must VOUCH for the anchor (overlap ≥1). It fails to
-            // vouch if it shows only foreign APs (you moved) OR is empty (no Wi-Fi at all for the whole
-            // window — off / unjoined / left RF range). BOTH are positive "can't confirm I'm here" → grace
-            // → fail-closed. An empty window is real signal-loss, not a throttle blip: the agent's
-            // unthrottled associated-AP read logs ≥1 BSSID whenever you're joined, so "nothing for 30s" means
-            // the Wi-Fi is genuinely gone — we no longer blindly trust through it.
-            let vouched = stable.map { bssidOverlapOK(anchor: h.anchor, current: $0) } ?? false
-            movedAway = !vouched
-            if movedAway {
-                if h.graceUntil == nil { h.graceUntil = now + settings.graceSeconds; persist = true }   // not reset if already set
-            } else {
-                if h.graceUntil != nil { h.graceUntil = nil; persist = true }
-            }
-        } else {
-            // Empty anchor (no scan captured at adoption) → nothing to check → trust (degradation). We never
-            // backfill it: after an offline move that would anchor the held (old) coords to the NEW place's
-            // APs and "confirm" forever — a fail-open. It stays empty until a genuinely new fix re-anchors.
-            if h.graceUntil != nil { h.graceUntil = nil; persist = true }
-        }
-        held = h
-        if h.trusted(now: now) {
-            fix = (h.lat, h.lon)
-            if movedAway, let g = h.graceUntil {
-                reason = String(format: "Wi-Fi changed or lost — re-checking location (%.0fs before lock)", g - now)
-            }
-        } else {
-            reason = "left/lost the known Wi-Fi and no fresh fix arrived — locked"
+    // (2) Confirm-or-coast. Besides a new fix, the held fix is CONFIRMED when the live scan still overlaps
+    //     its (non-empty) anchor → push confirmedUntil. A missing or non-overlapping scan does NOT confirm,
+    //     so the timer just runs out → STALE → fail-closed. We never grow/backfill the anchor (an offline
+    //     move would otherwise pin old coords to a new place's APs — a fail-open).
+    if var h = held, !adopted {
+        if let stable, !h.anchor.isEmpty, bssidOverlapOK(anchor: h.anchor, current: stable) {
+            h.confirmedUntil = now + settings.graceSeconds      // in-memory push (not a material write)
+            held = h
+            confirmed = true
+        } else if reason == nil {
+            let why = !h.anchor.isEmpty && stable != nil ? "left the known Wi-Fi"
+                    : (stable == nil ? "no Wi-Fi signal" : "no anchor to check")
+            reason = h.live(now: now)
+                ? String(format: "%@ — re-checking location (%.0fs before lock)", why, h.confirmedUntil - now)
+                : "\(why) — location unconfirmed, locked"
         }
     }
-    return LocationJudgment(held: held, persist: persist, fix: fix, reason: reason, adopted: adopted)
+    return LocationJudgment(held: held, persist: persist, adopted: adopted, confirmed: confirmed, reason: reason)
 }

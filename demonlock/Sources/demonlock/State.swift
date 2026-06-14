@@ -34,7 +34,7 @@ struct StateSnapshot: Codable {
     var armed: Bool
     var snoozeUntilEpoch: Double?
     var enforcedUser: String
-    var phase: String            // initializing | monitoring | countdown | snoozed | standby
+    var phase: String            // standby | monitoring | countdown | locked | snoozed
     var verdict: String?         // allow | block | nil
     var reason: String
     var countdownDeadlineEpoch: Double?
@@ -43,6 +43,7 @@ struct StateSnapshot: Codable {
     var policyString: String
     var tree: EvalNode?
     var insideZones: [String]
+    var sshAddr: String?         // "minh@192.168.1.42 · mac.local" — shown so you can SSH in to disarm
     var health: Health
 }
 
@@ -59,34 +60,36 @@ struct FeedPayload: Codable {
     var bssids: [String]?        // current scan, all MACs (policy input). nil ⇒ scan unavailable/redacted
     var locState: String         // ok | reduced | notDetermined | denied | restricted | noFix
     var scanTs: Double?
+    var guiPids: [Int32]         // PIDs of the user's .regular GUI apps (NOT the agent) — the LOCKED
+                                 // kill list. Root SIGKILLs these so distractions die but the sensor lives.
 }
 
 // MARK: - Held fix (root-owned, persisted — survives reboot/sleep so login needs nothing special)
 
-/// The one location truth, and a DURABLE high-water record. `fixTs` is both the last adopted
-/// fix's CoreLocation timestamp AND the adoption high-water mark: we adopt only a STRICTLY
-/// newer fix, so a fix whose grace expired can never be re-adopted from the agent's unchanging
-/// stream (the resurrection fail-open). The record is therefore never deleted — `graceUntil`
-/// carries its trust:
-///   • nil               → anchor confirms → trusted.
-///   • set, now < it      → anchor lost, coasting (still trusted) until a newer fix or expiry.
-///   • set, now ≥ it      → expired → NOT trusted (fail-closed), but kept as the high-water tombstone.
-/// `graceUntil` is persisted (absolute wall-clock) so a reboot can't reset the coast window.
+/// The one location truth — a DURABLE, root-owned record persisted across reboot/sleep so login/wake
+/// need nothing special and the user can't forge it. `fixTs` is the adopted fix's CoreLocation timestamp
+/// AND the adoption high-water mark: only a STRICTLY-newer fix is adopted, so a re-streamed stale fix
+/// can't masquerade as new. The record is never deleted; ONE timer carries its trust —
 ///
-/// The anchor is a FROZEN snapshot taken once, at adoption — it is never grown afterward (growing
-/// it post-adoption let an offline move poison it with a new place's APs). It's still RICH because
-/// the agent feeds the live associated AP ∪ the most recent full sweep, and a full sweep sees ALL
-/// radios of ALL nearby APs at once — so a dual-band router's both BSSIDs land in the snapshot and
-/// band-steering keeps overlap ≥1. See LOCATION-MODEL.md.
+///   the fix is **LIVE** (usable by the policy) iff `now < confirmedUntil`.
+///
+/// Every positive **confirmation** — a new fix, or the anchor still overlapping the live scan — pushes
+/// `confirmedUntil = now + graceSeconds`. Anything that ISN'T confirmation (Wi-Fi off, anchor mismatch,
+/// agent dead, agent starting, just-woke) simply stops pushing, so the timer runs out → STALE → location
+/// unknown → fail-closed. One timer, one meaning; every "no signal" case coasts the same way. See MODEL.md.
+///
+/// The anchor is a FROZEN snapshot taken once at adoption (never grown — growing it post-adoption let an
+/// offline move poison it). It's RICH because the agent feeds the union of BSSIDs seen in the last
+/// scanWindowSeconds, and a full sweep returns both radios of a dual-band router at once.
 struct HeldFix: Codable {
     var lat: Double
     var lon: Double
     var fixTs: Double
     var acc: Double              // horizontalAccuracy at adoption (status display)
     var anchor: [String]         // stable BSSIDs seen at adoption; the liveness signal (frozen snapshot)
-    var graceUntil: Double?
+    var confirmedUntil: Double   // wall-clock; the fix is LIVE iff now < this (persisted, reboot-safe)
 
-    func trusted(now: Double) -> Bool { graceUntil.map { now < $0 } ?? true }
+    func live(now: Double) -> Bool { now < confirmedUntil }
 }
 
 enum HeldFixStore {

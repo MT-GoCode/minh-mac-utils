@@ -29,6 +29,7 @@ func runStatus() {
     print("  phase         : \(s.phase.uppercased())")
     if let v = s.verdict { print("  verdict       : \(v.uppercased())") }
     print("  reason        : \(s.reason)")
+    if let ssh = s.sshAddr { print("  \(ssh)") }
     if let dl = s.countdownDeadlineEpoch { print("  countdown     : \(max(0, Int(dl - nowEpoch())))s remaining") }
     if let sn = s.snoozeUntilEpoch {
         let f = DateFormatter(); f.dateFormat = "EEE HH:mm"
@@ -111,13 +112,13 @@ func runArm() {
         try? SnoozeStore.set(nil)
         note = "  (cleared the active snooze)"
     }
-    print("✓ ARMED\(note) — the enforcer logs you out after a \(Int(Settings.load().countdownSeconds))s countdown when out of policy. `sudo demonlock disarm` to stop.")
+    print("✓ ARMED\(note) — after a \(Int(Settings.load().countdownSeconds))s countdown out of policy the enforcer force-closes your GUI apps (sshd/tmux survive). `sudo demonlock disarm` to stop.")
 }
 
 func runDisarm() {
     requireRoot("disarm")
     do { try ArmStore.set(false) } catch { fail("✗ couldn't disarm: \(error)") }
-    print("✓ DISARMED — everything keeps running and the countdown still shows, but nothing logs you out.")
+    print("✓ DISARMED — everything keeps running and the countdown still shows, but nothing gets killed.")
 }
 
 // MARK: - perm-ask (user)

@@ -4,7 +4,7 @@ import CoreWLAN
 import Foundation
 
 /// Agent-side sensor PIPE. The root enforcer is the sole judge and sole state-holder (the
-/// held fix + its BSSID anchor live root-side, in heldfix.json — see LOCATION-MODEL.md).
+/// held fix + its BSSID anchor live root-side, in heldfix.json — see MODEL.md).
 /// This side has exactly three jobs, all raw reporting:
 ///   1. Stream GENUINE CoreLocation fixes: accept a delivery only if it was measured after
 ///      our launch/wake epoch (Apple documentedly re-delivers a CACHED fix on (re)start —
@@ -193,8 +193,20 @@ final class SensorFeeder: NSObject, CLLocationManagerDelegate {
             fixTs: loc.map { $0.timestamp.timeIntervalSince1970 },
             bssids: bssids,
             locState: state,
-            scanTs: freshest
+            scanTs: freshest,
+            guiPids: currentGuiPids()
         )
         sender.send(payload)
+    }
+
+    /// PIDs of the user's foreground GUI apps (`.regular`) EXCEPT this agent — the enforcer's LOCKED
+    /// kill list. Excluding ourselves spares the sensor through a lockout, so the enforcer keeps getting
+    /// fixes and detects "back in policy" the instant it happens. (feed() runs on the main thread, where
+    /// NSWorkspace is happy.)
+    private func currentGuiPids() -> [Int32] {
+        let me = getpid()
+        return NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular && $0.processIdentifier > 0 && $0.processIdentifier != me }
+            .map { $0.processIdentifier }
     }
 }

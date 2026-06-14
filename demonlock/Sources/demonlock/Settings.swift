@@ -5,48 +5,38 @@ import Foundation
 struct Settings: Codable {
     var pollSeconds: Double            // steady enforcer tick (first check immediate)
     var countdownPollSeconds: Double   // faster re-eval while a countdown is active
-    var countdownSeconds: Double       // the one visible countdown, used for every block
+    var countdownSeconds: Double       // THE buffer: the one visible countdown before lockout, for EVERY block
+                                       // (out of policy, can't determine, agent reconnecting on wake). Re-
+                                       // evaluated each tick — cancels the instant you're provably in policy.
     var snoozeHHMM: String             // snoozetonight target time of day (HHMM)
-    var staleSeconds: Double           // feed older than this ⇒ agent considered not-reporting.
-                                       // TRANSPORT staleness only (is the agent process alive?). There is
-                                       // deliberately no fix-age knob: a held fix is valid while its anchor
-                                       // BSSIDs persist — never judged by age (see LOCATION-MODEL.md).
-    var graceSeconds: Double           // GRACE-PERIOD-LOCATION: when the anchor APs stop matching (you
-                                       // moved, or you're on a moving vehicle), how long the held fix keeps
-                                       // counting while we await a fresh fix. Expired ⇒ fix killed ⇒
-                                       // fail-closed. Also = the offline-leave fail-open bound.
+    var graceSeconds: Double           // location-confidence coast: the held fix stays LIVE this long after the
+                                       // last CONFIRMATION (a new fix, or the anchor still overlapping the live
+                                       // scan). Anything that doesn't confirm — Wi-Fi off, anchor mismatch,
+                                       // agent dead, agent starting, just-woke — lets it run out → STALE →
+                                       // fail-closed. One timer for every "no signal" case. See MODEL.md.
     var maxAccuracyMeters: Double      // a fix fuzzier than this is not adopted. Macs are Wi-Fi-only
                                        // (±60–100m typical), so keep generous; this also rejects the
                                        // rural single-stale-AP wrong fix (it reports poor accuracy).
     var scanSeconds: Double            // full scanForNetworks cadence (CoreWLAN floor ~4s). The agent ALSO
                                        // samples the associated-AP BSSID every ~2s between full scans, so the
                                        // live band is always current; this is just the all-bands sweep rate.
-                                       // A full sweep sees ALL radios at once, so the anchor snapshot is rich
-                                       // (both bands of a dual-band router) → band-steering keeps overlap.
     var scanWindowSeconds: Double      // rolling-log window: the agent reports the UNION of every BSSID seen in
                                        // the last this-many seconds (ages out, NOT cleared on Wi-Fi off). An
-                                       // EMPTY window (no BSSID at all for this long — Wi-Fi off / unjoined /
-                                       // left RF range) is POSITIVE signal-loss → enforcer treats it as zero
-                                       // overlap → grace → fail-closed. Safe because the unthrottled
-                                       // associated-AP read yields ≥1 BSSID whenever you're joined.
-    var initMaxSeconds: Double         // agent-STARTUP transport grace: how long after session start
-                                       // "agent not reporting" shows INITIALIZING instead of a countdown.
-                                       // Once the feed has been fresh, an agent kill counts down at once.
+                                       // EMPTY window = positive signal-loss (the associated-AP read would give
+                                       // ≥1 BSSID if joined), so it stops confirming the fix → grace → lock.
     var enforcedUser: String           // username OR numeric uid this policy applies to
     var wifiKeepOn: Bool               // keep the Wi-Fi radio on at check time (location needs it)
     var wifiDevice: String             // BSD Wi-Fi device, e.g. en0
 
     init(pollSeconds: Double = 1.0, countdownPollSeconds: Double = 0.5, countdownSeconds: Double = 10,
-         snoozeHHMM: String = "0500", staleSeconds: Double = 30, graceSeconds: Double = 90,
+         snoozeHHMM: String = "0500", graceSeconds: Double = 90,
          maxAccuracyMeters: Double = 150, scanSeconds: Double = 6, scanWindowSeconds: Double = 30,
-         initMaxSeconds: Double = 30, enforcedUser: String = "", wifiKeepOn: Bool = true,
-         wifiDevice: String = "en0") {
+         enforcedUser: String = "", wifiKeepOn: Bool = true, wifiDevice: String = "en0") {
         self.pollSeconds = pollSeconds; self.countdownPollSeconds = countdownPollSeconds
         self.countdownSeconds = countdownSeconds; self.snoozeHHMM = snoozeHHMM
-        self.staleSeconds = staleSeconds; self.graceSeconds = graceSeconds
+        self.graceSeconds = graceSeconds
         self.maxAccuracyMeters = maxAccuracyMeters; self.scanSeconds = scanSeconds
-        self.scanWindowSeconds = scanWindowSeconds
-        self.initMaxSeconds = initMaxSeconds; self.enforcedUser = enforcedUser
+        self.scanWindowSeconds = scanWindowSeconds; self.enforcedUser = enforcedUser
         self.wifiKeepOn = wifiKeepOn; self.wifiDevice = wifiDevice
     }
 
@@ -57,12 +47,10 @@ struct Settings: Codable {
         countdownPollSeconds = (try? c.decode(Double.self, forKey: .countdownPollSeconds)) ?? d.countdownPollSeconds
         countdownSeconds     = (try? c.decode(Double.self, forKey: .countdownSeconds)) ?? d.countdownSeconds
         snoozeHHMM           = (try? c.decode(String.self, forKey: .snoozeHHMM)) ?? d.snoozeHHMM
-        staleSeconds         = (try? c.decode(Double.self, forKey: .staleSeconds)) ?? d.staleSeconds
         graceSeconds         = (try? c.decode(Double.self, forKey: .graceSeconds)) ?? d.graceSeconds
         maxAccuracyMeters    = (try? c.decode(Double.self, forKey: .maxAccuracyMeters)) ?? d.maxAccuracyMeters
         scanSeconds          = (try? c.decode(Double.self, forKey: .scanSeconds)) ?? d.scanSeconds
         scanWindowSeconds    = (try? c.decode(Double.self, forKey: .scanWindowSeconds)) ?? d.scanWindowSeconds
-        initMaxSeconds       = (try? c.decode(Double.self, forKey: .initMaxSeconds)) ?? d.initMaxSeconds
         enforcedUser         = (try? c.decode(String.self, forKey: .enforcedUser)) ?? d.enforcedUser
         wifiKeepOn           = (try? c.decode(Bool.self,   forKey: .wifiKeepOn)) ?? d.wifiKeepOn
         wifiDevice           = (try? c.decode(String.self, forKey: .wifiDevice)) ?? d.wifiDevice

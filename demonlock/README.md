@@ -2,8 +2,8 @@
 
 Conditional macOS locker. One root daemon evaluates a single boolean **policy** over your
 location, the time of day, and nearby Wi‑Fi access points; when you're **out of policy** it shows
-a 10‑second countdown and then logs you out with `launchctl bootout`. Replaces `location-locker` +
-`nightlock` with one signed Swift binary. Installs **disarmed**.
+a 10‑second countdown and then **force-closes your GUI apps** (`sshd`/`tmux` survive, so you can SSH
+in to disarm). Replaces `location-locker` + `nightlock` with one signed Swift binary. Installs **disarmed**.
 
 ```bash
 sudo ./install.sh                 # build (or deploy prebuilt) → sign → install → load. DISARMED.
@@ -20,7 +20,7 @@ One Mach-O, multiplexed by subcommand into two long-running roles:
 
 | Role | launchd job | Runs as | Job |
 |---|---|---|---|
-| `enforcerd` | LaunchDaemon, **`system`** domain | **root** | the *only* evaluator/enforcer: polls, evaluates the policy, runs the countdown, performs the logout, keeps Wi‑Fi on, writes `state.json` |
+| `enforcerd` | LaunchDaemon, **`system`** domain | **root** | the *only* evaluator/enforcer: polls, evaluates the policy, runs the countdown, performs the lockout (force-kills GUI apps, sparing the agent), keeps Wi‑Fi on, writes `state.json` |
 | `agent` | LaunchAgent, **`gui/<uid>`** domain | **you** | reads CoreLocation + scans Wi‑Fi BSSIDs (CoreWLAN), feeds them to the daemon over a cdhash-authenticated socket, draws the status/countdown panel |
 
 **Why the split is forced.** macOS delivers CoreLocation / CoreWLAN scan results only to a
@@ -66,7 +66,7 @@ policy. **BSSID** (AP hardware MAC) is used over the SSID name because names are
 | `Policy.swift` | tokenizer → parser → three-valued evaluator → validator (`_policytest` = unit tests) |
 | `Feed.swift` | cdhash-authenticated socket server (root) + sender (agent) |
 | `Sensors.swift` · `Wifi.swift` | agent CoreLocation + CoreWLAN BSSID feed; root-side Wi‑Fi keep-on |
-| `Enforcerd.swift` | the root daemon: poll loop, state machine, `bootout` |
+| `Enforcerd.swift` | the root daemon: poll loop, state machine, lockout (force-kill GUI) |
 | `Agent.swift` · `ZonesUI.swift` | status/countdown panel + menubar; the `zones` map program |
 | `Commands.swift` | `status`/`setpolicy`/`arm`/`disarm`/`snoozetonight`/`perm-ask`/`_zonedel` |
 | `install/` | `build.sh` (codesign), `install.sh`, `uninstall.sh`, `Info.plist`, two `.plist`s |
@@ -135,28 +135,29 @@ reload needed.
 - **Sensing under TCC.** The agent's CoreLocation `authorizedAlways` grant is what un-redacts both
   the location fix *and* CoreWLAN BSSID scans (macOS redacts SSIDs/BSSIDs to any process without a
   Location grant — which is also why `scan` refuses to run as root: root has no grant).
-- **Location model: held fix + Wi‑Fi anchor (see `LOCATION-MODEL.md`, the design of record).**
+- **Location model: held fix + ONE confidence timer (see `MODEL.md`, the design of record).**
   Macs position from Wi‑Fi only; CoreLocation goes silent when nothing changes, so a fix is **never
-  judged by age**. The enforcer adopts each genuine fix together with the stable **BSSIDs** (per-AP
-  hardware MACs, not network names) visible at that moment — its *anchor* — and trusts it until
-  *positive* evidence of leaving: a fresh scan in which **none** of the anchor BSSIDs appear (seeing
-  even one = still here; moving to a different physical router, even on the same SSID, drops it to
-  zero). On "moved" it coasts `graceSeconds` for a fresh fix, then fail-closes. A **missing/stale
-  scan does not lock you** — the fix is trusted (graceful degradation), because macOS throttles Wi‑Fi
-  scanning for background apps; so the agent runs **foreground (`.regular`, dock icon)** and uses the
-  **associated-AP BSSID** (available with no scan) as the dependable anchor. The held fix persists
-  root-owned (`heldfix.json`) across reboot/sleep — login/wake need no special cases, and the user
-  can't forge it. The only clock-based staleness is *transport* (`staleSeconds`): a killed agent goes
-  silent ⇒ unknown ⇒ fail-closed.
+  judged by raw age**. The held fix carries one timer, `confirmedUntil`: a genuine new fix, or the
+  live scan still overlapping the fix's **BSSID anchor** (per-AP hardware MACs, not network names; ≥1
+  shared = still here — moving to a different physical router, even on the same SSID, drops it to zero),
+  pushes it `graceSeconds` into the future. While `now < confirmedUntil` the fix is **LIVE** and drives
+  the policy; once nothing confirms it — Wi‑Fi off, anchor mismatch, **or the agent dies** — the timer
+  runs out → STALE → fail-closed. One timer, every "no signal" case coasts the same. The agent runs
+  **foreground (`.regular`, dock icon)** and feeds a rolling union of recent BSSIDs, so a full sweep
+  catches both bands of a dual-band router (band-steering can't false-lock you) and an empty window is
+  read as real signal-loss. The held fix persists root-owned (`heldfix.json`, heartbeat-rewritten so a
+  restart resumes without a false lock) across reboot/sleep — login/wake need no special cases, and the
+  user can't forge it.
 - **Wi‑Fi keep-on.** While armed, each tick re-enables the radio via `networksetup
   -setairportpower` if it's off — CoreLocation positions from Wi‑Fi, so the radio must stay on.
-- **Logout.** At countdown zero, armed → `launchctl bootout gui/<uid>` (a true session logout to
-  the login window). No penalty box; a re-login still out of policy simply re-enters the 10s
-  countdown.
+- **Lockout.** At countdown zero, armed → the root daemon **force-kills the user's GUI apps** every
+  tick, **sparing the agent** so it keeps sensing and recovery is instant (back in policy → killing
+  stops). If the agent itself is dead, it falls back to `killall WindowServer` (rate-limited). `sshd`/
+  `tmux` survive so you can SSH in and `sudo demonlock disarm`. No penalty box; no logout.
 - **Fail-closed, but only when it matters.** Stale/missing agent feed, denied Location, missing or
   invalid policy, or a missing `armed` file all resolve to a block *when armed* — but the
   three-valued logic means a still-decidable clause (e.g. an allowed time window, or another zone)
-  keeps you allowed. Disarmed = same evaluation, countdown shows, but `bootout` is a no-op (title
+  keeps you allowed. Disarmed = same evaluation, countdown shows, but the lockout is a no-op (title
   reads `(DISARMED)`).
 - **Zone changes are asymmetric by privilege.** Adding a zone *loosens* policy → the map UI
   escalates the write via the admin prompt. Deleting *tightens* → passwordless via the narrow
@@ -174,10 +175,10 @@ Wi‑Fi check pins BSSIDs.
 User (no sudo): `status` · `zones` (`view-zones`/`edit-zones` alias it) · `scan` · `perm-ask` ·
 `help`. Sudo: `setpolicy` · `arm` · `disarm` · `snoozetonight` (stands down until the next
 `snoozeHHMM`, default 05:00, then auto-clears; `arm` clears an active snooze). Settings live in
-`settings.json` (`pollSeconds`, `countdownSeconds`, `snoozeHHMM`, `staleSeconds`, `graceSeconds`,
-`maxAccuracyMeters`, `scanSeconds`, `initMaxSeconds`, `enforcedUser` [username **or** uid — the
-logout target], `wifiKeepOn`, `wifiDevice`). There is deliberately **no fix-age knob** — see
-`LOCATION-MODEL.md`.
+`settings.json` (`pollSeconds`, `countdownSeconds`, `snoozeHHMM`, `graceSeconds`, `maxAccuracyMeters`,
+`scanSeconds`, `scanWindowSeconds`, `enforcedUser` [username **or** uid — the lockout target],
+`wifiKeepOn`, `wifiDevice`). There is deliberately **no fix-age knob** and no startup-grace knob — a
+held fix is valid while it keeps being confirmed, never judged by raw age. See `MODEL.md`.
 
 ## Code signing
 

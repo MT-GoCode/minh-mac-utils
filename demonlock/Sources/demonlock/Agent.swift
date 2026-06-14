@@ -124,10 +124,12 @@ final class AgentApp: NSObject, NSApplicationDelegate {
         case "countdown":
             color = .systemRed
             if let r = remaining {
-                big = s.armed ? "LOG OUT IN \(r)s" : "WOULD LOG OUT IN \(r)s (DISARMED)"
-                if r == 0 { big = s.armed ? "LOGGING OUT…" : "WOULD LOG OUT (DISARMED)" }
+                big = s.armed ? "LOCK IN \(r)s" : "WOULD LOCK IN \(r)s (DISARMED)"
+                if r == 0 { big = s.armed ? "LOCKING…" : "WOULD LOCK (DISARMED)" }
             }
-        case "initializing": color = .systemBlue; big = "INITIALIZING…"
+        case "locked":
+            color = .systemRed
+            big = s.armed ? "🔒 LOCKED — closing apps" : "WOULD BE LOCKED (DISARMED)"
         case "snoozed": color = .systemGray; big = "SNOOZED"
         case "standby": color = .systemGray; big = "STANDBY"
         default: break
@@ -139,16 +141,18 @@ final class AgentApp: NSObject, NSApplicationDelegate {
         let locMap = s.health.locationTrail.isEmpty ? "" : "\n\nLOCATION\n" + s.health.locationTrail.joined(separator: "\n")
         treeView.string = policy + locMap                 // location section (ending in `zones:`) is last
         let h = s.health
-        healthLabel.stringValue = ""                       // removed the redundant feed/location/wifi/scan strip
+        healthLabel.stringValue = s.sshAddr ?? ""          // SSH-in hint (sshd/tmux survive a lockout → disarm)
         permButton.isHidden = !h.needsPermAsk
         disarmButton.isHidden = !s.armed
 
-        // Pop to front when a countdown begins.
-        if s.phase == "countdown", lastPhase != "countdown" {
+        // Pop to front while blocking (countdown or locked).
+        let blocking = s.phase == "countdown" || s.phase == "locked"
+        let wasBlocking = lastPhase == "countdown" || lastPhase == "locked"
+        if blocking, !wasBlocking {
             window.level = .floating
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
-        } else if s.phase != "countdown", lastPhase == "countdown" {
+        } else if !blocking, wasBlocking {
             window.level = .normal
         }
         lastPhase = s.phase
@@ -158,7 +162,7 @@ final class AgentApp: NSObject, NSApplicationDelegate {
         switch phase {
         case "monitoring": return "🟢"
         case "countdown": return "🔴"
-        case "initializing": return "🔵"
+        case "locked": return "🔒"
         case "snoozed", "standby": return "⚪️"
         default: return "🌑"
         }

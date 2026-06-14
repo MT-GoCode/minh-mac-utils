@@ -61,66 +61,57 @@ func runPolicyTest() {
     check("overlap: zero shared → moved",              !bssidOverlapOK(anchor: ["a", "b"], current: ["x", "y"]))
     check("overlap: empty anchor can never confirm",   !bssidOverlapOK(anchor: [], current: ["a", "b"]))
 
-    // Location state machine transitions (judgeLocation) — the security-critical core.
-    let st = Settings(graceSeconds: 90, maxAccuracyMeters: 150)
+    // Location state machine (judgeLocation) — the security-critical core. confirmedUntil model: a new
+    // fix OR an anchor overlap CONFIRMS (pushes confirmedUntil = now + grace); no confirmation → coast →
+    // the fix goes STALE (not live) → fail-closed. The caller derives the usable fix from held.live(now).
+    let st = Settings(graceSeconds: 90, maxAccuracyMeters: 150)      // push = now + 90
     func okFix(_ ts: Double, _ lat: Double = 34.0, _ lon: Double = -118.0, acc: Double = 30) -> FeedPayload {
-        FeedPayload(ts: 0, lat: lat, lon: lon, acc: acc, fixTs: ts, bssids: nil, locState: "ok", scanTs: nil)
+        FeedPayload(ts: 0, lat: lat, lon: lon, acc: acc, fixTs: ts, bssids: nil, locState: "ok", scanTs: nil, guiPids: [])
     }
     let homeAPs: Set<String> = ["aa:00", "aa:01"]      // stable: 0x02 bit clear in first octet
     let awayAPs: Set<String> = ["bb:00", "bb:01"]
 
-    // adopt a fresh fix with an anchor; then confirm it while stationary (no new fix, APs persist)
+    // adopt: fresh fix + scan → held, confirmed, LIVE; confirmedUntil = 100 + 90 = 190
     let j1 = judgeLocation(held: nil, payload: okFix(100), stable: homeAPs, settings: st, now: 100)
-    check("adopt: fresh fix + scan → held + fix",        j1.held != nil && j1.fix != nil && j1.persist)
-    let j2 = judgeLocation(held: j1.held, payload: okFix(100), stable: homeAPs, settings: st, now: 1000)
-    check("stationary: same fix, APs persist → still ok", j2.fix != nil && j2.held?.graceUntil == nil)
+    check("adopt: fresh fix → held + confirmed + live", j1.held != nil && j1.adopted && j1.confirmed && j1.persist && (j1.held?.live(now: 100) ?? false))
+    check("adopt: confirmedUntil = now + grace",        j1.held?.confirmedUntil == 190)
 
-    // leave: APs gone, no new fix → grace starts (still allowed), then expires → fail-closed
-    let j3 = judgeLocation(held: j1.held, payload: okFix(100), stable: awayAPs, settings: st, now: 1000)
-    check("leave: APs gone → grace, still allowed",       j3.fix != nil && j3.held?.graceUntil != nil)
-    let j4 = judgeLocation(held: j3.held, payload: okFix(100), stable: awayAPs, settings: st, now: 2000)
-    check("grace expired → fail-closed (no fix)",         j4.fix == nil && j4.held != nil)
+    // stationary: no new fix, anchor still overlaps → re-confirmed, timer pushed to 150 + 90 = 240
+    let j2 = judgeLocation(held: j1.held, payload: okFix(100), stable: homeAPs, settings: st, now: 150)
+    check("stationary: overlap → confirmed, timer pushed", j2.confirmed && j2.held?.confirmedUntil == 240)
 
-    // THE RESURRECTION TEST: after a grace-expired kill, the agent re-streams the SAME fixTs —
-    // it must NOT be re-adopted (strict-newer high-water), even with a fresh anchor at the new place.
-    let j5 = judgeLocation(held: j4.held, payload: okFix(100), stable: awayAPs, settings: st, now: 2001)
-    check("killed fix must NOT resurrect (same fixTs)",   j5.fix == nil)
+    // leave: anchor gone (no overlap), no new fix → NOT confirmed → coast (timer unchanged at 190)
+    let j3 = judgeLocation(held: j1.held, payload: okFix(100), stable: awayAPs, settings: st, now: 150)
+    check("leave: no overlap → not confirmed, coasting",  !j3.confirmed && j3.held?.confirmedUntil == 190 && (j3.held?.live(now: 150) ?? false))
+    // coast then expire: still no overlap, now past confirmedUntil(190) → not live → fail-closed
+    let j4 = judgeLocation(held: j3.held, payload: okFix(100), stable: awayAPs, settings: st, now: 200)
+    check("coast expired → not live (fail-closed)",       !(j4.held?.live(now: 200) ?? true))
 
-    // recovery: a genuinely newer fix (you got signal) re-adopts and re-anchors → allowed again
-    let j6 = judgeLocation(held: j4.held, payload: okFix(200, 0, 0), stable: awayAPs, settings: st, now: 2100)
-    check("newer fix revives location",                   j6.fix != nil && j6.held?.fixTs == 200)
+    // resurrection: same fixTs re-streamed after expiry → NOT adopted, NOT confirmed → stays not live
+    let j5 = judgeLocation(held: j4.held, payload: okFix(100), stable: awayAPs, settings: st, now: 201)
+    check("killed fix must NOT resurrect (same fixTs)",   !j5.adopted && !(j5.held?.live(now: 201) ?? true))
 
-    // EMPTY-ANCHOR DEGRADATION: a fix adopted with NO scan (rare on a Mac — a fix needs Wi-Fi, which
-    // yields ≥1 BSSID) has an empty anchor; with nothing to check it's trusted (and never backfilled).
+    // recovery: a genuinely newer fix re-adopts → confirmed, live again
+    let j6 = judgeLocation(held: j4.held, payload: okFix(300, 0, 0), stable: awayAPs, settings: st, now: 300)
+    check("newer fix revives location",                   j6.adopted && j6.held?.fixTs == 300 && (j6.held?.live(now: 300) ?? false))
+
+    // no scan at adoption → empty anchor, but the fix itself confirms (live for grace), and the empty
+    // anchor is NEVER grown/backfilled from a later scan (an offline move would otherwise pin old coords).
     let j7 = judgeLocation(held: nil, payload: okFix(100), stable: nil, settings: st, now: 100)
-    check("no scan at adoption → adopt + trust (empty anchor)", j7.held != nil && j7.fix != nil)
-    // empty anchor is NOT backfilled — would anchor OLD coords to a NEW place's APs after an offline move.
-    let j9 = judgeLocation(held: j7.held, payload: okFix(100), stable: awayAPs, settings: st, now: 200)
-    check("empty anchor NOT backfilled (no fail-open)",    j9.held?.anchor.isEmpty == true && j9.fix != nil)
+    check("no scan at adoption → adopt + live (empty anchor)", j7.adopted && j7.held?.anchor.isEmpty == true && (j7.held?.live(now: 100) ?? false))
+    let j8 = judgeLocation(held: j7.held, payload: okFix(100), stable: awayAPs, settings: st, now: 150)
+    check("empty anchor NOT backfilled",                  j8.held?.anchor.isEmpty == true && !j8.confirmed)
 
-    // NO-SCAN = SIGNAL-LOSS: a NON-empty anchor with no scan (Wi-Fi off / left RF range) no longer trusts
-    // blindly — it's positive "can't confirm here" → grace → fail-closed. (The agent's 30s rolling log +
-    // unthrottled associated-AP read make an empty scan real signal-loss, not a throttle blip.)
-    let n1 = judgeLocation(held: j1.held, payload: okFix(100), stable: nil, settings: st, now: 5000)
-    check("no scan + anchor → grace starts (allowed briefly)", n1.fix != nil && n1.held?.graceUntil != nil)
-    let n2 = judgeLocation(held: n1.held, payload: okFix(100), stable: nil, settings: st, now: 5200)
-    check("sustained no scan → grace over → fail-closed",  n2.fix == nil)
-    let n3 = judgeLocation(held: j1.held, payload: okFix(100), stable: homeAPs, settings: st, now: 6000)
-    check("rolling log still vouches (overlap) → no grace", n3.fix != nil && n3.held?.graceUntil == nil)
+    // (agent-dead is handled in the TICK: no fresh feed → judgeLocation isn't called → confirmedUntil
+    //  coasts → expires, identical to the j3/j4 coast-then-expire path above.)
 
-    // BAND-STEERING — the at-home false-lockout. A dual-band router shows two BSSIDs (f9=2.4GHz,
-    // fa=5GHz). The agent feeds (associated AP ∪ last full sweep), and a full sweep returns BOTH at
-    // once, so BOTH the adoption snapshot and the live scan are rich → overlap survives steering.
+    // BAND-STEERING: a full sweep returns BOTH radios at once, so the anchor holds both; the live scan
+    // showing either band overlaps → confirmed. (Rich anchor + ≥1 overlap; no false lockout at home.)
     let fa = "f8:cf:c5:fe:16:fa", f9 = "f8:cf:c5:fe:16:f9"
-    // (a) rich anchor (both bands captured at adoption), Mac later reports only the band it's on:
-    let s1 = judgeLocation(held: nil,     payload: okFix(100), stable: [fa, f9], settings: st, now: 100)
+    let s1 = judgeLocation(held: nil, payload: okFix(100), stable: [fa, f9], settings: st, now: 100)
     check("band-steer: anchor caught both bands",         s1.held?.anchor.count == 2)
     let s2 = judgeLocation(held: s1.held, payload: okFix(100), stable: [f9], settings: st, now: 1000)
-    check("band-steer: on one band → still overlaps",     s2.fix != nil && s2.held?.graceUntil == nil)
-    // (b) even a thin anchor survives because the live scan is rich (full sweep ∪ associated):
-    let s3 = judgeLocation(held: nil,     payload: okFix(100), stable: [fa], settings: st, now: 100)
-    let s4 = judgeLocation(held: s3.held, payload: okFix(100), stable: [fa, f9], settings: st, now: 1000)
-    check("band-steer: rich live scan re-overlaps thin anchor", s4.fix != nil && s4.held?.graceUntil == nil)
+    check("band-steer: one band still overlaps → confirmed", s2.confirmed && (s2.held?.live(now: 1000) ?? false))
 
     // too-fuzzy / invalid fixes are not adopted
     check("too-fuzzy fix not adopted",   judgeLocation(held: nil, payload: okFix(100, acc: 999), stable: homeAPs, settings: st, now: 100).held == nil)
