@@ -161,8 +161,8 @@ final class AgentApp: NSObject, NSApplicationDelegate {
     private func menuGlyph(_ phase: String) -> String {
         switch phase {
         case "monitoring": return "🟢"
-        case "countdown": return "🔴"
-        case "locked": return "🔒"
+        case "countdown": return "🟠"
+        case "locked": return "🔴"
         case "snoozed", "standby": return "⚪️"
         default: return "🌑"
         }

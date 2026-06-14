@@ -126,7 +126,10 @@ Force-kill the user's GUI apps, **sparing the agent** so the sensor survives and
 - `graceSeconds = 90` — how long the held fix stays LIVE after the last confirmation (a new fix or an
   anchor overlap). The coast for Wi-Fi blips, moving vehicles, brief agent gaps, and a dead agent alike.
 - `countdownSeconds = 10` — the one visible buffer before LOCKED, for every block; cancels on recovery.
-- `maxAccuracyMeters = 150` — a fuzzier fix isn't adopted (also the rural single-stale-AP defense).
+- `maxAccuracyMeters = 400` — a fuzzier fix isn't adopted. Generous because accuracy only matters vs
+  zone size: big zones (a metro) tolerate fuzzy moving-vehicle fixes (Caltrain reports a few hundred m),
+  and small zones sit in dense Wi-Fi so they get good accuracy anyway. Lower it if you rely on tight
+  zones in sparse areas. Containment is **center-point-in-zone** — the accuracy radius is only this gate.
 - `scanSeconds = 6` — full `scanForNetworks` cadence (CoreWLAN floor ~4 s); the agent also re-reads the
   associated AP every ~2 s.
 - `scanWindowSeconds = 30` — rolling BSSID-log window; an empty window = signal-loss → stop confirming.

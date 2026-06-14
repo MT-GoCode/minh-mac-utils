@@ -15,8 +15,12 @@ struct Settings: Codable {
                                        // agent dead, agent starting, just-woke — lets it run out → STALE →
                                        // fail-closed. One timer for every "no signal" case. See MODEL.md.
     var maxAccuracyMeters: Double      // a fix fuzzier than this is not adopted. Macs are Wi-Fi-only
-                                       // (±60–100m typical), so keep generous; this also rejects the
-                                       // rural single-stale-AP wrong fix (it reports poor accuracy).
+                                       // (±60–100m stationary urban, but a few hundred m on a moving
+                                       // vehicle / in sparse-AP stretches — e.g. Caltrain), so keep it
+                                       // GENEROUS: accuracy only matters vs zone size, and big zones (a
+                                       // whole metro) tolerate fuzzy fixes while small zones sit in dense
+                                       // Wi-Fi and get good accuracy anyway. Lower it only if you rely on
+                                       // tight zones in sparse areas. (Still rejects km-scale garbage.)
     var scanSeconds: Double            // full scanForNetworks cadence (CoreWLAN floor ~4s). The agent ALSO
                                        // samples the associated-AP BSSID every ~2s between full scans, so the
                                        // live band is always current; this is just the all-bands sweep rate.
@@ -30,7 +34,7 @@ struct Settings: Codable {
 
     init(pollSeconds: Double = 1.0, countdownPollSeconds: Double = 0.5, countdownSeconds: Double = 10,
          snoozeHHMM: String = "0500", graceSeconds: Double = 90,
-         maxAccuracyMeters: Double = 150, scanSeconds: Double = 6, scanWindowSeconds: Double = 30,
+         maxAccuracyMeters: Double = 400, scanSeconds: Double = 6, scanWindowSeconds: Double = 30,
          enforcedUser: String = "", wifiKeepOn: Bool = true, wifiDevice: String = "en0") {
         self.pollSeconds = pollSeconds; self.countdownPollSeconds = countdownPollSeconds
         self.countdownSeconds = countdownSeconds; self.snoozeHHMM = snoozeHHMM
