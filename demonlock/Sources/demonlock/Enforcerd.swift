@@ -19,6 +19,7 @@ final class Enforcer {
     private var sessionUID: uid_t?          // console session tracking (standby + countdown reset)
     private var countdownDeadline: Date?    // set on entering a block; nil while allowed
     private var nextNuclear: Date?          // rate-limit for the nuclear (agent-dead) WindowServer kill
+    private var nextAgentKick: Date?        // rate-limit for force-restarting a wedged-but-alive agent
 
     // The one location truth (persisted root-owned; survives restarts — login "just works").
     private var held: HeldFix? = HeldFixStore.read()
@@ -32,13 +33,14 @@ final class Enforcer {
     private static let heldPersistSeconds = 30.0     // re-persist a confirmed fix at least this often, so an
                                                      // enforcer restart reads a still-LIVE confirmedUntil (not a
                                                      // stale one written only on the last material location change)
+    private static let agentKickSeconds = 30.0       // force-restart a wedged-but-alive agent at most this often
 
     func run() {
         if geteuid() != 0 { log("WARNING: not running as root — the GUI lockout (kill) will fail") }
         log("enforcerd starting (uid \(getuid()))")
         server.start()
         while true {
-            let interval = tick()
+            let interval = autoreleasepool { tick() }   // drain any autoreleased objects each tick (defensive)
             Thread.sleep(forTimeInterval: max(interval, 0.1))
         }
     }
@@ -123,6 +125,17 @@ final class Enforcer {
         }
         // else: agent not reporting → no confirmation → held.confirmedUntil coasts → eventually STALE.
 
+        // Watchdog: a wedged-but-alive agent (throttled / stuck) stops feeding, and KeepAlive only restarts a
+        // DEAD process — so when armed and the agent is silent, force-restart it (launchctl kickstart -k),
+        // rate-limited. This recovers it WITHOUT the heavier nuclear GUI kill, ideally before the countdown ends.
+        if agentLive {
+            nextAgentKick = nil
+        } else if armed, now >= (nextAgentKick ?? .distantPast) {
+            log("agent not reporting → kickstart -k gui/\(consoleUID)/\(Paths.agentLabel)")
+            Proc.run("/bin/launchctl", ["kickstart", "-k", "gui/\(consoleUID)/\(Paths.agentLabel)"])
+            nextAgentKick = now.addingTimeInterval(Self.agentKickSeconds)
+        }
+
         // The location truth: a LIVE held fix, or nil (unknown → fail-closed).
         let fix: (lat: Double, lon: Double)? = {
             guard let h = held, h.live(now: nowSec) else { return nil }
@@ -187,15 +200,17 @@ final class Enforcer {
     // MARK: enforcement
 
     /// LOCKED action. Agent alive → SIGKILL the user's GUI apps it reported (it excluded itself, so the
-    /// sensor survives → instant recovery). Agent dead → nuclear `killall WindowServer` (also relaunches
-    /// the agent via KeepAlive), rate-limited so it gets a window to come back and report.
+    /// sensor survives → instant recovery). Agent dead → nuclear `killall -9 WindowServer` (SIGKILL —
+    /// uncatchable, so the GUI actually tears down to the login window; sshd/tmux survive), rate-limited so
+    /// the agent gets a window to relaunch and report. (Plain `killall` = SIGTERM, which WindowServer
+    /// survives — that was the "logged every 15s, nothing happened" bug.)
     private func lockOut(agentLive: Bool, guiPids: [Int32], now: Date) {
         if agentLive {
             for pid in guiPids where pid > 1 { kill(pid, SIGKILL) }
             nextNuclear = nil
         } else if nextNuclear == nil || now >= nextNuclear! {
-            log("LOCKED + agent not reporting → killall WindowServer (nuclear; also relaunches the agent)")
-            Proc.run("/usr/bin/killall", ["WindowServer"])
+            log("LOCKED + agent not reporting → killall -9 WindowServer (force GUI down; agent relaunches)")
+            Proc.run("/usr/bin/killall", ["-9", "WindowServer"])
             nextNuclear = now.addingTimeInterval(Self.nuclearRelockSeconds)
         }
     }

@@ -98,8 +98,17 @@ Force-kill the user's GUI apps, **sparing the agent** so the sensor survives and
 - **Agent alive:** root `SIGKILL`s every `.regular` GUI app the agent reported (it excluded its own PID).
   Forceful, every tick. Your distracting apps die within ~1 s of opening; the agent keeps reporting, so the
   moment you're back in policy the enforcer stops killing — no fixed re-lock interval needed.
-- **Agent dead** (no kill-list): root `killall WindowServer` (nuclear; also relaunches the agent via
-  KeepAlive), rate-limited to `nuclearRelockSeconds` so the agent gets a window to come back and report.
+- **Agent dead** (no kill-list): root `killall -9 WindowServer` (nuclear — SIGKILL, *uncatchable*, so the
+  GUI actually tears down to the login window; plain `killall`=SIGTERM is ignored by WindowServer and was a
+  silent no-op), rate-limited to `nuclearRelockSeconds` so the agent gets a window to relaunch and report.
+
+**Keeping the agent alive (so it rarely comes to the nuclear path):** the agent is exempt from App Nap
+(`beginActivity`, so a backgrounded foreground app isn't QoS-throttled), and its Wi-Fi scan loop drains an
+`autoreleasepool` every cycle (without it, CoreWLAN's autoreleased objects leak into GBs over days of
+uptime → jetsam/throttle → false locks — a real bug this caught). And when the agent goes silent while
+armed, the root daemon **`launchctl kickstart -k`s it** (rate-limited `agentKickSeconds`) — KeepAlive only
+restarts a *dead* process, so this is what recovers a *wedged-but-alive* (throttled/stuck) agent, ideally
+before the countdown reaches the nuclear kill.
 
 `sshd` / `tmux` / detached daemons survive both → you can SSH in and `sudo demonlock disarm`. The panel and
 `status` show an `ssh minh@<ip> · minh@<host>.local` hint (computed root-side) so you know where to connect.
@@ -135,7 +144,8 @@ Force-kill the user's GUI apps, **sparing the agent** so the sensor survives and
 - `scanWindowSeconds = 30` — rolling BSSID-log window; an empty window = signal-loss → stop confirming.
 - `heldPersistSeconds = 30` (internal) — heartbeat-persist cadence for `confirmedUntil`.
 - `feedFreshSeconds = 5` (internal) — no packet within this ⇒ agent considered dead.
-- `nuclearRelockSeconds = 15` (internal) — WS-kill cadence while the agent is dead.
+- `nuclearRelockSeconds = 15` (internal) — `killall -9 WindowServer` cadence while the agent is dead.
+- `agentKickSeconds = 30` (internal) — how often the daemon force-restarts a wedged-but-alive agent.
 
 There is **no fix-age knob** and no startup-grace knob — a held fix is valid while it keeps being confirmed,
 never judged by raw age.
@@ -149,8 +159,9 @@ never judged by raw age.
 3. **`.accessory` / LSUIElement apps aren't in the kill-list** (only `.regular` apps are) — a deliberately
    repackaged menubar app could dodge the lockout. Real distractions (browsers, games, video) are `.regular`.
    Honor-system residual, like SSID/BSSID self-naming.
-4. **Killing the agent** → fail-closed via `killall WindowServer` every `nuclearRelockSeconds`; on macOS a
-   WS-kill drops to the login screen (STANDBY) so the window between kills isn't usable GUI. Tightened, not zero.
+4. **Killing the agent** → the daemon `kickstart -k`s it (recovers a wedged one) and, if still silent,
+   `killall -9 WindowServer` every `nuclearRelockSeconds` (SIGKILL drops you to the login screen → STANDBY,
+   so the window between kills isn't usable GUI). Bounded, not zero.
 5. **A mobile AP that travels with you** (a carried hotspot mirroring an anchor BSSID; a train's own router)
    keeps the anchor "matching" → corrected by the next CoreLocation fix (online), per the Caltrain analysis.
 6. **Rural stale-single-AP fix** with deceptively good accuracy could briefly mislocate you — defended by

@@ -29,11 +29,17 @@ final class SensorFeeder: NSObject, CLLocationManagerDelegate {
                                              // scanWindowSeconds; NOT cleared on Wi-Fi off (it ages). feed()
                                              // reports the union of unexpired keys, or nil if the window is empty.
     private let assocSampleSeconds = 2.0     // associated-AP re-read cadence (the eager, unthrottled live signal)
+    private var activityToken: NSObjectProtocol?  // App-Nap exemption, held for the app's life
     private let settings: Settings
 
     init(settings: Settings) { self.settings = settings }
 
     func start() {
+        // Exempt from App Nap so a backgrounded (non-frontmost) foreground agent keeps scanning/feeding at
+        // full rate instead of being QoS-throttled into "not reporting". We still allow idle SYSTEM sleep —
+        // it's not our job to keep the Mac awake (that's the user's / Amphetamine's choice).
+        activityToken = ProcessInfo.processInfo.beginActivity(
+            options: .userInitiatedAllowingIdleSystemSleep, reason: "demonlock continuous Wi-Fi/location sensing")
         acquireEpoch = nowEpoch()                           // only measurements AFTER this are trusted
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyBest
@@ -121,9 +127,15 @@ final class SensorFeeder: NSObject, CLLocationManagerDelegate {
             guard let self else { return }
             var lastFull = 0.0
             while true {
-                let doFull = nowEpoch() - lastFull >= self.settings.scanSeconds
-                self.sampleWifi(full: doFull)
-                if doFull { lastFull = nowEpoch() }
+                // CRITICAL: drain CoreWLAN's autoreleased objects EVERY cycle. Without this pool, a bare
+                // while-loop on a non-runloop thread never drains them — scanForNetworks/bssid() leak
+                // forever → the agent grows to GBs over days (esp. with no sleep), gets jetsam-killed /
+                // throttled, stops feeding, and the daemon fail-closes. This pool is the fix.
+                autoreleasepool {
+                    let doFull = nowEpoch() - lastFull >= self.settings.scanSeconds
+                    self.sampleWifi(full: doFull)
+                    if doFull { lastFull = nowEpoch() }
+                }
                 Thread.sleep(forTimeInterval: self.assocSampleSeconds)
             }
         }
@@ -199,14 +211,19 @@ final class SensorFeeder: NSObject, CLLocationManagerDelegate {
         sender.send(payload)
     }
 
-    /// PIDs of the user's foreground GUI apps (`.regular`) EXCEPT this agent — the enforcer's LOCKED
-    /// kill list. Excluding ourselves spares the sensor through a lockout, so the enforcer keeps getting
-    /// fixes and detects "back in policy" the instant it happens. (feed() runs on the main thread, where
-    /// NSWorkspace is happy.)
+    /// PIDs of the user's foreground GUI apps (`.regular`) EXCEPT this agent and a small spare-list — the
+    /// enforcer's LOCKED kill list. Excluding ourselves spares the sensor through a lockout (so the enforcer
+    /// keeps getting fixes and detects "back in policy" instantly). We also spare the OS shell apps that the
+    /// system auto-respawns (Finder) — SIGKILLing them every tick just makes them flicker open/shut, not
+    /// stay closed. (feed() runs on the main thread, where NSWorkspace is happy.)
+    private static let spareBundleIDs: Set<String> = ["com.apple.finder"]
     private func currentGuiPids() -> [Int32] {
         let me = getpid()
         return NSWorkspace.shared.runningApplications
-            .filter { $0.activationPolicy == .regular && $0.processIdentifier > 0 && $0.processIdentifier != me }
+            .filter {
+                $0.activationPolicy == .regular && $0.processIdentifier > 0 && $0.processIdentifier != me
+                    && !Self.spareBundleIDs.contains($0.bundleIdentifier ?? "")
+            }
             .map { $0.processIdentifier }
     }
 }
