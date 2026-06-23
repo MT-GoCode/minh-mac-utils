@@ -42,16 +42,10 @@ struct Settings: Codable {
          snoozeHHMM: String = "0500", graceSeconds: Double = 90,
          maxAccuracyMeters: Double = 400, scanSeconds: Double = 6, scanWindowSeconds: Double = 30,
          enforcedUser: String = "", wifiKeepOn: Bool = true, wifiDevice: String = "en0",
-         spareBundleIDs: [String] = [
-            "com.demonlock",                         // demonlock's own windows (the agent is also spared by PID)
-            "com.lwouis.alt-tab-macos",              // AltTab
-            "pro.betterdisplay.BetterDisplay",       // BetterDisplay
-            "org.pqrs.Karabiner-Menu",               // Karabiner-Elements (menubar + helpers)
-            "org.pqrs.Karabiner-Core-Service",
-            "org.pqrs.Karabiner-NotificationWindow",
-            "org.pqrs.Karabiner-Elements.Settings",
-            "com.wtalk.daemon",                      // wtalk
-         ]) {
+         spareBundleIDs: [String] = ["com.demonlock"]) {  // demonlock's own .regular windows (zones/scan/disarm);
+                                                          // the agent is also spared by PID. Menubar-only
+                                                          // (LSUIElement) utilities are never .regular → not in
+                                                          // the kill-list, so they need no entry here.
         self.pollSeconds = pollSeconds; self.countdownPollSeconds = countdownPollSeconds
         self.countdownSeconds = countdownSeconds; self.snoozeHHMM = snoozeHHMM
         self.graceSeconds = graceSeconds
