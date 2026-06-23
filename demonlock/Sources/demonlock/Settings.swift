@@ -31,17 +31,34 @@ struct Settings: Codable {
     var enforcedUser: String           // username OR numeric uid this policy applies to
     var wifiKeepOn: Bool               // keep the Wi-Fi radio on at check time (location needs it)
     var wifiDevice: String             // BSD Wi-Fi device, e.g. en0
+    var spareBundleIDs: [String]       // bundle IDs NEVER force-killed during a SELECTIVE lockout (persistent
+                                       // utilities that break when SIGKILLed). The agent reloads this each
+                                       // feed, so editing settings.json takes effect live (no rebuild). NOTE:
+                                       // this only spares the per-app kill; the agent-dead NUCLEAR `killall -9
+                                       // WindowServer` takes down ALL GUI regardless. Pure daemons (no GUI app)
+                                       // are never in the kill-list to begin with, so they need no entry.
 
     init(pollSeconds: Double = 1.0, countdownPollSeconds: Double = 0.5, countdownSeconds: Double = 10,
          snoozeHHMM: String = "0500", graceSeconds: Double = 90,
          maxAccuracyMeters: Double = 400, scanSeconds: Double = 6, scanWindowSeconds: Double = 30,
-         enforcedUser: String = "", wifiKeepOn: Bool = true, wifiDevice: String = "en0") {
+         enforcedUser: String = "", wifiKeepOn: Bool = true, wifiDevice: String = "en0",
+         spareBundleIDs: [String] = [
+            "com.demonlock",                         // demonlock's own windows (the agent is also spared by PID)
+            "com.lwouis.alt-tab-macos",              // AltTab
+            "pro.betterdisplay.BetterDisplay",       // BetterDisplay
+            "org.pqrs.Karabiner-Menu",               // Karabiner-Elements (menubar + helpers)
+            "org.pqrs.Karabiner-Core-Service",
+            "org.pqrs.Karabiner-NotificationWindow",
+            "org.pqrs.Karabiner-Elements.Settings",
+            "com.wtalk.daemon",                      // wtalk
+         ]) {
         self.pollSeconds = pollSeconds; self.countdownPollSeconds = countdownPollSeconds
         self.countdownSeconds = countdownSeconds; self.snoozeHHMM = snoozeHHMM
         self.graceSeconds = graceSeconds
         self.maxAccuracyMeters = maxAccuracyMeters; self.scanSeconds = scanSeconds
         self.scanWindowSeconds = scanWindowSeconds; self.enforcedUser = enforcedUser
         self.wifiKeepOn = wifiKeepOn; self.wifiDevice = wifiDevice
+        self.spareBundleIDs = spareBundleIDs
     }
 
     init(from decoder: Decoder) throws {
@@ -58,6 +75,7 @@ struct Settings: Codable {
         enforcedUser         = (try? c.decode(String.self, forKey: .enforcedUser)) ?? d.enforcedUser
         wifiKeepOn           = (try? c.decode(Bool.self,   forKey: .wifiKeepOn)) ?? d.wifiKeepOn
         wifiDevice           = (try? c.decode(String.self, forKey: .wifiDevice)) ?? d.wifiDevice
+        spareBundleIDs       = (try? c.decode([String].self, forKey: .spareBundleIDs)) ?? d.spareBundleIDs
     }
 
     static func load() -> Settings {

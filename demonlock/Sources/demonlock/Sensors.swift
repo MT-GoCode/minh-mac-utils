@@ -211,18 +211,18 @@ final class SensorFeeder: NSObject, CLLocationManagerDelegate {
         sender.send(payload)
     }
 
-    /// PIDs of the user's foreground GUI apps (`.regular`) EXCEPT this agent and a small spare-list — the
-    /// enforcer's LOCKED kill list. Excluding ourselves spares the sensor through a lockout (so the enforcer
-    /// keeps getting fixes and detects "back in policy" instantly). We also spare the OS shell apps that the
-    /// system auto-respawns (Finder) — SIGKILLing them every tick just makes them flicker open/shut, not
-    /// stay closed. (feed() runs on the main thread, where NSWorkspace is happy.)
-    private static let spareBundleIDs: Set<String> = ["com.apple.finder"]
+    /// PIDs of the user's foreground GUI apps (`.regular`) EXCEPT this agent and `settings.spareBundleIDs`
+    /// (persistent utilities that break when SIGKILLed) — the enforcer's LOCKED kill list. Excluding our own
+    /// PID spares the sensor through a lockout (so the enforcer keeps getting fixes and detects "back in
+    /// policy" instantly). We reload the spare-list each feed so editing settings.json takes effect live.
+    /// (feed() runs on the main thread, where NSWorkspace is happy.)
     private func currentGuiPids() -> [Int32] {
         let me = getpid()
+        let spare = Set(Settings.load().spareBundleIDs)
         return NSWorkspace.shared.runningApplications
             .filter {
                 $0.activationPolicy == .regular && $0.processIdentifier > 0 && $0.processIdentifier != me
-                    && !Self.spareBundleIDs.contains($0.bundleIdentifier ?? "")
+                    && !spare.contains($0.bundleIdentifier ?? "")
             }
             .map { $0.processIdentifier }
     }

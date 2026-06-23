@@ -95,7 +95,10 @@ the fix is `LIVE ? coords : nil`; a fresh feed only refreshes the confidence tim
 
 Force-kill the user's GUI apps, **sparing the agent** so the sensor survives and recovery is instant:
 
-- **Agent alive:** root `SIGKILL`s every `.regular` GUI app the agent reported (it excluded its own PID).
+- **Agent alive:** root `SIGKILL`s every `.regular` GUI app the agent reported — it excludes its own PID
+  and the `spareBundleIDs` list (`settings.json`, live-reloaded: persistent utilities — AltTab, Karabiner,
+  BetterDisplay, wtalk, demonlock itself — that break when SIGKILLed). Pure daemons aren't `.regular`, so
+  they're never in the list. (The spare-list does NOT cover the nuclear path below — that takes down all GUI.)
   Forceful, every tick. Your distracting apps die within ~1 s of opening; the agent keeps reporting, so the
   moment you're back in policy the enforcer stops killing — no fixed re-lock interval needed.
 - **Agent dead** (no kill-list): root `killall -9 WindowServer` (nuclear — SIGKILL, *uncatchable*, so the
