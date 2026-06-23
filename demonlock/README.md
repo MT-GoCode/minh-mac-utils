@@ -177,8 +177,25 @@ User (no sudo): `status` · `zones` (`view-zones`/`edit-zones` alias it) · `sca
 `snoozeHHMM`, default 05:00, then auto-clears; `arm` clears an active snooze). Settings live in
 `settings.json` (`pollSeconds`, `countdownSeconds`, `snoozeHHMM`, `graceSeconds`, `maxAccuracyMeters`,
 `scanSeconds`, `scanWindowSeconds`, `enforcedUser` [username **or** uid — the lockout target],
-`wifiKeepOn`, `wifiDevice`). There is deliberately **no fix-age knob** and no startup-grace knob — a
-held fix is valid while it keeps being confirmed, never judged by raw age. See `MODEL.md`.
+`wifiKeepOn`, `wifiDevice`, `spareBundleIDs`). There is deliberately **no fix-age knob** and no
+startup-grace knob — a held fix is valid while it keeps being confirmed, never judged by raw age.
+See `MODEL.md`.
+
+**Sparing an app from the lockout kill** (`spareBundleIDs`): the LOCKED action only force-kills the
+user's **`.regular` (Dock) apps** — menubar-only (`LSUIElement`/`.accessory`) apps and pure daemons
+are never in the kill-list, so utilities like AltTab/BetterDisplay/Karabiner/NextDNS need **no entry**.
+Add a bundle ID here only if an actual Dock app breaks when SIGKILLed and you want it left alone.
+Both daemon and agent reload settings.json **live** (every tick / every feed), so no reinstall is
+needed — just edit and save:
+
+```sh
+sudo vi "/Library/Application Support/Demonlock/settings.json"   # add: "spareBundleIDs": ["com.demonlock", "com.your.app"]
+osascript -e 'id of app "AltTab"'                                # find a bundle ID
+```
+
+Keep `com.demonlock` in the list (it spares demonlock's own zone/scan/disarm windows). The agent is
+already spared by PID regardless. Note: a spare only dodges the per-app kill — the agent-dead nuclear
+`killall -9 WindowServer` still takes down all GUI.
 
 ## Code signing
 
