@@ -33,7 +33,9 @@ sudo blockrem snooze "<for…|at…>"  # suppress ALL blocks until that instant
 ```
 
 `set`, `delete`, and `snooze` require `sudo` (the schedule is the lock). `--label` and `--duration`
-are always required; `--duration` is the block **length** in whole minutes, **5–59**.
+are always required; `--duration` is the block **length in SECONDS**, **5–3600** (the 1-hour cap
+bounds how long an un-quittable cover can ever sit up). `set` **refuses an alarm whose window would
+overlap an existing one** — delete the clashing alarm first.
 
 ### `--weekly` — recurring
 
@@ -41,9 +43,9 @@ A single token `<DAYS><HHMM>`: days are `M T W R F S U` (R=Thu, U=Sun) or `*` fo
 4-digit local time.
 
 ```sh
-sudo blockrem set --weekly *0800   --label "water break" --duration 10   # every day  8:00, 10 min
-sudo blockrem set --weekly MWF1230 --label "lunch — walk" --duration 30  # Mon/Wed/Fri 12:30, 30 min
-sudo blockrem set --weekly R1600   --label "stretch"     --duration 5    # Thursdays  16:00, 5 min
+sudo blockrem set --weekly *0800   --label "water break" --duration 30   # every day  8:00, 30 sec
+sudo blockrem set --weekly MWF1230 --label "lunch — walk" --duration 300 # Mon/Wed/Fri 12:30, 5 min
+sudo blockrem set --weekly R1600   --label "stretch"     --duration 60   # Thursdays  16:00, 60 sec
 ```
 
 ### `--onetime` and `snooze` — the instant spec
@@ -58,11 +60,13 @@ For `set --onetime`, the instant is **when the block starts** (you still give `-
 length). One-shot alarms are auto-removed after they finish.
 
 ```sh
-sudo blockrem set --onetime "at 1400" --label "standup" --duration 15    # next 2 PM, 15 min
-sudo blockrem set --onetime "for 2h"  --label "deep work cutoff" --duration 20
+sudo blockrem set --onetime "at 1400" --label "standup" --duration 120   # next 2 PM, 120 sec
+sudo blockrem set --onetime "for 2h"  --label "deep work cutoff" --duration 300  # 2h from now, 5 min
 sudo blockrem snooze "for 90m"        # no blocks for 90 minutes
 sudo blockrem snooze "at U0800"       # no blocks until Sunday 8 AM
 ```
+
+(`--duration` is seconds; the `"for 2h"` start spec is a separate thing that takes d/h/m/s.)
 
 ## How it works
 

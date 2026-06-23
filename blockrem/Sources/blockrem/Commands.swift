@@ -42,7 +42,7 @@ func runList() {
     }
     if let blk = activeBlock(alarms, now: now) {
         let left = max(0, Int((blk.endsEpoch - now.timeIntervalSince1970).rounded(.up)))
-        print("🟥 BLOCKING NOW: \"\(blk.label)\" — \(left / 60)m\(left % 60)s left\n")
+        print("🟥 BLOCKING NOW: \"\(blk.label)\" — \(left)s left\n")
     }
     if alarms.isEmpty { print("no alarms set — add one with `sudo blockrem set …` (see `blockrem help`)."); return }
     print("blockrem alarms (\(alarms.count)):")
@@ -54,7 +54,7 @@ func runList() {
         case .onetime(let start):
             when = "once    \(fmtInstant(start))"
         }
-        print(String(format: "  [%d]  %-32@  %2dm   \"%@\"", a.id, when as NSString, a.durationMin, a.label))
+        print(String(format: "  [%d]  %-32@  %5ds   \"%@\"", a.id, when as NSString, a.durationSec, a.label))
     }
 }
 
@@ -71,9 +71,11 @@ func runSet(_ args: [String]) {
         fail("✗ --label \"…\" is required.\n" + usageSet)
     }
     guard let durStr = f["duration"], let dur = Int(durStr) else {
-        fail("✗ --duration <minutes> is required.\n" + usageSet)
+        fail("✗ --duration <seconds> is required.\n" + usageSet)
     }
-    guard dur >= 5 && dur <= 59 else { fail("✗ --duration must be an integer 5–59 (minutes). Got \(dur).") }
+    guard dur >= kMinDurationSec && dur <= kMaxDurationSec else {
+        fail("✗ --duration must be an integer \(kMinDurationSec)–\(kMaxDurationSec) (seconds). Got \(dur).")
+    }
 
     let kind: Alarm.Kind
     if hasWeekly {
@@ -90,14 +92,18 @@ func runSet(_ args: [String]) {
 
     var alarms = ScheduleStore.load()
     let id = ScheduleStore.nextID(alarms)
-    alarms.append(Alarm(id: id, label: label, durationMin: dur, kind: kind))
+    let candidate = Alarm(id: id, label: label, durationSec: dur, kind: kind)
+    if let clash = alarms.first(where: { alarmsOverlap($0, candidate) }) {
+        fail("✗ that overlaps existing alarm [\(clash.id)] \"\(clash.label)\" — delete it (sudo blockrem delete \(clash.id)) or pick a non-overlapping time.")
+    }
+    alarms.append(candidate)
     ScheduleStore.save(alarms)
 
     switch kind {
     case .weekly(let d, let hhmm):
-        print("✓ added [\(id)] weekly \(TimeSpec.letters(for: d)) \(TimeSpec.hhmmString(hhmm)) for \(dur)m — \"\(label)\"")
+        print("✓ added [\(id)] weekly \(TimeSpec.letters(for: d)) \(TimeSpec.hhmmString(hhmm)) for \(dur)s — \"\(label)\"")
     case .onetime(let start):
-        print("✓ added [\(id)] once \(fmtInstant(start)) for \(dur)m — \"\(label)\"")
+        print("✓ added [\(id)] once \(fmtInstant(start)) for \(dur)s — \"\(label)\"")
     }
 }
 
@@ -144,8 +150,9 @@ func runPermAsk() {
 
 private let usageSet = """
 USAGE:
-  sudo blockrem set --weekly <DAYS|*><HHMM> --label "…" --duration <5-59>
-  sudo blockrem set --onetime "for <dur>" | "at <[day]HHMM>" --label "…" --duration <5-59>
+  sudo blockrem set --weekly <DAYS|*><HHMM> --label "…" --duration <5-3600>
+  sudo blockrem set --onetime "for <dur>" | "at <[day]HHMM>" --label "…" --duration <5-3600>
+  (--duration is the block length in SECONDS, 5–3600)
 """
 
 func printHelp() {
@@ -163,21 +170,22 @@ func printHelp() {
       perm-ask             Open Accessibility settings (needed for input blocking)
 
     SUDO COMMANDS (require `sudo`):
-      set --weekly <DAYS|*><HHMM> --label "…" --duration <5-59>
+      set --weekly <DAYS|*><HHMM> --label "…" --duration <5-3600>
                            Recurring block. Days: M T W R F S U (R=Thu, U=Sun) or * = every day.
-                           e.g.  sudo blockrem set --weekly *0800 --label "water break" --duration 10
-                                 sudo blockrem set --weekly MWF1230 --label "lunch, walk" --duration 30
-      set --onetime "<for…|at…>" --label "…" --duration <5-59>
+                           e.g.  sudo blockrem set --weekly *0800 --label "water break" --duration 30
+                                 sudo blockrem set --weekly MWF1230 --label "lunch, walk" --duration 300
+      set --onetime "<for…|at…>" --label "…" --duration <5-3600>
                            One-shot block; the spec is WHEN it STARTS (still needs --duration):
                              "for 7h 3s" → starts that long from now   (units d/h/m/s)
                              "at U0800"  → starts next Sunday 08:00
                              "at 0930"   → starts the next time it's 09:30
-                           e.g.  sudo blockrem set --onetime "at 1400" --label "standup" --duration 15
+                           e.g.  sudo blockrem set --onetime "at 1400" --label "standup" --duration 120
       delete <id>          Remove an alarm by id (from `list`)
       snooze "<for…|at…>"  Suppress ALL blocks until that instant (same spec as --onetime)
                            e.g.  sudo blockrem snooze "for 90m"   ·   sudo blockrem snooze "at U0800"
 
-    DURATION is the block LENGTH in whole minutes, 5–59. The onetime/snooze "for <dur>" spec is a
-    separate thing — how far ahead the instant is — and accepts d/h/m/s.
+    --duration is the block LENGTH in SECONDS (5–3600). The onetime/snooze "for <dur>" spec is a
+    DIFFERENT thing — how far ahead the instant is — and accepts d/h/m/s. `set` refuses an alarm
+    whose window overlaps an existing one.
     """)
 }

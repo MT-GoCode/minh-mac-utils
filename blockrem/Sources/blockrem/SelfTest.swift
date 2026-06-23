@@ -48,31 +48,51 @@ func runSelfTest() {
     } else { check("when at U0800", false) }
     check("when bogus fails", { if case .failure = TimeSpec.parseWhen("nonsense", now: now) { return true }; return false }())
 
-    // --- Alarm.activeEnd ---
+    // --- Alarm.activeEnd (durations now in SECONDS) ---
     let wed0810 = date(2026, 6, 24, 8, 10)
-    let aWeekly = Alarm(id: 1, label: "x", durationMin: 30, kind: .weekly(days: [4], hhmm: 800))   // Wed 08:00
+    let aWeekly = Alarm(id: 1, label: "x", durationSec: 1800, kind: .weekly(days: [4], hhmm: 800))   // Wed 08:00, 30m
     check("weekly active at 08:10", aWeekly.activeEnd(now: wed0810) == date(2026, 6, 24, 8, 30).timeIntervalSince1970)
     check("weekly inactive at 08:40", aWeekly.activeEnd(now: date(2026, 6, 24, 8, 40)) == nil)
-    check("weekly wrong day", Alarm(id: 1, label: "x", durationMin: 30, kind: .weekly(days: [3], hhmm: 800))
+    check("weekly wrong day", Alarm(id: 1, label: "x", durationSec: 1800, kind: .weekly(days: [3], hhmm: 800))
             .activeEnd(now: wed0810) == nil)
 
-    // midnight cross: Tue 23:50 + 30m → Wed 00:20; check at Wed 00:10
-    let crosser = Alarm(id: 2, label: "x", durationMin: 30, kind: .weekly(days: [3], hhmm: 2350))  // Tue
+    // midnight cross: Tue 23:50 + 1800s → Wed 00:20; check at Wed 00:10
+    let crosser = Alarm(id: 2, label: "x", durationSec: 1800, kind: .weekly(days: [3], hhmm: 2350))  // Tue
     check("weekly crosses midnight", crosser.activeEnd(now: date(2026, 6, 24, 0, 10)) != nil)
 
     // onetime active + expiry
     let start = date(2026, 6, 24, 8, 0).timeIntervalSince1970
-    let aOnce = Alarm(id: 3, label: "x", durationMin: 20, kind: .onetime(start: start))
+    let aOnce = Alarm(id: 3, label: "x", durationSec: 1200, kind: .onetime(start: start))
     check("onetime active mid", aOnce.activeEnd(now: date(2026, 6, 24, 8, 10)) == start + 1200)
     check("onetime inactive after", aOnce.activeEnd(now: date(2026, 6, 24, 8, 30)) == nil)
     check("onetime expired prunes", aOnce.isExpiredOnetime(now: date(2026, 6, 24, 8, 30)))
     check("onetime not expired during", !aOnce.isExpiredOnetime(now: date(2026, 6, 24, 8, 10)))
 
     // activeBlock picks the latest-ending overlap
-    let a = Alarm(id: 1, label: "short", durationMin: 10, kind: .onetime(start: start))
-    let b = Alarm(id: 2, label: "long", durationMin: 40, kind: .onetime(start: start))
+    let a = Alarm(id: 1, label: "short", durationSec: 600, kind: .onetime(start: start))
+    let b = Alarm(id: 2, label: "long", durationSec: 2400, kind: .onetime(start: start))
     let winner = activeBlock([a, b], now: date(2026, 6, 24, 8, 5))
     check("activeBlock latest end wins", winner?.label == "long")
+
+    // --- alarmsOverlap ---
+    let s8 = date(2026, 6, 24, 8, 0).timeIntervalSince1970
+    let o1 = Alarm(id: 1, label: "o1", durationSec: 600, kind: .onetime(start: s8))               // 08:00–08:10
+    let o2 = Alarm(id: 2, label: "o2", durationSec: 600, kind: .onetime(start: s8 + 300))          // 08:05–08:15
+    let o3 = Alarm(id: 3, label: "o3", durationSec: 600, kind: .onetime(start: s8 + 1200))         // 08:20–08:30
+    check("onetime×onetime overlap", alarmsOverlap(o1, o2))
+    check("onetime×onetime disjoint", !alarmsOverlap(o1, o3))
+
+    let w1 = Alarm(id: 4, label: "w1", durationSec: 1800, kind: .weekly(days: [2, 4], hhmm: 800))   // Mon/Wed 08:00, 30m
+    let w2 = Alarm(id: 5, label: "w2", durationSec: 1800, kind: .weekly(days: [4], hhmm: 815))      // Wed 08:15, 30m (overlaps w1 Wed)
+    let w3 = Alarm(id: 6, label: "w3", durationSec: 1800, kind: .weekly(days: [6], hhmm: 800))      // Fri 08:00 (different day)
+    check("weekly×weekly same-day overlap", alarmsOverlap(w1, w2))
+    check("weekly×weekly different-day", !alarmsOverlap(w1, w3))
+
+    // weekly Wed 08:00–08:30 vs a onetime at Wed 08:10 → overlap
+    check("weekly×onetime overlap", alarmsOverlap(w1, Alarm(id: 7, label: "o", durationSec: 300,
+            kind: .onetime(start: date(2026, 6, 24, 8, 10).timeIntervalSince1970))))
+    check("weekly×onetime miss", !alarmsOverlap(w1, Alarm(id: 8, label: "o", durationSec: 300,
+            kind: .onetime(start: date(2026, 6, 24, 9, 0).timeIntervalSince1970))))
 
     print("\n\(pass) passed, \(fail) failed")
     exit(fail == 0 ? 0 : 1)
