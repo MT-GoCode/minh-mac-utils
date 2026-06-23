@@ -211,18 +211,31 @@ final class SensorFeeder: NSObject, CLLocationManagerDelegate {
         sender.send(payload)
     }
 
-    /// PIDs of the user's foreground GUI apps (`.regular`) EXCEPT this agent and `settings.spareBundleIDs`
-    /// (persistent utilities that break when SIGKILLed) — the enforcer's LOCKED kill list. Excluding our own
-    /// PID spares the sensor through a lockout (so the enforcer keeps getting fixes and detects "back in
-    /// policy" instantly). We reload the spare-list each feed so editing settings.json takes effect live.
-    /// (feed() runs on the main thread, where NSWorkspace is happy.)
+    /// PIDs of the user's GUI apps for the enforcer's LOCKED kill list. We SIGKILL every foreground
+    /// (`.regular`) app — including Apple ones like Safari — PLUS third-party menubar (`.accessory`)
+    /// apps, so a distraction repackaged as LSUIElement can't dodge the lockout. NEVER killed:
+    /// `settings.spareBundleIDs` (persistent utilities that break when SIGKILLed — AltTab, Karabiner,
+    /// BetterDisplay, ScrollReverser, wtalk, blockrem, …), Apple's own `.accessory` items (`com.apple.*` —
+    /// Control Center's Wi-Fi/battery, Spotlight, Siri, the input menu), nil-bundle helpers, and this
+    /// agent itself (so the sensor survives a lockout and "back in policy" is detected instantly). The
+    /// spare-list is reloaded each feed, so editing settings.json takes effect live. (feed() runs on the
+    /// main thread, where NSWorkspace is happy.)
     private func currentGuiPids() -> [Int32] {
         let me = getpid()
         let spare = Set(Settings.load().spareBundleIDs)
         return NSWorkspace.shared.runningApplications
-            .filter {
-                $0.activationPolicy == .regular && $0.processIdentifier > 0 && $0.processIdentifier != me
-                    && !spare.contains($0.bundleIdentifier ?? "")
+            .filter { app in
+                guard app.processIdentifier > 0, app.processIdentifier != me else { return false }
+                let bid = app.bundleIdentifier ?? ""
+                if spare.contains(bid) { return false }
+                switch app.activationPolicy {
+                case .regular:
+                    return true                                  // every foreground/Dock app (incl. com.apple.Safari)
+                case .accessory:
+                    return !bid.isEmpty && !bid.hasPrefix("com.apple.")   // 3rd-party menubar only; spare Apple + nil-bundle
+                default:
+                    return false                                 // .prohibited — no user-facing window
+                }
             }
             .map { $0.processIdentifier }
     }

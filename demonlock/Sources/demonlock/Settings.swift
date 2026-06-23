@@ -31,21 +31,33 @@ struct Settings: Codable {
     var enforcedUser: String           // username OR numeric uid this policy applies to
     var wifiKeepOn: Bool               // keep the Wi-Fi radio on at check time (location needs it)
     var wifiDevice: String             // BSD Wi-Fi device, e.g. en0
-    var spareBundleIDs: [String]       // bundle IDs NEVER force-killed during a SELECTIVE lockout (persistent
-                                       // utilities that break when SIGKILLed). The agent reloads this each
-                                       // feed, so editing settings.json takes effect live (no rebuild). NOTE:
-                                       // this only spares the per-app kill; the agent-dead NUCLEAR `killall -9
-                                       // WindowServer` takes down ALL GUI regardless. Pure daemons (no GUI app)
-                                       // are never in the kill-list to begin with, so they need no entry.
+    var spareBundleIDs: [String]       // bundle IDs NEVER force-killed during a lockout. The LOCKED kill now
+                                       // covers EVERY .regular app PLUS non-Apple .accessory (menubar) apps —
+                                       // so an LSUIElement distraction can't hide — which means persistent
+                                       // menubar utilities that break when SIGKILLed must be listed here.
+                                       // Apple's own menubar items (com.apple.* — Wi-Fi/battery/Control Center,
+                                       // Spotlight, Siri) are spared automatically; pure daemons (no GUI app)
+                                       // are never in the kill-list. The agent reloads this each feed, so
+                                       // editing settings.json takes effect live. NOTE: spares only the per-app
+                                       // kill; the agent-dead NUCLEAR `killall -9 WindowServer` takes ALL GUI.
 
     init(pollSeconds: Double = 1.0, countdownPollSeconds: Double = 0.5, countdownSeconds: Double = 10,
          snoozeHHMM: String = "0500", graceSeconds: Double = 90,
          maxAccuracyMeters: Double = 400, scanSeconds: Double = 6, scanWindowSeconds: Double = 30,
          enforcedUser: String = "", wifiKeepOn: Bool = true, wifiDevice: String = "en0",
-         spareBundleIDs: [String] = ["com.demonlock"]) {  // demonlock's own .regular windows (zones/scan/disarm);
-                                                          // the agent is also spared by PID. Menubar-only
-                                                          // (LSUIElement) utilities are never .regular → not in
-                                                          // the kill-list, so they need no entry here.
+         spareBundleIDs: [String] = [
+            "com.demonlock",                       // own .regular windows (zones/scan/disarm); agent also spared by PID
+            "com.blockrem",                        // the break-blocker sibling tool — keep it shielding
+            "com.lwouis.alt-tab-macos",            // AltTab
+            "com.pilotmoon.scroll-reverser",       // Scroll Reverser
+            "pro.betterdisplay.BetterDisplay",     // BetterDisplay
+            "com.wtalk.daemon",                    // wtalk
+            "org.pqrs.Karabiner-Core-Service",     // Karabiner-Elements (runs as several processes)
+            "org.pqrs.Karabiner-Menu",
+            "org.pqrs.Karabiner-NotificationWindow",
+         ]) {  // persistent menubar utilities to keep alive through a lockout. Apple's com.apple.* menubar
+               // items (Wi-Fi/battery/Control Center) are spared automatically; pure daemons (betterat,
+               // nextdns*) have no GUI app and are never killed. Add your own by editing settings.json.
         self.pollSeconds = pollSeconds; self.countdownPollSeconds = countdownPollSeconds
         self.countdownSeconds = countdownSeconds; self.snoozeHHMM = snoozeHHMM
         self.graceSeconds = graceSeconds
