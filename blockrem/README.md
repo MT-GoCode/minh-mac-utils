@@ -114,6 +114,7 @@ a Mac with no Swift toolchain.
 
 ## Notes
 
+- **Audio is muted** when a block starts and **unmuted** when it ends (system output mute).
 - The CGEvent tap needs **Accessibility**; without it you get the visual cover only.
 - macOS system menubar items (Wi-Fi, battery, Control Center) are unaffected — blockrem never touches
   other processes; it only shields the screen and taps input for the block window.

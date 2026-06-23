@@ -41,7 +41,7 @@ func runList() {
         let left = max(0, Int((blk.endsEpoch - now.timeIntervalSince1970).rounded(.up)))
         print("🟥 BLOCKING NOW: \"\(blk.label)\" — \(left)s left\n")
     }
-    if alarms.isEmpty { print("no alarms set — add one with `sudo blockrem set …` (see `blockrem help`)."); return }
+    if alarms.isEmpty { print("no alarms set — add one with `blockrem set …` (see `blockrem help`)."); return }
     print("blockrem alarms (\(alarms.count)):")
     for a in alarms.sorted(by: { $0.id < $1.id }) {
         let when: String
@@ -55,7 +55,7 @@ func runList() {
     }
 }
 
-// MARK: - set (sudo)
+// MARK: - set (user)
 
 func runSet(_ args: [String]) {
     let f = parseFlags(args)
@@ -90,7 +90,7 @@ func runSet(_ args: [String]) {
     let id = ScheduleStore.nextID(alarms)
     let candidate = Alarm(id: id, label: label, durationSec: dur, kind: kind)
     if let clash = alarms.first(where: { alarmsOverlap($0, candidate) }) {
-        fail("✗ that overlaps existing alarm [\(clash.id)] \"\(clash.label)\" — delete it (sudo blockrem delete \(clash.id)) or pick a non-overlapping time.")
+        fail("✗ that overlaps existing alarm [\(clash.id)] \"\(clash.label)\" — delete it (blockrem delete \(clash.id)) or pick a non-overlapping time.")
     }
     alarms.append(candidate)
     ScheduleStore.save(alarms)
@@ -103,11 +103,11 @@ func runSet(_ args: [String]) {
     }
 }
 
-// MARK: - delete (sudo)
+// MARK: - delete (user)
 
 func runDelete(_ args: [String]) {
     guard let idStr = args.first(where: { Int($0) != nil }), let id = Int(idStr) else {
-        fail("✗ usage: sudo blockrem delete <id>   (see `blockrem list`)")
+        fail("✗ usage: blockrem delete <id>   (see `blockrem list`)")
     }
     var alarms = ScheduleStore.load()
     guard alarms.contains(where: { $0.id == id }) else { fail("✗ no alarm with id \(id). See `blockrem list`.") }
@@ -116,13 +116,13 @@ func runDelete(_ args: [String]) {
     print("✓ deleted alarm \(id)")
 }
 
-// MARK: - snooze (sudo)
+// MARK: - snooze (user)
 
 func runSnooze(_ args: [String]) {
     let spec = args.joined(separator: " ").trimmingCharacters(in: .whitespaces)
     guard !spec.isEmpty else {
-        fail("✗ usage: sudo blockrem snooze \"for <duration>\" | \"at <[day]HHMM>\"\n" +
-             "  e.g. sudo blockrem snooze \"for 90m\"   ·   sudo blockrem snooze \"at U0800\"")
+        fail("✗ usage: blockrem snooze \"for <duration>\" | \"at <[day]HHMM>\"\n" +
+             "  e.g. blockrem snooze \"for 90m\"   ·   blockrem snooze \"at U0800\"")
     }
     switch TimeSpec.parseWhen(spec) {
     case .failure(let why): fail("✗ \(why)")

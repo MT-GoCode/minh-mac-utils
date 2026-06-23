@@ -5,9 +5,10 @@ import Foundation
 ///   2. computes the current block (honoring snooze) and publishes active.json,
 ///   3. runs a watchdog that re-bootstraps / kickstarts the GUI agent if the user unloaded or
 ///      killed it (KeepAlive handles plain crashes; bootout needs the re-bootstrap).
-/// The schedule lives root-owned, so a non-root user can't add/remove/relabel a block — only
-/// `sudo blockrem …` can. The blocker window itself runs in the user's GUI agent (the daemon
-/// can't draw into a user session), which is why the watchdog matters.
+/// The schedule is user-owned (set/delete/snooze run without sudo) — root's job is purely to keep
+/// the overlay alive: the app/daemon/plists are root-owned, and this system-domain daemon revives the
+/// GUI agent if the user kills or boots it out (the daemon can't draw into a user session itself,
+/// which is why the watchdog matters). So you can't quit the overlay or uninstall without sudo.
 final class Enforcer {
     private var settings = Settings.load()
     private var lastWatchdog = Date.distantPast

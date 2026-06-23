@@ -86,8 +86,10 @@ final class AgentApp: NSObject, NSApplicationDelegate {
         let now = nowEpoch()
         let isActive = (st?.active ?? false) && (st?.endsEpoch ?? 0) > now   // missing/garbage ⇒ fail open
 
+        let wasBlocking = blocking
         if isActive, let st {
             blocking = true
+            if !wasBlocking { setSystemMuted(true) }   // mute on block start
             if shields.count != NSScreen.screens.count { rebuildShields() }
             let remaining = max(0, Int((st.endsEpoch - now).rounded(.up)))
             for i in titleLabels.indices {
@@ -100,7 +102,14 @@ final class AgentApp: NSObject, NSApplicationDelegate {
             blocking = false
             enableTap(false)
             shields.forEach { $0.orderOut(nil) }
+            setSystemMuted(false)                      // unmute on block end
         }
+    }
+
+    /// Mute/unmute system output audio on the block's start/end edges. Unconditional (no save/restore)
+    /// so a block always lifts the mute it set, even if the agent was killed and revived mid-block.
+    private func setSystemMuted(_ muted: Bool) {
+        Proc.run("/usr/bin/osascript", ["-e", "set volume output muted \(muted)"])
     }
 
     /// Re-assert frame, label positions, and z-order on every active tick (the "constantly-maximizing"
