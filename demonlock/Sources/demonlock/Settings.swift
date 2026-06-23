@@ -49,6 +49,7 @@ struct Settings: Codable {
             "com.demonlock",                       // own .regular windows (zones/scan/disarm); agent also spared by PID
             "com.blockrem",                        // the break-blocker sibling tool — keep it shielding
             "com.lwouis.alt-tab-macos",            // AltTab
+            "com.raycast.macos",                   // Raycast (menubar launcher)
             "com.pilotmoon.scroll-reverser",       // Scroll Reverser
             "pro.betterdisplay.BetterDisplay",     // BetterDisplay
             "com.wtalk.daemon",                    // wtalk
