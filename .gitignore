@@ -25,6 +25,12 @@ demonlock/Demonlock.app/
 # (demonlock/dist/Demonlock.app IS committed on purpose: Developer-ID-signed,
 #  no secrets, lets a toolchain-less Mac install by copy. Rebuilt when you have Xcode.)
 
+# ---------- blockrem (Swift) ----------
+blockrem/.build/
+blockrem/Blockrem.app/
+# (blockrem/dist/Blockrem.app IS committed on purpose: Developer-ID-signed,
+#  no secrets, lets a toolchain-less Mac install by copy. Rebuilt when you have Xcode.)
+
 # ---------- settingslock (Swift) ----------
 settingslock/.build/
 settingslock/dist/
