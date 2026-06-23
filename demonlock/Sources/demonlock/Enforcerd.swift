@@ -20,6 +20,7 @@ final class Enforcer {
     private var countdownDeadline: Date?    // set on entering a block; nil while allowed
     private var nextNuclear: Date?          // rate-limit for the nuclear (agent-dead) WindowServer kill
     private var nextAgentKick: Date?        // rate-limit for force-restarting a wedged-but-alive agent
+    private var lastAgentSeen = Date()      // last fresh feed — gates the startup/recovery grace below
 
     // The one location truth (persisted root-owned; survives restarts — login "just works").
     private var held: HeldFix? = HeldFixStore.read()
@@ -34,6 +35,10 @@ final class Enforcer {
                                                      // enforcer restart reads a still-LIVE confirmedUntil (not a
                                                      // stale one written only on the last material location change)
     private static let agentKickSeconds = 30.0       // force-restart a wedged-but-alive agent at most this often
+    private static let agentGraceSeconds = 25.0      // startup/recovery grace: an agent silent for LESS than this
+                                                     // is "starting up / brief blip" — neither kickstart nor the
+                                                     // nuclear WS-kill fire (so a normal login/boot/wake gap
+                                                     // never nukes your GUI; only a genuinely-gone agent does)
 
     func run() {
         if geteuid() != 0 { log("WARNING: not running as root — the GUI lockout (kill) will fail") }
@@ -126,12 +131,14 @@ final class Enforcer {
         // else: agent not reporting → no confirmation → held.confirmedUntil coasts → eventually STALE.
 
         // Watchdog: a wedged-but-alive agent (throttled / stuck) stops feeding, and KeepAlive only restarts a
-        // DEAD process — so when armed and the agent is silent, force-restart it (launchctl kickstart -k),
-        // rate-limited. This recovers it WITHOUT the heavier nuclear GUI kill, ideally before the countdown ends.
+        // DEAD process — so once it's been silent PAST the startup/recovery grace, force-restart it (launchctl
+        // kickstart -k), rate-limited. The grace is what keeps us from killing a normally-launching agent.
         if agentLive {
+            lastAgentSeen = now
             nextAgentKick = nil
-        } else if armed, now >= (nextAgentKick ?? .distantPast) {
-            log("agent not reporting → kickstart -k gui/\(consoleUID)/\(Paths.agentLabel)")
+        } else if armed, now.timeIntervalSince(lastAgentSeen) >= Self.agentGraceSeconds,
+                  now >= (nextAgentKick ?? .distantPast) {
+            log("agent silent \(Int(now.timeIntervalSince(lastAgentSeen)))s → kickstart -k gui/\(consoleUID)/\(Paths.agentLabel)")
             Proc.run("/bin/launchctl", ["kickstart", "-k", "gui/\(consoleUID)/\(Paths.agentLabel)"])
             nextAgentKick = now.addingTimeInterval(Self.agentKickSeconds)
         }
@@ -208,8 +215,11 @@ final class Enforcer {
         if agentLive {
             for pid in guiPids where pid > 1 { kill(pid, SIGKILL) }
             nextNuclear = nil
-        } else if nextNuclear == nil || now >= nextNuclear! {
-            log("LOCKED + agent not reporting → killall -9 WindowServer (force GUI down; agent relaunches)")
+        } else if now.timeIntervalSince(lastAgentSeen) >= Self.agentGraceSeconds,
+                  nextNuclear == nil || now >= nextNuclear! {
+            // Only nuke once the agent has been gone PAST the startup grace — a normal login/boot/wake gap
+            // (held fix coasts, agent re-confirms in ~5s) must never trigger the GUI-wide kill.
+            log("LOCKED + agent gone \(Int(now.timeIntervalSince(lastAgentSeen)))s → killall -9 WindowServer")
             Proc.run("/usr/bin/killall", ["-9", "WindowServer"])
             nextNuclear = now.addingTimeInterval(Self.nuclearRelockSeconds)
         }
@@ -225,6 +235,8 @@ final class Enforcer {
         // and is judged on its own confidence timer (no per-login reprieve, so no oscillation).
         sessionUID = uid
         clearCountdown()
+        nextAgentKick = nil
+        lastAgentSeen = Date()    // give the new session's agent the full startup grace before we intervene
         server.clear()
     }
 

@@ -110,8 +110,13 @@ Force-kill the user's GUI apps, **sparing the agent** so the sensor survives and
 `autoreleasepool` every cycle (without it, CoreWLAN's autoreleased objects leak into GBs over days of
 uptime → jetsam/throttle → false locks — a real bug this caught). And when the agent goes silent while
 armed, the root daemon **`launchctl kickstart -k`s it** (rate-limited `agentKickSeconds`) — KeepAlive only
-restarts a *dead* process, so this is what recovers a *wedged-but-alive* (throttled/stuck) agent, ideally
-before the countdown reaches the nuclear kill.
+restarts a *dead* process, so this is what recovers a *wedged-but-alive* (throttled/stuck) agent.
+
+**Startup/recovery grace (`agentGraceSeconds` = 25):** an agent silent for LESS than this is treated as
+"starting up / brief blip" — neither the kickstart nor the nuclear `killall -9` fires. So a normal
+login/boot/wake gap (where the held fix coasts and the agent re-confirms via a Wi-Fi scan in ~5 s) **never**
+nukes your GUI; only a genuinely-gone agent (silent past the grace) does. The gentle selective kill (agent
+alive, out of policy) is unaffected — it still fires at the 10 s countdown.
 
 `sshd` / `tmux` / detached daemons survive both → you can SSH in and `sudo demonlock disarm`. The panel and
 `status` show an `ssh minh@<ip> · minh@<host>.local` hint (computed root-side) so you know where to connect.
@@ -149,6 +154,8 @@ before the countdown reaches the nuclear kill.
 - `feedFreshSeconds = 5` (internal) — no packet within this ⇒ agent considered dead.
 - `nuclearRelockSeconds = 15` (internal) — `killall -9 WindowServer` cadence while the agent is dead.
 - `agentKickSeconds = 30` (internal) — how often the daemon force-restarts a wedged-but-alive agent.
+- `agentGraceSeconds = 25` (internal) — startup/recovery grace: an agent silent less than this is "starting
+  up", so neither the kickstart nor the nuclear `killall -9` fires (a normal login/boot/wake never nukes).
 
 There is **no fix-age knob** and no startup-grace knob — a held fix is valid while it keeps being confirmed,
 never judged by raw age.
