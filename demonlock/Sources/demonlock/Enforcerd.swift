@@ -79,6 +79,11 @@ final class Enforcer {
         if let snooze = SnoozeStore.until() {
             if now < snooze {
                 clearCountdown()
+                // Keep the agent-liveness grace clock fresh while snoozed (we aren't enforcing, so the
+                // agent's silence mustn't accumulate). Otherwise a long snooze leaves lastAgentSeen stale,
+                // and a dead agent at snooze expiry would skip its 25s startup/recovery grace → an immediate
+                // nuclear WS-kill instead of the normal "let the just-kickstarted agent relaunch" window.
+                lastAgentSeen = now; nextAgentKick = nil
                 publish(phase: "snoozed", verdict: nil, reason: "snoozed until \(timeStr(snooze))",
                         now: now, armed: armed, snoozeUntil: snooze)
                 return poll
