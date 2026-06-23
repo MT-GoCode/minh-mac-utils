@@ -1,13 +1,10 @@
 import Foundation
 
-// MARK: - gating / helpers
+// MARK: - helpers
 
-private func requireRoot(_ cmd: String) {
-    if geteuid() != 0 {
-        errOut("blockrem \(cmd): requires sudo — run `sudo blockrem \(cmd) …`")
-        exit(1)
-    }
-}
+// All subcommands are user-runnable (no sudo): the schedule + snooze live in a user-owned data dir.
+// Only install/uninstall need sudo (the app/daemon/plists are root-owned), so you still can't
+// uninstall or stop the blocker without your password.
 
 private func fail(_ msg: String) -> Never { errOut(msg); exit(1) }
 
@@ -61,7 +58,6 @@ func runList() {
 // MARK: - set (sudo)
 
 func runSet(_ args: [String]) {
-    requireRoot("set")
     let f = parseFlags(args)
     let hasWeekly = f["weekly"] != nil, hasOnetime = f["onetime"] != nil
     guard hasWeekly != hasOnetime else {
@@ -110,7 +106,6 @@ func runSet(_ args: [String]) {
 // MARK: - delete (sudo)
 
 func runDelete(_ args: [String]) {
-    requireRoot("delete")
     guard let idStr = args.first(where: { Int($0) != nil }), let id = Int(idStr) else {
         fail("✗ usage: sudo blockrem delete <id>   (see `blockrem list`)")
     }
@@ -124,7 +119,6 @@ func runDelete(_ args: [String]) {
 // MARK: - snooze (sudo)
 
 func runSnooze(_ args: [String]) {
-    requireRoot("snooze")
     let spec = args.joined(separator: " ").trimmingCharacters(in: .whitespaces)
     guard !spec.isEmpty else {
         fail("✗ usage: sudo blockrem snooze \"for <duration>\" | \"at <[day]HHMM>\"\n" +
@@ -150,39 +144,40 @@ func runPermAsk() {
 
 private let usageSet = """
 USAGE:
-  sudo blockrem set --weekly <DAYS|*><HHMM> --label "…" --duration <5-3600>
-  sudo blockrem set --onetime "for <dur>" | "at <[day]HHMM>" --label "…" --duration <5-3600>
+  blockrem set --weekly <DAYS|*><HHMM> --label "…" --duration <5-3600>
+  blockrem set --onetime "for <dur>" | "at <[day]HHMM>" --label "…" --duration <5-3600>
   (--duration is the block length in SECONDS, 5–3600)
 """
 
 func printHelp() {
     print("""
-    blockrem — scheduled, sudo-managed screen blocks (forced breaks/reminders)
+    blockrem — scheduled, un-quittable screen blocks (forced breaks/reminders)
 
     At each scheduled time a grey opaque cover fills every display with your label and a live
-    countdown, and (with Accessibility granted) swallows keyboard + mouse for the duration. The
-    schedule is root-owned and the blocker is revived if you kill it, so it can't be trivially
-    dismissed — `snooze` is the sanctioned escape. All times are LOCAL.
+    countdown. It re-maximizes itself every tick, sits above everything, refuses Cmd-Q, and is
+    relaunched by a root daemon if you kill it — so you can't click or quit it away. With
+    Accessibility granted it also freezes keyboard + mouse for the block's duration. All times LOCAL.
 
-    USER COMMANDS (no sudo):
-      list                 Show all alarms, the active block, and any snooze
-      help                 This help
-      perm-ask             Open Accessibility settings (needed for input blocking)
+    Managing alarms is FREE (no sudo); only install/uninstall need sudo — that's what makes the
+    overlay un-quittable (root owns the daemon that revives it) and the tool un-removable.
 
-    SUDO COMMANDS (require `sudo`):
+    COMMANDS (all user-runnable — no sudo):
+      list                 All alarms, the active block, and any snooze
       set --weekly <DAYS|*><HHMM> --label "…" --duration <5-3600>
                            Recurring block. Days: M T W R F S U (R=Thu, U=Sun) or * = every day.
-                           e.g.  sudo blockrem set --weekly *0800 --label "water break" --duration 30
-                                 sudo blockrem set --weekly MWF1230 --label "lunch, walk" --duration 300
+                           e.g.  blockrem set --weekly *0800 --label "water break" --duration 30
+                                 blockrem set --weekly MWF1230 --label "lunch, walk" --duration 300
       set --onetime "<for…|at…>" --label "…" --duration <5-3600>
                            One-shot block; the spec is WHEN it STARTS (still needs --duration):
                              "for 7h 3s" → starts that long from now   (units d/h/m/s)
                              "at U0800"  → starts next Sunday 08:00
                              "at 0930"   → starts the next time it's 09:30
-                           e.g.  sudo blockrem set --onetime "at 1400" --label "standup" --duration 120
+                           e.g.  blockrem set --onetime "at 1400" --label "standup" --duration 120
       delete <id>          Remove an alarm by id (from `list`)
       snooze "<for…|at…>"  Suppress ALL blocks until that instant (same spec as --onetime)
-                           e.g.  sudo blockrem snooze "for 90m"   ·   sudo blockrem snooze "at U0800"
+                           e.g.  blockrem snooze "for 90m"   ·   blockrem snooze "at U0800"
+      perm-ask             Open Accessibility settings (needed to freeze keyboard/mouse)
+      help                 This help
 
     --duration is the block LENGTH in SECONDS (5–3600). The onetime/snooze "for <dur>" spec is a
     DIFFERENT thing — how far ahead the instant is — and accepts d/h/m/s. `set` refuses an alarm

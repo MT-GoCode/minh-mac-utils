@@ -50,7 +50,7 @@ chmod 755 /usr/local/bin/blockrem
 chown root:wheel /usr/local/bin/blockrem
 
 echo "▸ seeding $SUPPORT (defaults only if absent)"
-mkdir -p "$SUPPORT/logs"
+mkdir -p "$SUPPORT/logs" "$SUPPORT/data"
 # Seed only the per-machine key (enforcedUser); behavioral defaults live in the code (Settings.swift)
 # and are decoded leniently, so changing a default actually takes effect instead of being shadowed.
 cat > "$SUPPORT/settings.json" <<EOF
@@ -58,12 +58,18 @@ cat > "$SUPPORT/settings.json" <<EOF
   "enforcedUser" : "$USER_NAME"
 }
 EOF
-[ -f "$SUPPORT/schedule.json" ] || printf '[]'   > "$SUPPORT/schedule.json"
-[ -f "$SUPPORT/snooze" ]       || printf 'null' > "$SUPPORT/snooze"
-[ -f "$SUPPORT/active.json" ]  || printf '{}'   > "$SUPPORT/active.json"
+[ -f "$SUPPORT/active.json" ]        || printf '{}'   > "$SUPPORT/active.json"
+[ -f "$SUPPORT/data/schedule.json" ] || printf '[]'   > "$SUPPORT/data/schedule.json"
+[ -f "$SUPPORT/data/snooze" ]        || printf 'null' > "$SUPPORT/data/snooze"
+# Root owns the app, daemon, plists, and settings (so uninstall/stop need sudo and the overlay is
+# un-quittable), but the data subdir is owned by the enforced user — that's what lets set/delete/
+# snooze run WITHOUT sudo (atomic writes need a writable dir).
 chown -R root:wheel "$SUPPORT"
 chmod 755 "$SUPPORT" "$SUPPORT/logs"
-chmod 644 "$SUPPORT"/settings.json "$SUPPORT"/schedule.json "$SUPPORT"/snooze "$SUPPORT"/active.json 2>/dev/null || true
+chmod 644 "$SUPPORT/settings.json" "$SUPPORT/active.json"
+chown -R "$USER_NAME" "$SUPPORT/data"
+chmod 755 "$SUPPORT/data"
+chmod 644 "$SUPPORT/data/schedule.json" "$SUPPORT/data/snooze"
 
 echo "▸ installing launchd jobs"
 cp install/com.blockrem.enforcerd.plist /Library/LaunchDaemons/
@@ -81,9 +87,10 @@ launchctl bootstrap "gui/$USER_UID" /Library/LaunchAgents/com.blockrem.agent.pli
     || launchctl kickstart -k "gui/$USER_UID/com.blockrem.agent" 2>/dev/null || true
 
 echo
-echo "✓ installed. Next steps:"
-echo "    blockrem perm-ask                # grant Accessibility (needed to block keyboard/mouse)"
-echo "    sudo blockrem set --weekly *0800 --label \"water break\" --duration 10"
+echo "✓ installed. Next steps (all user-runnable — NO sudo):"
+echo "    blockrem perm-ask                # grant Accessibility (needed to freeze keyboard/mouse)"
+echo "    blockrem set --weekly *0800 --label \"water break\" --duration 30"
 echo "    blockrem list                    # verify"
 echo
-echo "Input-blocking needs Accessibility ▸ turn ON \"Blockrem\" (the visual cover works without it)."
+echo "Only install/uninstall need sudo — that's what makes the overlay un-quittable. Input-freeze"
+echo "needs Accessibility ▸ turn ON \"Blockrem\" (the visual cover works without it)."
