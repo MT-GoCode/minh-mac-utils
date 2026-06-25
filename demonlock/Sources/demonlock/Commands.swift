@@ -84,10 +84,21 @@ func runSetPolicy(_ policy: String) {
 
 func runSnoozeTonight() {
     requireRoot("snoozetonight")
-    let target = nextHHMM(Settings.load().snoozeHHMM)
+    applySnooze(until: nextHHMM(Settings.load().snoozeHHMM))
+}
+
+/// Write the snooze target, ensure ARMED (so the daemon re-arms itself at expiry — no sudo needed
+/// then), and confirm. Shared by `snooze` and `snoozetonight`: a snooze means "stand down, THEN
+/// resume," so it implies armed. `arm` resumes NOW (cancels the snooze); `disarm` is indefinite.
+private func applySnooze(until target: Date) {
     do { try SnoozeStore.set(target) } catch { fail("✗ couldn't write snooze: \(error)") }
+    var armedNote = ""
+    if !ArmStore.isArmed() {
+        do { try ArmStore.set(true); armedNote = "  (re-armed it for you — don't run `arm`, it'd cancel this)" }
+        catch { armedNote = "  ⚠️ couldn't arm — it won't resume; run `sudo demonlock arm`" }
+    }
     let f = DateFormatter(); f.dateFormat = "EEE yyyy-MM-dd HH:mm"
-    print("✓ snoozed — enforcement stands down until \(f.string(from: target)). The next check after that clears it.")
+    print("✓ snoozed — stands down until \(f.string(from: target)), then RE-ARMS automatically.\(armedNote)")
 }
 
 /// Next occurrence of an HHMM time-of-day.
@@ -127,18 +138,7 @@ func runSnooze(_ spec: String) {
     guard target <= now.addingTimeInterval(snoozeMaxHours * 3600) else {
         fail("✗ snooze is capped at \(Int(snoozeMaxHours)) hours — that target is further out. Pick a sooner time.")
     }
-    do { try SnoozeStore.set(target) } catch { fail("✗ couldn't write snooze: \(error)") }
-    // A snooze means "stand down, THEN resume," so it implies ARMED: ensure enforcement is on and let
-    // the daemon auto-clear the snooze at expiry to re-arm ON ITS OWN — no sudo needed later (which
-    // matters once you've `sudome remove`d admin). `disarm` is the indefinite stand-down; `arm`
-    // resumes NOW (and cancels the snooze). So the right escape-then-resume flow is just: snooze.
-    var armedNote = ""
-    if !ArmStore.isArmed() {
-        do { try ArmStore.set(true); armedNote = "  (re-armed it for you — don't run `arm`, it'd cancel this)" }
-        catch { armedNote = "  ⚠️ couldn't arm — it won't resume; run `sudo demonlock arm`" }
-    }
-    let f = DateFormatter(); f.dateFormat = "EEE yyyy-MM-dd HH:mm"
-    print("✓ snoozed — stands down until \(f.string(from: target)), then RE-ARMS automatically.\(armedNote)")
+    applySnooze(until: target)
 }
 
 private struct SnoozeError: Error, CustomStringConvertible {
