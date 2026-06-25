@@ -50,6 +50,7 @@ struct Settings: Codable {
             "com.blockrem",                        // the break-blocker sibling tool — keep it shielding
             "com.lwouis.alt-tab-macos",            // AltTab
             "com.raycast.macos",                   // Raycast (menubar launcher)
+            "cc.ffitch.shottr",                    // Shottr (screenshot tool)
             "com.pilotmoon.scroll-reverser",       // Scroll Reverser
             "pro.betterdisplay.BetterDisplay",     // BetterDisplay
             "com.wtalk.daemon",                    // wtalk

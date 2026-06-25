@@ -191,9 +191,9 @@ Siri), nil-bundle helpers, and this agent (by PID). Pure daemons (betterat, next
 and are never in the kill-list. Everything else dies unless its bundle ID is in `spareBundleIDs`.
 
 The default whitelist keeps the usual menubar utilities alive — AltTab (`com.lwouis.alt-tab-macos`),
-Raycast (`com.raycast.macos`), Scroll Reverser (`com.pilotmoon.scroll-reverser`), BetterDisplay
-(`pro.betterdisplay.BetterDisplay`), wtalk (`com.wtalk.daemon`), Karabiner (`org.pqrs.Karabiner-*`),
-and the blockrem blocker (`com.blockrem`). Both daemon and agent reload settings.json **live** (every tick / feed), so add your
+Raycast (`com.raycast.macos`), Shottr (`cc.ffitch.shottr`), Scroll Reverser
+(`com.pilotmoon.scroll-reverser`), BetterDisplay (`pro.betterdisplay.BetterDisplay`), wtalk
+(`com.wtalk.daemon`), Karabiner (`org.pqrs.Karabiner-*`), and the blockrem blocker (`com.blockrem`). Both daemon and agent reload settings.json **live** (every tick / feed), so add your
 own with no reinstall:
 
 ```sh
