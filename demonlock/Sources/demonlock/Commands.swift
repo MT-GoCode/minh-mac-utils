@@ -102,6 +102,106 @@ func nextHHMM(_ hhmm: String) -> Date {
     return target
 }
 
+// MARK: - snooze (sudo)
+
+private let snoozeMaxHours = 18.0
+
+/// Stand down enforcement until a target time, like `snoozetonight` but flexible: `for <duration>`
+/// (d/h/m/s) or `until <[day]HHMM>`. Capped at 18 hours. Reuses `nextHHMM` (shared with
+/// `snoozetonight`) and the same `SnoozeStore` the daemon already honors + auto-clears (`arm` also
+/// clears it). All times local.
+func runSnooze(_ spec: String) {
+    requireRoot("snooze")
+    let s = spec.trimmingCharacters(in: .whitespacesAndNewlines)
+    if s.isEmpty {
+        fail("✗ usage: sudo demonlock snooze \"for <duration>\" | \"until <[day]HHMM>\"\n" +
+             "  e.g. sudo demonlock snooze \"for 90m\"   ·   sudo demonlock snooze \"until 0730\"\n" +
+             "  (capped at \(Int(snoozeMaxHours)) hours)")
+    }
+    let target: Date
+    do { target = try parseSnoozeTarget(s) } catch { fail("✗ \(error)") }
+    let now = Date()
+    guard target > now else { fail("✗ that time is already past — nothing to snooze.") }
+    guard target <= now.addingTimeInterval(snoozeMaxHours * 3600) else {
+        fail("✗ snooze is capped at \(Int(snoozeMaxHours)) hours — that target is further out. Pick a sooner time.")
+    }
+    do { try SnoozeStore.set(target) } catch { fail("✗ couldn't write snooze: \(error)") }
+    let f = DateFormatter(); f.dateFormat = "EEE yyyy-MM-dd HH:mm"
+    print("✓ snoozed — enforcement stands down until \(f.string(from: target)). `sudo demonlock arm` resumes now.")
+}
+
+private struct SnoozeError: Error, CustomStringConvertible {
+    let message: String
+    var description: String { message }
+}
+
+/// Resolve a snooze spec (`for <duration>` | `until <[day]HHMM>`) to an absolute future Date.
+private func parseSnoozeTarget(_ s: String) throws -> Date {
+    let lower = s.lowercased()
+    if lower.hasPrefix("for") {
+        guard let secs = parseSnoozeDuration(String(s.dropFirst(3))), secs > 0 else {
+            throw SnoozeError(message: "bad duration after 'for' — use e.g. \"for 90m\", \"for 2h\", \"for 1h30m\"")
+        }
+        return Date().addingTimeInterval(secs)
+    }
+    if lower.hasPrefix("until") {
+        var rest = String(s.dropFirst(5)).trimmingCharacters(in: .whitespaces).uppercased()
+        var weekday: Int? = nil
+        if let first = rest.first, let wd = snoozeWeekday(first), rest.count == 5 {
+            weekday = wd; rest = String(rest.dropFirst())
+        }
+        guard rest.count == 4, rest.allSatisfy(\.isNumber), let v = Int(rest), v >= 0, v <= 2359, v % 100 < 60 else {
+            throw SnoozeError(message: "bad time after 'until' — use \"until HHMM\" or \"until <day>HHMM\" like \"until U0730\"")
+        }
+        if let wd = weekday { return nextWeekdayHHMM(weekday: wd, hhmm: v) }
+        return nextHHMM(String(format: "%04d", v))   // reuse snoozetonight's helper
+    }
+    throw SnoozeError(message: "expected \"for <duration>\" or \"until <[day]HHMM>\" — e.g. \"for 45m\" or \"until 0730\"")
+}
+
+/// Sum of number+unit tokens (d/h/m/s), whitespace-insensitive: "1h30m" → 5400, "90m" → 5400.
+/// nil on a unit with no number, a trailing bare number, or junk.
+private func parseSnoozeDuration(_ raw: String) -> Double? {
+    let s = raw.lowercased().filter { !$0.isWhitespace }
+    guard !s.isEmpty else { return nil }
+    var total = 0.0, num = "", sawUnit = false
+    for ch in s {
+        if ch.isNumber { num.append(ch); continue }
+        guard let n = Double(num) else { return nil }
+        switch ch {
+        case "d": total += n * 86400
+        case "h": total += n * 3600
+        case "m": total += n * 60
+        case "s": total += n
+        default: return nil
+        }
+        num = ""; sawUnit = true
+    }
+    guard num.isEmpty, sawUnit else { return nil }
+    return total
+}
+
+/// Day letter → Calendar weekday (1=Sun…7=Sat). M T W R F S U, R=Thu, U=Sun (same as the policy lang).
+private func snoozeWeekday(_ c: Character) -> Int? {
+    switch Character(c.uppercased()) {
+    case "U": return 1; case "M": return 2; case "T": return 3; case "W": return 4
+    case "R": return 5; case "F": return 6; case "S": return 7; default: return nil
+    }
+}
+
+/// Next strictly-future occurrence of a weekday + HHMM.
+private func nextWeekdayHHMM(weekday: Int, hhmm: Int) -> Date {
+    let cal = Calendar.current, now = Date()
+    for off in 0...8 {
+        guard let base = cal.date(byAdding: .day, value: off, to: now) else { continue }
+        var c = cal.dateComponents([.year, .month, .day], from: base)
+        c.hour = hhmm / 100; c.minute = hhmm % 100; c.second = 0
+        guard let cand = cal.date(from: c), cand > now, cal.component(.weekday, from: cand) == weekday else { continue }
+        return cand
+    }
+    return now.addingTimeInterval(60)
+}
+
 // MARK: - arm / disarm (sudo)
 
 func runArm() {
@@ -155,6 +255,8 @@ func printHelp() {
       arm                 Turn enforcement ON
       disarm              Turn enforcement OFF (everything keeps running; countdown just no-ops)
       snoozetonight       Allow everything until the next snooze time (default 05:00)
+      snooze "<spec>"     Stand down until "for <duration>" or "until <[day]HHMM>" (capped 18h)
+                          e.g. sudo demonlock snooze "for 90m"  ·  sudo demonlock snooze "until 0730"
 
     POLICY LANGUAGE  (the ALLOW condition — combine with AND / OR / NOT / parentheses):
       LOCATED_IN_ANY(["zone name", ...])

@@ -18,6 +18,7 @@ case "perm-ask":                           runPermAsk()
 // sudo commands
 case "setpolicy":                          runSetPolicy(argv.dropFirst().joined(separator: " "))
 case "snoozetonight":                       runSnoozeTonight()
+case "snooze":                             runSnooze(argv.dropFirst().joined(separator: " "))
 case "arm":                                runArm()
 case "disarm":                             runDisarm()
 

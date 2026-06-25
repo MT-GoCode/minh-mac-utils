@@ -174,7 +174,9 @@ Wi‑Fi check pins BSSIDs.
 
 User (no sudo): `status` · `zones` (`view-zones`/`edit-zones` alias it) · `scan` · `perm-ask` ·
 `help`. Sudo: `setpolicy` · `arm` · `disarm` · `snoozetonight` (stands down until the next
-`snoozeHHMM`, default 05:00, then auto-clears; `arm` clears an active snooze). Settings live in
+`snoozeHHMM`, default 05:00, then auto-clears; `arm` clears an active snooze) · `snooze "<spec>"`
+(flexible stand-down: `"for <duration>"` in d/h/m/s, or `"until <[day]HHMM>"`, e.g. `snooze "for 90m"`
+/ `snooze "until 0730"`; **capped at 18 hours**; same auto-clear, and `arm` clears it). Settings live in
 `settings.json` (`pollSeconds`, `countdownSeconds`, `snoozeHHMM`, `graceSeconds`, `maxAccuracyMeters`,
 `scanSeconds`, `scanWindowSeconds`, `enforcedUser` [username **or** uid — the lockout target],
 `wifiKeepOn`, `wifiDevice`, `spareBundleIDs`). There is deliberately **no fix-age knob** and no
