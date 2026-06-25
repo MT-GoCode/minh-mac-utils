@@ -150,10 +150,17 @@ private func parseSnoozeTarget(_ s: String) throws -> Date {
         if let first = rest.first, let wd = snoozeWeekday(first), rest.count == 5 {
             weekday = wd; rest = String(rest.dropFirst())
         }
-        guard rest.count == 4, rest.allSatisfy(\.isNumber), let v = Int(rest), v >= 0, v <= 2359, v % 100 < 60 else {
+        guard rest.count == 4, rest.allSatisfy(\.isNumber), let v = Int(rest), v <= 2359, v % 100 < 60 else {
             throw SnoozeError(message: "bad time after 'until' — use \"until HHMM\" or \"until <day>HHMM\" like \"until U0730\"")
         }
-        if let wd = weekday { return nextWeekdayHHMM(weekday: wd, hhmm: v) }
+        if let wd = weekday {
+            // Fail CLOSED: if the calendar can't resolve the day/time, error out (no snooze written)
+            // rather than silently standing enforcement down for a fallback minute.
+            guard let d = nextWeekdayHHMM(weekday: wd, hhmm: v) else {
+                throw SnoozeError(message: "couldn't resolve \"until\" to a calendar date — try a plain \"until HHMM\"")
+            }
+            return d
+        }
         return nextHHMM(String(format: "%04d", v))   // reuse snoozetonight's helper
     }
     throw SnoozeError(message: "expected \"for <duration>\" or \"until <[day]HHMM>\" — e.g. \"for 45m\" or \"until 0730\"")
@@ -189,8 +196,9 @@ private func snoozeWeekday(_ c: Character) -> Int? {
     }
 }
 
-/// Next strictly-future occurrence of a weekday + HHMM.
-private func nextWeekdayHHMM(weekday: Int, hhmm: Int) -> Date {
+/// Next strictly-future occurrence of a weekday + HHMM, or nil if the calendar can't resolve it
+/// (so the caller fails closed rather than snoozing for a bogus fallback).
+private func nextWeekdayHHMM(weekday: Int, hhmm: Int) -> Date? {
     let cal = Calendar.current, now = Date()
     for off in 0...8 {
         guard let base = cal.date(byAdding: .day, value: off, to: now) else { continue }
@@ -199,7 +207,7 @@ private func nextWeekdayHHMM(weekday: Int, hhmm: Int) -> Date {
         guard let cand = cal.date(from: c), cand > now, cal.component(.weekday, from: cand) == weekday else { continue }
         return cand
     }
-    return now.addingTimeInterval(60)
+    return nil
 }
 
 // MARK: - arm / disarm (sudo)
