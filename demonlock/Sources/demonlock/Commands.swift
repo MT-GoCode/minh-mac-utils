@@ -32,8 +32,10 @@ func runStatus() {
     if let ssh = s.sshAddr { print("  \(ssh)") }
     if let dl = s.countdownDeadlineEpoch { print("  countdown     : \(max(0, Int(dl - nowEpoch())))s remaining") }
     if let sn = s.snoozeUntilEpoch {
-        let f = DateFormatter(); f.dateFormat = "EEE HH:mm"
-        print("  snooze        : until \(f.string(from: Date(timeIntervalSince1970: sn)))")
+        let f = DateFormatter(); f.dateFormat = "EEE yyyy-MM-dd HH:mm"
+        let left = max(0, Int(sn - nowEpoch()))
+        print("  snooze        : SNOOZED until \(f.string(from: Date(timeIntervalSince1970: sn)))  " +
+              "(\(left / 3600)h \(left % 3600 / 60)m left — enforcement stood down)")
     }
     print("  policy        : \(s.policyString.isEmpty ? "(none set)" : s.policyString)")
     if let t = s.tree { print("\n  policy evaluation  (✓ true · ✗ false · · unknown):\n" + t.asText(indent: 2)) }
@@ -126,8 +128,17 @@ func runSnooze(_ spec: String) {
         fail("✗ snooze is capped at \(Int(snoozeMaxHours)) hours — that target is further out. Pick a sooner time.")
     }
     do { try SnoozeStore.set(target) } catch { fail("✗ couldn't write snooze: \(error)") }
+    // A snooze means "stand down, THEN resume," so it implies ARMED: ensure enforcement is on and let
+    // the daemon auto-clear the snooze at expiry to re-arm ON ITS OWN — no sudo needed later (which
+    // matters once you've `sudome remove`d admin). `disarm` is the indefinite stand-down; `arm`
+    // resumes NOW (and cancels the snooze). So the right escape-then-resume flow is just: snooze.
+    var armedNote = ""
+    if !ArmStore.isArmed() {
+        do { try ArmStore.set(true); armedNote = "  (re-armed it for you — don't run `arm`, it'd cancel this)" }
+        catch { armedNote = "  ⚠️ couldn't arm — it won't resume; run `sudo demonlock arm`" }
+    }
     let f = DateFormatter(); f.dateFormat = "EEE yyyy-MM-dd HH:mm"
-    print("✓ snoozed — enforcement stands down until \(f.string(from: target)). `sudo demonlock arm` resumes now.")
+    print("✓ snoozed — stands down until \(f.string(from: target)), then RE-ARMS automatically.\(armedNote)")
 }
 
 private struct SnoozeError: Error, CustomStringConvertible {
@@ -263,7 +274,9 @@ func printHelp() {
       arm                 Turn enforcement ON
       disarm              Turn enforcement OFF (everything keeps running; countdown just no-ops)
       snoozetonight       Allow everything until the next snooze time (default 05:00)
-      snooze "<spec>"     Stand down until "for <duration>" or "until <[day]HHMM>" (capped 18h)
+      snooze "<spec>"     Stand down until "for <duration>" or "until <[day]HHMM>" (capped 18h),
+                          then RE-ARM automatically — no sudo needed at resume. Implies armed, so this
+                          is the escape-then-resume flow: just snooze (don't `disarm`/`arm` around it).
                           e.g. sudo demonlock snooze "for 90m"  ·  sudo demonlock snooze "until 0730"
 
     POLICY LANGUAGE  (the ALLOW condition — combine with AND / OR / NOT / parentheses):
