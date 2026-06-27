@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- mlx runs on the GPU; the Metal driver (AGX…) JIT-compiles shaders at runtime, which the
+         hardened runtime forbids unless we allow JIT / unsigned executable memory. Required or the
+         daemon is SIGKILLed with "Code Signature Invalid (Invalid Page)" the moment mlx hits Metal.
+         This does NOT disable library validation — bundled dylibs still must be team-signed, so it
+         doesn't let anyone inject code; it only permits the app's own Metal JIT. -->
+    <key>com.apple.security.cs.allow-jit</key>                        <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key> <true/>
+</dict>
+</plist>

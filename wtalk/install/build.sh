@@ -73,12 +73,22 @@ echo "▸ metallib check:"
 find "$HERE/$APP" -name '*.metallib' -print | sed 's#^#    #' || true
 find "$HERE/$APP" -name '*.metallib' | grep -q . || echo "    ⚠️  NO .metallib in bundle — mlx will fail at transcription."
 
-# --- deep-sign the WHOLE bundle last (after the plist edit), hardened runtime ON ---
-echo "▸ codesign (deep, hardened runtime) with: $ID"
-SIGN=(--force --deep --options runtime --sign "$ID" --identifier "$BUNDLE_ID")
-[ "$ID" != "-" ] && SIGN+=(--timestamp)
-codesign "${SIGN[@]}" "$HERE/$APP"
+# --- sign: deep-sign every nested Mach-O under our identity (hardened runtime ON), THEN re-seal the
+#     main executable + bundle WITH the JIT entitlement. mlx runs on the GPU and the Metal driver
+#     JIT-compiles shaders → without allow-jit the hardened runtime SIGKILLs the process with
+#     "Code Signature Invalid (Invalid Page)" the instant mlx hits Metal. Entitlements only apply to
+#     the binary they're signed onto, so the dylibs stay plain-signed and library validation stays ON
+#     (no code injection) — we only let the app's own Metal JIT run. ---
+ENT="$HERE/install/wtalk.entitlements"
+TS=(); [ "$ID" != "-" ] && TS=(--timestamp)
+echo "▸ codesign: deep-sign nested, then entitle the main binary ($ID)"
+codesign --force --deep --options runtime "${TS[@]}" --sign "$ID" "$HERE/$APP"
+codesign --force --options runtime --entitlements "$ENT" "${TS[@]}" --sign "$ID" \
+         --identifier "$BUNDLE_ID" "$HERE/$APP/Contents/MacOS/wtalk"
+codesign --force --options runtime --entitlements "$ENT" "${TS[@]}" --sign "$ID" \
+         --identifier "$BUNDLE_ID" "$HERE/$APP"
 codesign --verify --deep --strict --verbose=2 "$HERE/$APP"
+echo "  entitlements on main binary:"; codesign -d --entitlements - "$HERE/$APP/Contents/MacOS/wtalk" 2>/dev/null | grep -o "allow-[a-z-]*" | sed 's/^/    /'
 
 # --- keep a prebuilt copy in dist/ ---
 mkdir -p "$HERE/dist"; rm -rf "$HERE/dist/$APP"; cp -R "$HERE/$APP" "$HERE/dist/$APP"
