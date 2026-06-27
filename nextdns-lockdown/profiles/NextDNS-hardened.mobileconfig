@@ -89,6 +89,7 @@
                 <key>Domains</key>
                 <array>
                   <string>captive.apple.com</string>
+                  <string>www.appleiphonecell.com</string>
                   <string>mask.icloud.com</string>
                   <string>mask-h2.icloud.com</string>
                   <string>3gppnetwork.org</string>

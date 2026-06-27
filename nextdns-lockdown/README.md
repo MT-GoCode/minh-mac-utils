@@ -17,10 +17,13 @@ Make NextDNS the ONLY way DNS leaves this Mac.
 No Homebrew, no nextdns CLI. Needs: macOS 11+, admin, a NextDNS account.
 
 ```bash
-cd nextdns-lockdown
+git clone git@github.com:MT-GoCode/minh-mac-utils.git
+cd minh-mac-utils/nextdns-lockdown
 
 # 1. Get your profile from https://apple.nextdns.io  (signed file in ~/Downloads).
-#    Harden it (adds bootstrap IPs so DoH works even with port 53 blocked):
+#    Harden it: strips the signature, injects bootstrap ServerAddresses (DoH works
+#    even with port 53 blocked), and rebuilds the OnDemand captive-portal rules
+#    (Apple/iCloud detection domains stay plaintext; DoH for everything else):
 ./profiles/harden-nextdns-profile.sh ~/Downloads/NextDNS\ \(YOURID\).mobileconfig
 #    -> writes profiles/NextDNS-hardened.mobileconfig
 
@@ -28,7 +31,7 @@ cd nextdns-lockdown
 sudo ./install.sh
 
 # 3. Install BOTH profiles. Run in YOUR shell (NOT sudo), one at a time:
-open profiles/NextDNS-hardened.mobileconfig
+open profiles/NextDNS-hardened.mobileconfig   # shows "Unverified" — expected
 open profiles/no-browser-doh.mobileconfig
 #    After each: System Settings -> "Profile Downloaded" (TOP of sidebar) -> Install.
 
@@ -45,13 +48,14 @@ nextdns-lockdown status          # what's on
 nextdns-lockdown selftest        # probe every bypass
 sudo nextdns-lockdown arm        # wall on   (needs the profile installed)
 sudo nextdns-lockdown disarm     # wall off  (emergency escape)
-sudo nextdns-lockdown reload     # after editing pf/doh-blocklist.txt
+sudo nextdns-lockdown reload     # after editing the INSTALLED /usr/local/etc/nextdns-lockdown/*.txt
+                                 # (editing the repo's pf/*.txt does nothing until you re-run install.sh)
 ```
 
 ## Profiles
 
 - **NextDNS profile** = the resolver. REQUIRED. Get from apple.nextdns.io, harden with the script.
-  - *Hardened* = signature stripped + NextDNS anycast `ServerAddresses` added, so DoH bootstraps with no port-53 lookup. (Stock profile works too — the LAN door bootstraps it — hardening just removes that dependency. Hardened shows "Unverified" because editing breaks the signature. Fine.)
+  - *Hardened* (see step 1) removes the port-53 bootstrap dependency and reinforces captive handling. Stock profile works too — the captive door bootstraps it. Shows "Unverified" (editing breaks NextDNS's signature) — expected.
 - **no-browser-doh.mobileconfig** = forces Secure DNS OFF in Chrome/Edge/Brave/Vivaldi/Opera/Arc/Firefox (each browser has its own; no global switch). Safari has none.
 - Removing any profile needs admin/sudo (they're system-scoped).
 

@@ -12,9 +12,12 @@
 #                   unfiltered resolver) + best-effort reinstall from the cache
 # While DISARMED it removes our ruleset once and idles.
 #
-# No travel mode, no resolver pinning, no local daemon to babysit: captive
-# portals work automatically because plaintext 53 to private/LAN ranges is
-# always allowed (see pf ruleset). Standalone bash + base-OS tools only.
+# No travel mode, no resolver pinning, no babysitting: captive portals work
+# automatically because plaintext 53 is allowed to private/LAN ranges AND to the
+# current network's actual gateway/resolver, learned live each tick + on every
+# network change (see sync_captive_door / network_watcher). That covers public
+# IPv6 resolvers handed out by cellular-backed transit/airport wifi.
+# Standalone bash + base-OS tools only.
 
 set -u
 
@@ -73,11 +76,41 @@ sync_captive_door() {
     desired="$( { static_ranges; printf '%s\n' "$learned"; } \
                 | grep -vE '^[[:space:]]*$' | sort -u )"
     # Atomic membership swap: adds this network's hosts, drops the last one's.
-    [ -n "$desired" ] && pfctl -t local_dns -T replace $desired >/dev/null 2>&1
+    # Surface a failed replace (e.g. a malformed token) — otherwise the door could
+    # silently go stale instead of tracking the network.
+    if [ -n "$desired" ]; then
+        pfctl -t local_dns -T replace $desired >/dev/null 2>>"$LOG" \
+            || log "WARNING: <local_dns> replace failed — captive door may be stale"
+    fi
     if [ "$learned" != "$LEARN_SIG" ]; then
         LEARN_SIG="$learned"
         log "captive door synced — network hosts: $(printf '%s' "$learned" | tr '\n' ' ')"
     fi
+}
+
+# Event-driven captive-door re-sync. The 5s poll alone leaves a join-race: macOS
+# fires captive detection the instant you join a network, but if that network's
+# resolver is a PUBLIC address (the cellular-backed transit/airport wifi this tool
+# targets) the door wouldn't open it until the next tick — so the first probe is
+# blocked and the portal may not pop. This watcher reads the kernel routing socket
+# and re-syncs the door within milliseconds of any route change (new wifi, new
+# lease, captive->authed), closing that window. Pure bonus on top of the poll; if
+# `route monitor` ever dies it just restarts. Debounced to <=1 sync/sec.
+network_watcher() {
+    local last=0 now
+    while true; do
+        route -n monitor 2>/dev/null | while read -r line; do
+            case "$line" in
+              *RTM_ADD*|*RTM_DELETE*|*RTM_CHANGE*|*RTM_NEWADDR*|*RTM_DELADDR*|*RTM_IFINFO*)
+                now=$(date +%s)
+                [ "$now" -le "$last" ] && continue
+                last=$now
+                [ -f "$ARMED" ] && profile_present && sync_captive_door
+                ;;
+            esac
+        done
+        sleep 2   # routing socket closed unexpectedly — restart the monitor
+    done
 }
 
 assert_pf() {
@@ -134,6 +167,11 @@ assert_profile() {
 }
 
 log "nextdns-lockdownd started (profile-mode, interval=${INTERVAL}s)"
+
+# Instant captive-door re-sync on network change (closes the 5s join-race).
+# Runs as a background child; the poll loop below remains the source of truth.
+network_watcher &
+
 while true; do
     if [ -f "$ARMED" ]; then
         assert_pf && assert_profile

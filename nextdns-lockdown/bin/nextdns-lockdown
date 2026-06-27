@@ -10,7 +10,8 @@
 #
 # The resolver is the macOS Encrypted-DNS profile (DoH to NextDNS). This tool
 # only manages the bypass WALL (pf). Captive portals work automatically (plain
-# DNS to private/LAN ranges is always allowed) — there is NO travel mode.
+# DNS is allowed to private/LAN ranges AND to the current network's actual
+# resolver, learned live by the daemon) — there is NO travel mode.
 #
 # Privileged subcommands require root; admin is gated by sudome — that
 # delay is the whole point (see README).
