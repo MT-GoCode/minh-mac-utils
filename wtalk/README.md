@@ -37,19 +37,26 @@ The red dot tells the truth: 🔴 listening · ◌ spinner = transcribing/cleani
 
 ## Clean install
 
-wtalk is frozen with **Nuitka** into a **sealed, code-signed, root-owned**
+wtalk is frozen with **PyInstaller** into a **sealed, code-signed, root-owned**
 `/Applications/wtalk.app` — the same model as the sibling tools `demonlock` and
-`serialize`. "Sealed + root-owned" matters: the bundle is `root:wheel` (you can't
-modify or swap it without `sudo`) **and** it's built with `--python-flag=isolated/no_site`
-so it ignores `PYTHONPATH`/env/user-site and can only ever run the code baked inside it.
-That immutability is what lets **demonlock safely whitelist wtalk** from its lockout.
+`serialize`. "Sealed + root-owned" matters: the launched binary is the **PyInstaller
+bootloader**, not a `python` CLI — it takes no `-c`/`-m`/argv-script and runs only the
+embedded bytecode, and PyInstaller ≥6 blocks a host `PYTHONPATH`/`PYTHONHOME` from
+overriding the bundled modules. Combined with the `root:wheel` install (you can't replace
+the embedded code without `sudo`, and any edit breaks the code signature) it can only ever
+run the code baked inside it. That immutability is what lets **demonlock safely whitelist
+wtalk** from its lockout with no hole.
+
+(Why PyInstaller and not Nuitka? Nuitka stalled compiling pyobjc's giant `*_metadata.c`
+files — ~10 minutes *each*, turning the build into a multi-hour ordeal. PyInstaller freezes
+the same bundle in minutes.)
 
 Two steps — prep, then install:
 
 ```bash
 cd ~/code/wtalk
 ./setup.sh          # prereqs: Apple Silicon + uv + ffmpeg check, .venv (3.10) + deps
-sudo ./install.sh   # Nuitka-freeze + sign, deploy root-owned, seed ~/.wtalk, load launchd
+sudo ./install.sh   # PyInstaller-freeze + sign, deploy root-owned, seed ~/.wtalk, load launchd
 ```
 
 `setup.sh` only prepares the **build prerequisites** (the `.venv` and wheels). It no
@@ -57,7 +64,7 @@ longer builds the app or touches `~/.local/bin` — install is a root operation 
 
 `sudo ./install.sh` (build runs as *you* for the keychain; deploy runs as root):
 
-1. **Freezes + signs** `wtalk.app` with Nuitka (first compile is slow — several minutes).
+1. **Freezes + signs** `wtalk.app` with PyInstaller (a few minutes).
 2. **Deploys it root-owned** to `/Applications/wtalk.app` (`chown root:wheel`, `chmod -R go-w`).
 3. Installs the CLI wrapper `/usr/local/bin/wtalk` → the bundle's binary.
 4. **Seeds `~/.wtalk`** (user-owned DATA) with `.env`, `config.txt`, and `prompts/` — only
@@ -66,14 +73,19 @@ longer builds the app or touches `~/.local/bin` — install is a root operation 
    `/Library/LaunchAgents`) and bootstraps it into your `gui/<uid>` session (run at login,
    kept alive).
 
+> **Reinstall without re-signing:** `sudo ./install.sh --prebuilt` deploys the
+> already-signed `dist/wtalk.app` **without rebuilding** — use it to reinstall (re-deploy
+> root-owned, reseed, reload the agent) without re-entering the Developer-ID signing PIN.
+> Plain `sudo ./install.sh` builds a fresh bundle and prompts the signing PIN once.
+
 > **Why `~/.wtalk` for your data?** Code is sealed and root-owned; **data is yours**. Your
 > keys (`.env`), settings (`config.txt`), prompts, logs, state, and history all live in
 > `~/.wtalk`. Editing them changes only what the binary *reads* — it can never redirect
 > which code the sealed binary *runs* (nothing there is on an import path). The frozen
 > bundle does **not** depend on the repo dir at runtime.
 
-> **Source-only copy:** everything is git-tracked source — `.venv/`, the Nuitka build
-> outputs (`wtalk.app/`, `dist/`, `wtalk.build/`), and secrets are gitignored and
+> **Source-only copy:** everything is git-tracked source — `.venv/`, the PyInstaller build
+> outputs (`wtalk.app/`, `dist/`, `build/`), and secrets are gitignored and
 > regenerated locally. Copy the repo, run the two commands above, done.
 
 **The two manual bits the installer can't do for you:**
@@ -128,7 +140,7 @@ cleaned text still lands on the clipboard — just press ⌘V.)
 ## Code signing
 
 Apple Silicon requires a signature to run at all. `install/build.sh` auto-picks the best
-identity (shared `../sign-identity.sh`) and Nuitka deep-signs the whole bundle with it:
+identity (shared `../sign-identity.sh`) and deep-signs the whole bundle with it:
 
 1. **Developer ID Application** (team `BULCQM9J2V`) — if one is in your login keychain. Best:
    Apple-rooted, the TCC grant persists across rebuilds, survives cert expiry (secure timestamp).
@@ -141,19 +153,18 @@ identity (shared `../sign-identity.sh`) and Nuitka deep-signs the whole bundle w
 
 Override with `CODESIGN_IDENTITY="…"`.
 
-**Hardened runtime stays ON.** This is the opposite of the old build — and it's only possible
-*because* of Nuitka. Nuitka bundles its own interpreter and **re-signs every dependency `.so`
-(mlx, numpy, sounddevice, pyobjc) under one identity**, so the hardened runtime's *library
-validation* is satisfied — all Mach-Os share our Team ID. (The old "copy the system interpreter
-into a `.app`" trick had to *disable* the hardened runtime because it carried unsigned conda/venv
-extensions; that whole class of problem is gone.) Do **not** add `--macos-disable-library-validation`.
+**Hardened runtime stays ON.** PyInstaller **deep-signs every bundled `.dylib`/`.so`
+(mlx, numpy, sounddevice, pyobjc) under one Developer-ID identity**, so the hardened runtime's
+*library validation* is satisfied — all Mach-Os share our Team ID. (The old "copy the system
+interpreter into a `.app`" trick had to *disable* the hardened runtime because it carried unsigned
+conda/venv extensions; that whole class of problem is gone.) Do **not** disable library validation.
 
 The bundle is rebuilt + re-signed on each `sudo ./install.sh`. To carry a Developer ID to another
 Mac, export it from Keychain Access as a `.p12` and import it there. If you change the signature,
 an old TCC grant can go stale — remove the `wtalk` entry in Privacy & Security and re-add it.
 
-**Notarization (optional).** With a Developer ID identity, uncomment `--macos-sign-notarization`
-in `install/build.sh`, then `xcrun notarytool submit` + `xcrun stapler staple` the bundle. Only
+**Notarization (optional).** With a Developer ID identity, `xcrun notarytool submit` the signed
+bundle, then `xcrun stapler staple` it. Only
 worth it to move the app between Macs without Gatekeeper prompts; for a local install it's unneeded.
 
 ---
@@ -176,7 +187,9 @@ tccutil reset Accessibility com.wtalk.daemon
 ```bash
 cd ~/code/wtalk
 ./setup.sh                    # only if .venv is gone (recreates venv + deps)
-sudo ./install.sh             # Nuitka-freeze, sign, deploy root-owned, reload the agent
+sudo ./install.sh             # PyInstaller-freeze, sign, deploy root-owned, reload the agent
+# or, to skip the rebuild + signing PIN and redeploy the already-signed bundle:
+sudo ./install.sh --prebuilt  # deploy dist/wtalk.app as-is, re-sign nothing
 ```
 
 ---

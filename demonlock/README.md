@@ -187,25 +187,36 @@ See `MODEL.md`.
 
 **Sparing an app from the lockout kill** (`spareApps`): the LOCKED action SIGKILLs **every
 `.regular` (Dock) app — including Apple ones like Safari — plus every non-Apple `.accessory`
-(menubar) app**, so a distraction repackaged as `LSUIElement` can't dodge the lockout. Spared
-automatically: Apple's own menubar items (`com.apple.*`), nil-bundle helpers, and this agent (by PID).
-Pure daemons (betterat, nextdns*) have no GUI app and are never in the kill-list. Everything else dies
-unless it's a **verified** entry in `spareApps`.
+(menubar) app**, so a distraction repackaged as `LSUIElement` can't dodge the lockout. A `.accessory`
+app not in `spareApps` is spared **only if its live signature is genuinely Apple-signed** (`anchor
+apple` — which a Developer-ID cert can't satisfy), so Control Center / Spotlight / Siri survive but
+an `LSUIElement` distraction stamped `com.apple.…` (or with no bundle id) is killed — the bundle-id
+string is never trusted, the signature is verified. This agent is spared by PID. Pure daemons
+(betterat, nextdns*) have no GUI app and are never in the kill-list. Everything else dies unless it's
+a **verified** entry in `spareApps`.
 
-`spareApps` is `bundle-ID → Team ID`. An app is spared only if its **live code signature is verified**
-(Apple-rooted + that bundle id + that Team ID) — so a distraction that merely spoofs a whitelisted
-bundle id from another signer is still killed. Team ID (not cdhash) so a spare survives app
-auto-updates. For apps signed by **our own** Team (`BULCQM9J2V`), there's an extra pin: the bundle must
-be **root-owned** (you can re-sign anything with your own cert, so without this you could swap your own
-whitelisted app for a browser — root ownership means you'd need sudo to do it).
+`spareApps` is `bundle-ID → Team ID`, but an app is spared by **one of two regimes**, picked by
+whether its bundle is **root-owned** (`spareVerified` in `Sensors.swift`):
 
-Default whitelist: demonlock + Serialize + wtalk (ours, root-owned installs in `/Applications`;
-wtalk is additionally a Nuitka-frozen/sealed binary so it can't be redirected to run other code),
-AltTab (`com.lwouis.alt-tab-macos`), Raycast (`com.raycast.macos`), Shottr (`cc.ffitch.shottr`),
-Amphetamine (`com.if.Amphetamine`), Scroll Reverser (`com.pilotmoon.scroll-reverser`), BetterDisplay
-(`pro.betterdisplay.BetterDisplay`), Karabiner (`org.pqrs.Karabiner-*`). **Not** included: blockrem —
-our-team but `.accessory`/self-managed, not a root-owned install (so a team-pin couldn't protect it). Both daemon and agent reload settings.json **live** (every tick / feed), so add your
-own with no reinstall:
+- **Root-owned bundle** (our own apps — demonlock/serialize/wtalk/blockrem install to `/Applications`
+  `root:wheel`): spared if it has an **intact signature with the matching identifier — ANY signing
+  identity**. No Team ID, no Apple anchor required (`team` is unused here). This means your own apps
+  **keep working even if you lose your Developer ID** and fall back to self-signed/ad-hoc. It's safe
+  because the adversary has no sudo, so they can't create or modify a root-owned bundle in the first
+  place.
+- **Not root-owned** (a third-party app, e.g. AltTab/Raycast in `/Applications`): spared only if its
+  live signature is **Apple-rooted with the vendor's Team ID** (`anchor apple generic` + that bundle
+  id + that Team ID). That's the **vendor's** team — independent of your signing identity — so a
+  distraction that merely spoofs a whitelisted bundle id from another signer is still killed, and
+  Team (not cdhash) survives the vendor's auto-updates.
+
+Default whitelist: demonlock + Serialize + wtalk + blockrem (all ours, root-owned installs in
+`/Applications`; wtalk is additionally a PyInstaller-frozen/sealed binary so it can't be redirected
+to run other code), plus the third-party AltTab (`com.lwouis.alt-tab-macos`), Raycast
+(`com.raycast.macos`), Shottr (`cc.ffitch.shottr`), Amphetamine (`com.if.Amphetamine`), Scroll
+Reverser (`com.pilotmoon.scroll-reverser`), BetterDisplay (`pro.betterdisplay.BetterDisplay`), and
+Karabiner (`org.pqrs.Karabiner-*`). Both daemon and agent reload settings.json **live** (every tick /
+feed), so add your own with no reinstall:
 
 ```sh
 sudo vi "/Library/Application Support/Demonlock/settings.json"   # "spareApps": {"com.demonlock":"BULCQM9J2V","their.bundle":"TEAMID"}

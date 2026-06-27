@@ -15,13 +15,17 @@ cd "$HERE"
 
 # Build fresh as the user if a Developer ID cert + toolchain are present; else deploy the prebuilt,
 # already-signed dist/ bundle (don't ad-hoc-resign over it). Mirrors demonlock's signing ladder.
-HAVE_DEVID="$(sudo -u "$USER_NAME" security find-identity -p codesigning -v 2>/dev/null \
-              | grep -c 'Developer ID Application' || true)"
-if [ -d "$HERE/dist/$APP" ] && [ "${HAVE_DEVID:-0}" -eq 0 ]; then
-    echo "▸ no Developer ID cert — deploying prebuilt dist/$APP (no re-sign)"
+# `--prebuilt` deploys dist/$APP as-is — (re)install WITHOUT a rebuild, and without the Developer-ID
+# signing PIN that a fresh build prompts for in the `sudo -u $USER_NAME` context. Build separately
+# first with `./install/build.sh` (as you), then `sudo ./install.sh --prebuilt`.
+PREBUILT=0; LOGIN=0
+for a in "$@"; do [ "$a" = "--prebuilt" ] && PREBUILT=1; [ "$a" = "--login" ] && LOGIN=1; done
+if [ "$PREBUILT" -eq 1 ]; then
+    [ -d "$HERE/dist/$APP" ] || { echo "✗ --prebuilt but no dist/$APP — build it first: ./install/build.sh"; exit 1; }
+    echo "▸ --prebuilt: deploying signed dist/$APP (no rebuild, no PIN)"
     SRC="$HERE/dist/$APP"
 elif xcode-select -p >/dev/null 2>&1 && [ -f "$HERE/Package.swift" ]; then
-    echo "▸ building + signing as $USER_NAME"
+    echo "▸ building + signing as $USER_NAME (prompts your signing PIN once)"
     sudo -u "$USER_NAME" bash install/build.sh
     SRC="$HERE/$APP"
 elif [ -d "$HERE/dist/$APP" ]; then
@@ -46,7 +50,7 @@ xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
 /usr/bin/mdimport "$DEST" >/dev/null 2>&1 || true   # nudge Spotlight
 
 # Optional per-user login auto-start (still a gui LaunchAgent — opens the root-owned app). --login
-if [ "${1:-}" = "--login" ]; then
+if [ "$LOGIN" -eq 1 ]; then
     LA="/Users/$USER_NAME/Library/LaunchAgents"
     sudo -u "$USER_NAME" mkdir -p "$LA"
     sed "s#__APP__#$DEST#g" install/com.serialize.login.plist > "$LA/com.serialize.login.plist"
