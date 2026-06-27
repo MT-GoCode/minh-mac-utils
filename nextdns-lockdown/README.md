@@ -59,11 +59,33 @@ sudo nextdns-lockdown reload     # after editing the INSTALLED /usr/local/etc/ne
 - **no-browser-doh.mobileconfig** = forces Secure DNS OFF in Chrome/Edge/Brave/Vivaldi/Opera/Arc/Firefox (each browser has its own; no global switch). Safari has none.
 - Removing any profile needs admin/sudo (they're system-scoped).
 
+## Diagnostics (captive-portal logger)
+
+When a captive portal misbehaves, this captures everything needed to tell *why*,
+after the fact. Optional, no sudo — runs as a user LaunchAgent in your GUI
+session, fires a ~45s burst of snapshots on every network change, self-cleans
+logs older than 1 day.
+
+```bash
+./install-probe.sh             # install + load (RunAtLoad fires one burst now)
+nextdns-lockdown-probe once    # take a single snapshot right now
+nextdns-lockdown-probe tail    # follow today's log
+./install-probe.sh uninstall   # stop it (logs kept)
+```
+
+Each snapshot logs: SSID, interfaces/IPs, v4+v6 default routes, `scutil --dns`
+resolvers, `dig captive.apple.com` via the system / v4 / v6 resolvers, macOS's
+own `captive.apple.com/hotspot-detect` result (Success / Portal / fail), DoH
+reachability, gateway ping, pf `<local_dns>` table, and a tail of the daemon log
+— each with a one-line SUMMARY. Logs: `~/Library/Logs/nextdns-captive-probe/`.
+Next time a portal fails, `tail` the log (or ask) to see exactly which resolver
+macOS reached for and what got blocked.
+
 ## Files
 
 ```
-install.sh  uninstall.sh  permcheck.sh
-bin/      nextdns-lockdown  nextdns-lockdownd
+install.sh  uninstall.sh  install-probe.sh  permcheck.sh
+bin/      nextdns-lockdown  nextdns-lockdownd  nextdns-lockdown-probe
 pf/       nextdns-lockdown.conf  local-dns.txt  doh-blocklist.txt  tor-dirauth.txt
 launchd/  com.nextdnslockdown.enforcerd.plist
 profiles/ NextDNS-hardened.mobileconfig  no-browser-doh.mobileconfig  harden-nextdns-profile.sh
