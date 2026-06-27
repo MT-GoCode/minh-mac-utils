@@ -52,13 +52,14 @@ struct Settings: Codable {
             // requires a ROOT-OWNED bundle for self-team apps — demonlock, serialize, and wtalk all
             // install to /Applications root:wheel, so you can't swap them for a browser without sudo,
             // and a sibling app you re-sign with your own Team ID (in ~/Applications) fails the owner
-            // check. wtalk is additionally a Nuitka-FROZEN binary (compiled, --python-flag=isolated/
-            // no_site) so it can't be redirected to run arbitrary code — a plain Python .app could be.
-            // blockrem is NOT here (it's .accessory + self-managed, not a root-owned install). Third-
-            // party entries below need no owner check — you can't re-sign as their teams.
+            // check. wtalk is additionally a FROZEN binary (PyInstaller bootloader, not a `python`
+            // CLI) so it can't be redirected to run arbitrary code — a plain Python .app could be.
+            // All four of ours (demonlock/serialize/wtalk/blockrem) are root-owned /Applications
+            // installs. Third-party entries below need no owner check — you can't re-sign as their teams.
             "com.demonlock":                        "BULCQM9J2V",   // the enforcer itself (root-owned install)
             "com.serialize":                        "BULCQM9J2V",   // Serialize task widget (root-owned install)
-            "com.wtalk.daemon":                     "BULCQM9J2V",   // wtalk dictation (Nuitka-frozen, root-owned)
+            "com.wtalk.daemon":                     "BULCQM9J2V",   // wtalk dictation (frozen, root-owned install)
+            "com.blockrem":                         "BULCQM9J2V",   // blockrem break-blocker (root-owned install)
             "com.lwouis.alt-tab-macos":             "QXD7GW8FHY",   // AltTab
             "com.raycast.macos":                    "SY64MV22J9",   // Raycast (menubar launcher)
             "cc.ffitch.shottr":                     "2Y683PRQWN",   // Shottr (screenshot tool)
