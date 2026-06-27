@@ -19,15 +19,18 @@ DATA="$USER_HOME/.wtalk"
 cd "$HERE"
 
 # --- choose the bundle to deploy (same signing ladder as demonlock/serialize) ---------------
-# Build fresh as the user if a Nuitka toolchain + venv are present; else deploy the prebuilt,
-# already-signed dist/wtalk.app. Don't ad-hoc-resign over a Developer-ID-signed dist copy.
-HAVE_DEVID="$(sudo -u "$USER_NAME" security find-identity -p codesigning -v 2>/dev/null \
-              | grep -c 'Developer ID Application' || true)"
-if [ -d "$HERE/dist/$APP" ] && [ "${HAVE_DEVID:-0}" -eq 0 ] && [ ! -d "$HERE/.venv" ]; then
-    echo "▸ no Developer ID cert + no venv — deploying prebuilt dist/$APP (no re-sign)"
+# Build fresh as the user if a toolchain + venv are present; else deploy the prebuilt, already-
+# signed dist/wtalk.app. Don't ad-hoc-resign over a Developer-ID-signed dist copy.
+# `--prebuilt` skips the build and deploys dist/$APP as-is — use it to (re)install WITHOUT a
+# rebuild (and without re-entering the Developer-ID smartcard PIN, which a fresh build prompts for
+# because codesign runs in the `sudo -u $USER_NAME` build context where the PIN isn't cached).
+PREBUILT=0; [ "${1:-}" = "--prebuilt" ] && PREBUILT=1
+if [ "$PREBUILT" -eq 1 ]; then
+    [ -d "$HERE/dist/$APP" ] || { echo "✗ --prebuilt but no dist/$APP — build it first: ./install/build.sh"; exit 1; }
+    echo "▸ --prebuilt: deploying signed dist/$APP (no rebuild, no PIN)"
     SRC="$HERE/dist/$APP"
 elif [ -d "$HERE/.venv" ]; then
-    echo "▸ freezing + signing as $USER_NAME (Nuitka — first compile is slow)"
+    echo "▸ freezing + signing as $USER_NAME (PyInstaller — prompts your signing PIN once)"
     sudo -u "$USER_NAME" bash install/build.sh
     SRC="$HERE/$APP"
 elif [ -d "$HERE/dist/$APP" ]; then
