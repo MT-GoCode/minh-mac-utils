@@ -48,7 +48,7 @@ echo "▸ stopping any running wtalk + clearing old-era remnants"
 sudo -u "$USER_NAME" launchctl bootout "gui/$USER_UID/com.wtalk.agent" 2>/dev/null || true
 pkill -x wtalk 2>/dev/null || true
 rm -f "$USER_HOME/Library/LaunchAgents/com.wtalk.agent.plist"   # pre-sudo era (user-owned plist)
-rm -f "$USER_HOME/.local/bin/wtalk"                             # pre-sudo era PATH symlink (else `wtalk` runs the old path)
+rm -f "$USER_HOME/.local/bin/wtalk"                             # drop any stale ~/.local/bin/wtalk (recreated as a compat symlink below)
 rm -rf "$HERE/wtalk.app.old"
 
 echo "▸ deploying ROOT-OWNED to $DEST"
@@ -69,6 +69,11 @@ exec "$APP_EXE" "\$@"
 EOF
 chmod 755 /usr/local/bin/wtalk
 chown root:wheel /usr/local/bin/wtalk
+
+# Back-compat symlink: existing Karabiner rules / PATH refs call ~/.local/bin/wtalk (the pre-sudo
+# era path). Keep it pointing at the CLI so F5→`wtalk toggle` etc. keep working after a reinstall.
+sudo -u "$USER_NAME" mkdir -p "$USER_HOME/.local/bin"
+sudo -u "$USER_NAME" ln -sf /usr/local/bin/wtalk "$USER_HOME/.local/bin/wtalk"
 
 # --- seed ~/.wtalk DATA (user-owned; editing it can't redirect the sealed binary) ----------
 echo "▸ seeding $DATA (templates only if absent; never overwrites your edits/keys)"
