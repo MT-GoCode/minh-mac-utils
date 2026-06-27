@@ -1,44 +1,90 @@
 #!/bin/bash
 #
-# nextdns-lockdownd — root enforcer for NextDNS Lockdown.
+# nextdns-lockdownd — root enforcer for NextDNS Lockdown (profile-mode).
 #
-# Runs as a root LaunchDaemon (com.nextdnslockdown.enforcerd, KeepAlive=true).
-# While ARMED it continuously re-asserts, every $INTERVAL seconds, that:
-#   1. pf is enabled and OUR ruleset is loaded   (defeats `pfctl -d` / `pfctl -f`)
-#   2. travel-mode gateway allowance is current   (captive portals)
-#   3. the system DNS resolver is 127.0.0.1        (defeats changing DNS in Settings)
-#   4. the nextdns process is alive                (so DNS never dies)
+# The resolver is the macOS Encrypted-DNS PROFILE (DoH straight to NextDNS);
+# this daemon no longer sets or pins any resolver. While ARMED it re-asserts,
+# every $INTERVAL s:
+#   1. pf is enabled and OUR ruleset is loaded         (defeats pfctl -d / -f)
+#   2. the Encrypted-DNS profile is still installed:
+#        present -> keep the local-DNS captive door open (table <local_dns>)
+#        MISSING -> FLUSH <local_dns> (fail-closed: no fallback to the gateway's
+#                   unfiltered resolver) + best-effort reinstall from the cache
 # While DISARMED it removes our ruleset once and idles.
 #
-# Fail-closed: if the ruleset ever fails validation it is NOT loaded, and the
-# event is logged, rather than loading something broken.
-#
-# Standalone bash + base-OS tools only (matches the rest of the discipline stack).
+# No travel mode, no resolver pinning, no local daemon to babysit: captive
+# portals work automatically because plaintext 53 to private/LAN ranges is
+# always allowed (see pf ruleset). Standalone bash + base-OS tools only.
 
 set -u
 
-CONF="/usr/local/etc/nextdns-lockdown/nextdns-lockdown.conf"
+ETC="/usr/local/etc/nextdns-lockdown"
+CONF="$ETC/nextdns-lockdown.conf"
+LOCAL_DNS_FILE="$ETC/local-dns.txt"
+PROFILE_CACHE="$ETC/profile.mobileconfig"
 STATE="/Library/Application Support/NextDNSLockdown"
 ARMED="$STATE/armed"
-TRAVEL="$STATE/travel-until"
 LOG="/var/log/nextdns-lockdown.log"
 INTERVAL=5
-DESIRED_DNS="127.0.0.1"
-MARKER="nextdns-lockdown-dns53"   # signature rule used to detect our ruleset
+MARKER="nextdns-lockdown-dns53"          # signature rule that identifies our ruleset
+# The Encrypted-DNS profile drops this managed pref when it is installed:
+PROFILE_PLIST="/Library/Managed Preferences/com.apple.dnsSettings.managed.plist"
 
 log() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >>"$LOG" 2>/dev/null; }
 
-pf_enabled()     { pfctl -s info 2>/dev/null | grep -q 'Status: Enabled'; }
-pf_ours_loaded() { pfctl -sr   2>/dev/null | grep -q "$MARKER"; }
+pf_enabled()      { pfctl -s info 2>/dev/null | grep -q 'Status: Enabled'; }
+pf_ours_loaded()  { pfctl -sr   2>/dev/null | grep -q "$MARKER"; }
+profile_present() { [ -f "$PROFILE_PLIST" ]; }
+table_loaded()    { pfctl -t local_dns -T show 2>/dev/null | grep -q '[0-9]'; }
+
+# ---- dynamic captive door ----------------------------------------------------
+# The static baseline (private ranges) is necessary but not sufficient: some
+# networks (cellular-backed transit/airport wifi) hand out a DNS resolver or
+# gateway on a PUBLIC address — most often a global IPv6 one, which macOS then
+# prefers. A fixed list can't know that address, so the captive portal's name
+# lookups get blocked. Fix: every tick, learn THIS network's actual gateway +
+# DHCP-advertised resolvers from macOS's own routing/DNS state and add exactly
+# those hosts to <local_dns>. Door follows the network automatically; on network
+# change the next tick rebuilds it, dropping the previous network's hosts.
+#
+# This only ever WIDENS the door to host(s) this network already told us to use
+# (same trust as a manual `dig @gateway`); it never relaxes the public-resolver
+# block in general, and the fail-closed flush on profile loss is untouched.
+
+# Static baseline ranges from the on-disk file (strip comments/blanks).
+static_ranges() { grep -vE '^[[:space:]]*(#|$)' "$LOCAL_DNS_FILE" 2>/dev/null; }
+
+# Hosts this network handed us: default gateway (v4+v6) + DHCP resolvers.
+# Strip IPv6 zone ids (%en0 — invalid in a pf table), drop loopback/wildcard.
+learn_hosts() {
+    {
+        route -n get       default 2>/dev/null | awk '/gateway:/{print $2}'
+        route -n get -inet6 default 2>/dev/null | awk '/gateway:/{print $2}'
+        scutil --dns 2>/dev/null | awk '/nameserver\[/{print $3}'
+    } | sed 's/%.*//' \
+      | grep -vE '^(127\.|0\.0\.0\.0$|::1$|0:0:0:0:0:0:0:1$|[[:space:]]*$)' \
+      | sort -u
+}
+
+LEARN_SIG=""   # last learned host set, to log only on real change
+sync_captive_door() {
+    local learned desired
+    learned="$(learn_hosts)"
+    desired="$( { static_ranges; printf '%s\n' "$learned"; } \
+                | grep -vE '^[[:space:]]*$' | sort -u )"
+    # Atomic membership swap: adds this network's hosts, drops the last one's.
+    [ -n "$desired" ] && pfctl -t local_dns -T replace $desired >/dev/null 2>&1
+    if [ "$learned" != "$LEARN_SIG" ]; then
+        LEARN_SIG="$learned"
+        log "captive door synced — network hosts: $(printf '%s' "$learned" | tr '\n' ' ')"
+    fi
+}
 
 assert_pf() {
-    if pf_enabled && pf_ours_loaded; then
-        return 0
-    fi
+    if pf_enabled && pf_ours_loaded; then return 0; fi
     # Validate BEFORE loading — never load a broken ruleset.
     if ! pfctl -n -f "$CONF" 2>>"$LOG"; then
-        log "ERROR: ruleset failed validation; refusing to load"
-        return 1
+        log "ERROR: ruleset failed validation; refusing to load"; return 1
     fi
     pfctl -f "$CONF" >/dev/null 2>>"$LOG"
     pfctl -e        >/dev/null 2>&1   # harmless 'already enabled' if it was
@@ -50,7 +96,6 @@ assert_pf() {
 }
 
 restore_pf() {
-    # Only act if our rules are currently loaded (i.e., transition to disarmed).
     if pf_ours_loaded; then
         pfctl -f /etc/pf.conf >/dev/null 2>&1
         pfctl -d              >/dev/null 2>&1
@@ -58,62 +103,40 @@ restore_pf() {
     fi
 }
 
-active_services() {
-    # Enabled network services only (skip header line and '*'-disabled ones).
-    networksetup -listallnetworkservices 2>/dev/null | tail -n +2 | grep -v '^\*'
-}
-
-assert_resolver() {
-    # Tighten only: force 127.0.0.1 as the primary resolver if it has drifted.
-    # Never loosens (disarm leaves the resolver as-is — NextDNS stays the resolver).
-    local svc cur
-    while IFS= read -r svc; do
-        [ -z "$svc" ] && continue
-        cur="$(networksetup -getdnsservers "$svc" 2>/dev/null | tr '\n' ' ')"
-        case "$cur" in
-            "$DESIRED_DNS"|"$DESIRED_DNS "*) : ;;   # already 127.0.0.1-first
-            *) if networksetup -setdnsservers "$svc" "$DESIRED_DNS" 2>>"$LOG"; then
-                   log "reset resolver on '$svc' (was: ${cur:-unset})"
-               fi ;;
-        esac
-    done < <(active_services)
-}
-
-assert_nextdns() {
-    if ! pgrep -x nextdns >/dev/null 2>&1; then
-        launchctl kickstart -k system/nextdns >/dev/null 2>&1
-        log "nextdns not running — kickstarted it"
-    fi
-}
-
-manage_travel() {
-    # Travel mode: allow the current default gateway's DNS for a limited window
-    # (so captive portals work). Auto-expires. Implemented via live table edits
-    # so no full ruleset reload is needed.
-    local now until gw
-    now="$(date +%s)"
-    if [ -f "$TRAVEL" ] && IFS= read -r until <"$TRAVEL" 2>/dev/null \
-            && [ "$until" -gt "$now" ] 2>/dev/null; then
-        gw="$(route -n get default 2>/dev/null | awk '/gateway/{print $2; exit}')"
-        if [ -n "$gw" ]; then
-            pfctl -t dns_allow -T replace -- "$gw" >/dev/null 2>&1
-        fi
+# Captive door + fail-closed-on-profile-loss, gated on a rock-solid local FILE
+# check (is the profile installed?), NOT a flaky network probe — so it can never
+# misjudge a captive portal and strand you.
+PSTATE=""   # remembered profile state, to log transitions only
+PTICK=0     # throttle reinstall attempts (~once a minute)
+assert_profile() {
+    if profile_present; then
+        # Rebuild the captive door from static ranges + THIS network's learned
+        # gateway/resolver hosts. Runs every tick so it tracks network changes.
+        sync_captive_door
+        [ "$PSTATE" = present ] || log "Encrypted-DNS profile: present"
+        PSTATE=present; PTICK=0
     else
-        # Expired or unset: ensure the allow table is empty.
-        if pfctl -t dns_allow -T show 2>/dev/null | grep -q '[0-9]'; then
-            pfctl -t dns_allow -T flush >/dev/null 2>&1
-            log "travel mode expired — flushed gateway DNS allowance"
+        # FAIL-CLOSED: no profile => no resolver. Do NOT let DNS fall back to the
+        # gateway's unfiltered resolver — flush the captive door so all DNS dies
+        # until the profile is restored (or the user disarms, admin-gated).
+        pfctl -t local_dns -T flush >/dev/null 2>&1
+        [ "$PSTATE" = absent ] || log "ALERT: Encrypted-DNS profile MISSING — flushed <local_dns> (fail-closed)"
+        PSTATE=absent
+        # Best-effort silent reinstall from the cached copy. NOTE: on current macOS
+        # a manual (non-MDM) profile install may require GUI approval, so this is a
+        # convenience — the security guarantee is the fail-closed flush above.
+        if [ -f "$PROFILE_CACHE" ] && [ $(( PTICK % 12 )) -eq 0 ]; then
+            profiles install -type configuration -path "$PROFILE_CACHE" >/dev/null 2>&1 \
+              || profiles -I -F "$PROFILE_CACHE" >/dev/null 2>&1 || true
         fi
-        [ -f "$TRAVEL" ] && rm -f "$TRAVEL"
+        PTICK=$(( PTICK + 1 ))
     fi
 }
 
-log "nextdns-lockdownd started (interval=${INTERVAL}s)"
+log "nextdns-lockdownd started (profile-mode, interval=${INTERVAL}s)"
 while true; do
     if [ -f "$ARMED" ]; then
-        assert_pf && manage_travel
-        assert_resolver
-        assert_nextdns
+        assert_pf && assert_profile
     else
         restore_pf
     fi

@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  NextDNS (cf7b93) — hardened, profile-mode.
+
+  Same as the signed NextDNS .mobileconfig from apple.nextdns.io, PLUS a
+  ServerAddresses bootstrap list so DoH can come up even if plaintext port 53 is
+  firewalled. (With nextdns-lockdown's captive door this is belt-and-suspenders:
+  DoH can also bootstrap via the LAN resolver. The original signed profile works
+  too — this just removes the dependency on port-53 bootstrap.)
+
+  Unsigned (editing breaks NextDNS's signature) — installs the same way; it will
+  show as "Unverified" instead of "Verified". Install: open this file, then
+  approve in System Settings > General > Device Management.
+
+  NOTE: verify the ServerAddresses below against your NextDNS setup page
+  (apple.nextdns.io / "Endpoints") — these are NextDNS's standard anycast IPs.
+-->
+<plist version="1.0">
+  <dict>
+    <key>PayloadDisplayName</key>
+    <string>NextDNS (cf7b93) — hardened</string>
+    <key>PayloadDescription</key>
+    <string>NextDNS Encrypted DNS (DoH) with bootstrap ServerAddresses so DNS works even when plaintext port 53 is firewalled.</string>
+    <key>PayloadIdentifier</key>
+    <string>io.nextdns.cf7b93.profile</string>
+    <key>PayloadType</key>
+    <string>Configuration</string>
+    <key>PayloadScope</key>
+    <string>System</string>
+    <key>PayloadUUID</key>
+    <string>A1E2F262-DB73-40F6-BD22-2E42A43A3C94.cf7b93</string>
+    <key>PayloadVersion</key>
+    <integer>2</integer>
+    <key>PayloadContent</key>
+    <array>
+      <dict>
+        <key>DNSSettings</key>
+        <dict>
+          <key>DNSProtocol</key>
+          <string>HTTPS</string>
+          <key>ServerURL</key>
+          <string>https://apple.dns.nextdns.io/cf7b93/personal%20mac/Apple%20~macbook-pro</string>
+          <key>ServerAddresses</key>
+          <array>
+            <string>45.90.28.0</string>
+            <string>45.90.30.0</string>
+            <string>2a07:a8c0::</string>
+            <string>2a07:a8c1::</string>
+          </array>
+        </dict>
+        <!--
+          CAPTIVE-PORTAL HANDLING — grounded in how macOS actually works (Apple
+          dev docs + the paulmillr/encrypted-dns and NextDNS communities):
+
+          macOS AUTOMATICALLY exempts the captive-portal flow from encrypted DNS.
+          Captive detection and the login micro-browser (Captive Network
+          Assistant) run in their own context that bypasses the DoH profile and
+          uses the NETWORK'S OWN PLAINTEXT RESOLVER. So a portal works as long as
+          that plaintext path is open — which is exactly what nextdns-lockdown's
+          pf door guarantees: it allows plaintext :53 to whatever gateway/resolver
+          the current network hands you (learned live each tick, incl. public
+          IPv6 resolvers that cellular-backed transit wifi uses). THAT pf door is
+          the real fix; this profile mostly just rides Apple's built-in exemption.
+
+          The rules below are belt-and-suspenders. RULE 1 (EvaluateConnection,
+          NeverConnect) pins Apple's own detection / Private-Relay probe domains
+          to ALWAYS use the plaintext resolver, never DoH — so captive DETECTION
+          can't be starved even if the built-in exemption hiccups. RULE 2
+          (Connect) keeps encrypted DNS ON for everything else.
+
+          NOTE: deliberately NO URLStringProbe / Disconnect fallback here. A probe
+          that drops DoH whenever some URL is unreachable would (a) often not even
+          fire — OnDemand rules aren't evaluated while an interface is in the
+          captive "half-connected" state — and (b) punch a filtering hole every
+          time the probe flapped, defeating a hard-lockdown tool. DoH is never
+          disabled; the lockdown stays hard. The captive door is the pf layer.
+        -->
+        <key>OnDemandRules</key>
+        <array>
+          <dict>
+            <key>Action</key>
+            <string>EvaluateConnection</string>
+            <key>ActionParameters</key>
+            <array>
+              <dict>
+                <key>DomainAction</key>
+                <string>NeverConnect</string>
+                <key>Domains</key>
+                <array>
+                  <string>captive.apple.com</string>
+                  <string>mask.icloud.com</string>
+                  <string>mask-h2.icloud.com</string>
+                  <string>3gppnetwork.org</string>
+                  <string>dav.orange.fr</string>
+                  <string>vvm.mobistar.be</string>
+                  <string>vvm.mstore.msg.t-mobile.com</string>
+                  <string>tma.vvm.mone.pan-net.eu</string>
+                  <string>vvm.ee.co.uk</string>
+                </array>
+              </dict>
+            </array>
+          </dict>
+          <dict>
+            <key>Action</key>
+            <string>Connect</string>
+          </dict>
+        </array>
+        <key>PayloadType</key>
+        <string>com.apple.dnsSettings.managed</string>
+        <key>PayloadIdentifier</key>
+        <string>io.nextdns.cf7b93.profile.dnsSettings.managed</string>
+        <key>PayloadUUID</key>
+        <string>A1E2F262-DB73-40F6-BD22-2E42A43A3C94.cf7b93.dnsSettings.managed</string>
+        <key>PayloadDisplayName</key>
+        <string>NextDNS (cf7b93)</string>
+        <key>PayloadOrganization</key>
+        <string>NextDNS</string>
+        <key>PayloadVersion</key>
+        <integer>2</integer>
+      </dict>
+    </array>
+  </dict>
+</plist>

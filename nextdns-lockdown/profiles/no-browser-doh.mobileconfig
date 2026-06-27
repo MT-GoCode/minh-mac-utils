@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Disable browser-native DoH — all common browsers.
+
+  Each browser can run its OWN encrypted DNS (Secure DNS), bypassing the system
+  resolver and therefore NextDNS. There is NO global macOS switch for this: each
+  browser reads its own managed-policy domain, so every one is listed explicitly
+  below (DnsOverHttpsMode=off for Chromium; DNSOverHTTPS Enabled=false/Locked for
+  Firefox). Browsers are pre-locked even if not yet installed.
+
+  Coverage: Chrome (+Beta/Dev/Canary), Edge (+Beta/Dev/Canary), Brave, Vivaldi,
+  Opera, Arc, Firefox. Safari has no independent DoH (only iCloud Private Relay —
+  paid; disable in NextDNS "Block Bypass Methods"). Arc/Opera honor enterprise
+  policies inconsistently — for those the pf DoH-IP blocklist is the backstop.
+
+  Install: open this file, approve in System Settings > General > Device
+  Management, then relaunch each browser; confirm at e.g. chrome://policy.
+-->
+<plist version="1.0">
+  <dict>
+    <key>PayloadDisplayName</key>
+    <string>Disable Browser DoH (all browsers)</string>
+    <key>PayloadDescription</key>
+    <string>Forces built-in Secure DNS OFF in every common browser so they use the system NextDNS resolver and cannot bypass it.</string>
+    <key>PayloadIdentifier</key>
+    <string>com.minh.nextdnslockdown.nobrowserdoh</string>
+    <key>PayloadType</key>
+    <string>Configuration</string>
+    <key>PayloadScope</key>
+    <string>System</string>
+    <key>PayloadUUID</key>
+    <string>7B3C1A90-0001-4000-8000-000000000001</string>
+    <key>PayloadVersion</key>
+    <integer>2</integer>
+    <key>PayloadContent</key>
+    <array>
+      <dict>
+        <key>PayloadType</key><string>com.google.Chrome</string>
+        <key>PayloadIdentifier</key><string>com.minh.nextdnslockdown.nobrowserdoh.chrome</string>
+        <key>PayloadUUID</key><string>7B3C1A90-0001-4000-8000-000000000002</string>
+        <key>PayloadDisplayName</key><string>Chrome — Secure DNS off</string>
+        <key>PayloadVersion</key><integer>1</integer>
+        <key>DnsOverHttpsMode</key><string>off</string>
+        <key>BuiltInDnsClientEnabled</key><false/>
+      </dict>
+      <dict>
+        <key>PayloadType</key><string>com.google.Chrome.beta</string>
+        <key>PayloadIdentifier</key><string>com.minh.nextdnslockdown.nobrowserdoh.chrome-beta</string>
+        <key>PayloadUUID</key><string>7B3C1A90-0001-4000-8000-000000000003</string>
+        <key>PayloadDisplayName</key><string>Chrome Beta — Secure DNS off</string>
+        <key>PayloadVersion</key><integer>1</integer>
+        <key>DnsOverHttpsMode</key><string>off</string>
+        <key>BuiltInDnsClientEnabled</key><false/>
+      </dict>
+      <dict>
+        <key>PayloadType</key><string>com.google.Chrome.dev</string>
+        <key>PayloadIdentifier</key><string>com.minh.nextdnslockdown.nobrowserdoh.chrome-dev</string>
+        <key>PayloadUUID</key><string>7B3C1A90-0001-4000-8000-000000000004</string>
+        <key>PayloadDisplayName</key><string>Chrome Dev — Secure DNS off</string>
+        <key>PayloadVersion</key><integer>1</integer>
+        <key>DnsOverHttpsMode</key><string>off</string>
+        <key>BuiltInDnsClientEnabled</key><false/>
+      </dict>
+      <dict>
+        <key>PayloadType</key><string>com.google.Chrome.canary</string>
+        <key>PayloadIdentifier</key><string>com.minh.nextdnslockdown.nobrowserdoh.chrome-canary</string>
+        <key>PayloadUUID</key><string>7B3C1A90-0001-4000-8000-000000000005</string>
+        <key>PayloadDisplayName</key><string>Chrome Canary — Secure DNS off</string>
+        <key>PayloadVersion</key><integer>1</integer>
+        <key>DnsOverHttpsMode</key><string>off</string>
+        <key>BuiltInDnsClientEnabled</key><false/>
+      </dict>
+      <dict>
+        <key>PayloadType</key><string>com.microsoft.Edge</string>
+        <key>PayloadIdentifier</key><string>com.minh.nextdnslockdown.nobrowserdoh.edge</string>
+        <key>PayloadUUID</key><string>7B3C1A90-0001-4000-8000-000000000006</string>
+        <key>PayloadDisplayName</key><string>Edge — Secure DNS off</string>
+        <key>PayloadVersion</key><integer>1</integer>
+        <key>DnsOverHttpsMode</key><string>off</string>
+        <key>BuiltInDnsClientEnabled</key><false/>
+      </dict>
+      <dict>
+        <key>PayloadType</key><string>com.microsoft.Edge.Beta</string>
+        <key>PayloadIdentifier</key><string>com.minh.nextdnslockdown.nobrowserdoh.edge-beta</string>
+        <key>PayloadUUID</key><string>7B3C1A90-0001-4000-8000-000000000007</string>
+        <key>PayloadDisplayName</key><string>Edge Beta — Secure DNS off</string>
+        <key>PayloadVersion</key><integer>1</integer>
+        <key>DnsOverHttpsMode</key><string>off</string>
+        <key>BuiltInDnsClientEnabled</key><false/>
+      </dict>
+      <dict>
+        <key>PayloadType</key><string>com.microsoft.Edge.Dev</string>
+        <key>PayloadIdentifier</key><string>com.minh.nextdnslockdown.nobrowserdoh.edge-dev</string>
+        <key>PayloadUUID</key><string>7B3C1A90-0001-4000-8000-000000000008</string>
+        <key>PayloadDisplayName</key><string>Edge Dev — Secure DNS off</string>
+        <key>PayloadVersion</key><integer>1</integer>
+        <key>DnsOverHttpsMode</key><string>off</string>
+        <key>BuiltInDnsClientEnabled</key><false/>
+      </dict>
+      <dict>
+        <key>PayloadType</key><string>com.microsoft.Edge.Canary</string>
+        <key>PayloadIdentifier</key><string>com.minh.nextdnslockdown.nobrowserdoh.edge-canary</string>
+        <key>PayloadUUID</key><string>7B3C1A90-0001-4000-8000-000000000009</string>
+        <key>PayloadDisplayName</key><string>Edge Canary — Secure DNS off</string>
+        <key>PayloadVersion</key><integer>1</integer>
+        <key>DnsOverHttpsMode</key><string>off</string>
+        <key>BuiltInDnsClientEnabled</key><false/>
+      </dict>
+      <dict>
+        <key>PayloadType</key><string>com.brave.Browser</string>
+        <key>PayloadIdentifier</key><string>com.minh.nextdnslockdown.nobrowserdoh.brave</string>
+        <key>PayloadUUID</key><string>7B3C1A90-0001-4000-8000-00000000000A</string>
+        <key>PayloadDisplayName</key><string>Brave — Secure DNS off</string>
+        <key>PayloadVersion</key><integer>1</integer>
+        <key>DnsOverHttpsMode</key><string>off</string>
+        <key>BuiltInDnsClientEnabled</key><false/>
+      </dict>
+      <dict>
+        <key>PayloadType</key><string>com.vivaldi.Vivaldi</string>
+        <key>PayloadIdentifier</key><string>com.minh.nextdnslockdown.nobrowserdoh.vivaldi</string>
+        <key>PayloadUUID</key><string>7B3C1A90-0001-4000-8000-00000000000B</string>
+        <key>PayloadDisplayName</key><string>Vivaldi — Secure DNS off</string>
+        <key>PayloadVersion</key><integer>1</integer>
+        <key>DnsOverHttpsMode</key><string>off</string>
+        <key>BuiltInDnsClientEnabled</key><false/>
+      </dict>
+      <dict>
+        <key>PayloadType</key><string>com.operasoftware.Opera</string>
+        <key>PayloadIdentifier</key><string>com.minh.nextdnslockdown.nobrowserdoh.opera</string>
+        <key>PayloadUUID</key><string>7B3C1A90-0001-4000-8000-00000000000C</string>
+        <key>PayloadDisplayName</key><string>Opera — Secure DNS off</string>
+        <key>PayloadVersion</key><integer>1</integer>
+        <key>DnsOverHttpsMode</key><string>off</string>
+        <key>BuiltInDnsClientEnabled</key><false/>
+      </dict>
+      <dict>
+        <key>PayloadType</key><string>company.thebrowser.Browser</string>
+        <key>PayloadIdentifier</key><string>com.minh.nextdnslockdown.nobrowserdoh.arc</string>
+        <key>PayloadUUID</key><string>7B3C1A90-0001-4000-8000-00000000000D</string>
+        <key>PayloadDisplayName</key><string>Arc — Secure DNS off</string>
+        <key>PayloadVersion</key><integer>1</integer>
+        <key>DnsOverHttpsMode</key><string>off</string>
+        <key>BuiltInDnsClientEnabled</key><false/>
+      </dict>
+      <dict>
+        <key>PayloadType</key><string>org.mozilla.firefox</string>
+        <key>PayloadIdentifier</key><string>com.minh.nextdnslockdown.nobrowserdoh.firefox</string>
+        <key>PayloadUUID</key><string>7B3C1A90-0001-4000-8000-00000000000E</string>
+        <key>PayloadDisplayName</key><string>Firefox — DoH off (locked)</string>
+        <key>PayloadVersion</key><integer>1</integer>
+        <key>DNSOverHTTPS</key>
+        <dict>
+          <key>Enabled</key><false/>
+          <key>Locked</key><true/>
+        </dict>
+      </dict>
+    </array>
+  </dict>
+</plist>
