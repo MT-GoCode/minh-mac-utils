@@ -226,6 +226,31 @@ codesign -dv --verbose=4 /Applications/AltTab.app 2>&1 | grep -E 'Identifier|Tea
 Keep `com.demonlock` in the list. The agent is already spared by PID regardless. Note: a spare only
 dodges the per-app kill — the agent-dead nuclear `killall -9 WindowServer` still takes down all GUI.
 
+### To whitelist a new app of yours
+
+Being in `spareApps` is **not** "anything you signed" — it's an explicit per-bundle-id list, AND the
+running app must verify (above). A brand-new app you build + sign with your own team is **killed**
+unless you do BOTH:
+
+1. Install it **root-owned** in `/Applications` (so the adversary — you, without sudo — can't create
+   or modify it). A copy you can write to (e.g. `~/Applications`) is user-owned ⇒ fails the
+   root-owned check ⇒ killed even if its bundle id is on the list.
+2. Add its bundle id to the list — live, no rebuild:
+
+```sh
+sudo vi "/Library/Application Support/Demonlock/settings.json"
+#   "spareApps": { "com.demonlock":"BULCQM9J2V", …, "com.minh.newthing":"BULCQM9J2V" }
+```
+
+demonlock re-reads that file every ~1 second. Skip either step → it gets killed on lockout.
+
+**Why a self-made `com.serialize` fake doesn't work:** even though `com.serialize` is on the list and
+you can sign it with your own team, the running impostor would live somewhere you can write
+(`~/…`/`~/Applications`) = **user-owned** ⇒ it fails the root-owned check ⇒ killed. The only
+`com.serialize` that's spared is the genuine one installed `root:wheel` in `/Applications` (which took
+sudo to put there). And you can't tamper the real one in place — it's root-owned, and editing it
+breaks the signature ⇒ also killed.
+
 ## Code signing
 
 Apple Silicon requires a signature to run at all. The installer auto-picks the best identity
