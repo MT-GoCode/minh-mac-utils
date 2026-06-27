@@ -245,16 +245,20 @@ final class SensorFeeder: NSObject, CLLocationManagerDelegate {
             .map { $0.processIdentifier }
     }
 
-    /// Our own Developer-ID Team. Apps signed by US are a Layer-1 hole (you can re-sign anything with
-    /// your own cert), so a Team-ID pin alone can't protect them — we additionally require the bundle
-    /// to be ROOT-OWNED (our installers put them in /Applications root:wheel; you can't replace that
-    /// without sudo). Third-party teams need no ownership check — you can't re-sign as their team.
-    private static let ourTeam = "BULCQM9J2V"
-
-    /// True iff `app` is genuinely the whitelisted signed app — Apple-rooted, exact bundle id, exact
-    /// Team ID (Team, not cdhash, so it survives auto-updates). Fails closed (kill) on any doubt.
+    /// True iff `app` is genuinely a whitelisted app. Two regimes, picked by who could have put the
+    /// bundle on disk — fails closed (kill) on any doubt:
+    ///   • ROOT-OWNED bundle (our own apps: demonlock/serialize/wtalk/blockrem install to /Applications
+    ///     root:wheel) → only sudo could have placed/modified it, and the adversary has no sudo. So we
+    ///     just require an INTACT signature with the matching identifier, ANY identity. This is what
+    ///     keeps your own apps spared even if you LOSE your Developer ID and fall back to self-signed
+    ///     or ad-hoc (those aren't Apple-rooted and carry no Team ID) — `team` is unused for these.
+    ///   • Not root-owned (a third-party app in /Applications, possibly user-owned) → require the
+    ///     VENDOR's Apple-rooted Team ID (`anchor apple generic` + leaf OU). That's THEIR team, so it's
+    ///     independent of your signing identity, and Team (not cdhash) survives their auto-updates.
     private static func spareVerified(_ app: NSRunningApplication, bid: String, team: String) -> Bool {
-        if team == Self.ourTeam, !Self.rootOwnedBundle(app.bundleURL) { return false }
+        if Self.rootOwnedBundle(app.bundleURL) {
+            return Self.codeSatisfies(app, "identifier \"\(bid)\"")
+        }
         return Self.codeSatisfies(app,
             "anchor apple generic and identifier \"\(bid)\" and certificate leaf[subject.OU] = \"\(team)\"")
     }
