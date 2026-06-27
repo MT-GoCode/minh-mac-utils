@@ -51,6 +51,8 @@ struct Settings: Codable {
             "com.lwouis.alt-tab-macos",            // AltTab
             "com.raycast.macos",                   // Raycast (menubar launcher)
             "cc.ffitch.shottr",                    // Shottr (screenshot tool)
+            "com.if.Amphetamine",                  // Amphetamine (keep-awake)
+            "com.serialize",                       // Serialize (always-on-top task widget)
             "com.pilotmoon.scroll-reverser",       // Scroll Reverser
             "pro.betterdisplay.BetterDisplay",     // BetterDisplay
             "com.wtalk.daemon",                    // wtalk
