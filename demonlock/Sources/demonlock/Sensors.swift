@@ -232,7 +232,12 @@ final class SensorFeeder: NSObject, CLLocationManagerDelegate {
                 case .regular:
                     return true                                  // every foreground/Dock app (incl. com.apple.Safari)
                 case .accessory:
-                    return !bid.isEmpty && !bid.hasPrefix("com.apple.")   // 3rd-party menubar only; spare Apple + nil-bundle
+                    // Spare a menubar app ONLY if it's GENUINELY Apple-signed (Control Center's
+                    // Wi-Fi/battery, Spotlight, Siri, input menu). We VERIFY the signature ("anchor
+                    // apple" — which a Developer-ID cert can't satisfy), not the bundle-id string:
+                    // otherwise an LSUIElement distraction stamped "com.apple.…" (or no bundle id at
+                    // all) would dodge the lockout. Non-Apple menubar apps die unless whitelisted above.
+                    return !Self.codeSatisfies(app, "anchor apple")
                 default:
                     return false                                 // .prohibited — no user-facing window
                 }
@@ -250,12 +255,19 @@ final class SensorFeeder: NSObject, CLLocationManagerDelegate {
     /// Team ID (Team, not cdhash, so it survives auto-updates). Fails closed (kill) on any doubt.
     private static func spareVerified(_ app: NSRunningApplication, bid: String, team: String) -> Bool {
         if team == Self.ourTeam, !Self.rootOwnedBundle(app.bundleURL) { return false }
+        return Self.codeSatisfies(app,
+            "anchor apple generic and identifier \"\(bid)\" and certificate leaf[subject.OU] = \"\(team)\"")
+    }
+
+    /// Does the running process's live code signature satisfy `requirement`? Fails closed (false) on
+    /// any error — no SecCode, bad requirement string, invalid signature. The audit-token-via-PID guest
+    /// lookup pins it to the actual running code (a replaced/modified binary fails validity).
+    private static func codeSatisfies(_ app: NSRunningApplication, _ requirement: String) -> Bool {
         var code: SecCode?
         let attrs = [kSecGuestAttributePid as String: app.processIdentifier] as CFDictionary
         guard SecCodeCopyGuestWithAttributes(nil, attrs, [], &code) == errSecSuccess, let code else { return false }
-        let r = "anchor apple generic and identifier \"\(bid)\" and certificate leaf[subject.OU] = \"\(team)\""
         var req: SecRequirement?
-        guard SecRequirementCreateWithString(r as CFString, [], &req) == errSecSuccess, let req else { return false }
+        guard SecRequirementCreateWithString(requirement as CFString, [], &req) == errSecSuccess, let req else { return false }
         return SecCodeCheckValidity(code, [], req) == errSecSuccess
     }
 

@@ -35,6 +35,7 @@ fi
 echo "▸ stopping any running Serialize"
 sudo -u "$USER_NAME" osascript -e 'tell application "Serialize" to quit' >/dev/null 2>&1 || true
 pkill -x serialize 2>/dev/null || true
+rm -rf "/Users/$USER_NAME/Applications/Serialize.app"   # nuke any old user-owned install (pre-sudo era)
 
 echo "▸ deploying ROOT-OWNED to $DEST"
 rm -rf "$DEST"

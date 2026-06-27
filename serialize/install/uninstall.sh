@@ -12,6 +12,7 @@ sudo -u "$USER_NAME" launchctl bootout "gui/$USER_UID/com.serialize.login" 2>/de
 
 echo "▸ removing files"
 rm -rf /Applications/Serialize.app
+rm -rf "/Users/$USER_NAME/Applications/Serialize.app"   # old user-owned install, if any
 rm -f "/Users/$USER_NAME/Library/LaunchAgents/com.serialize.login.plist"
 
 echo "✓ uninstalled"
