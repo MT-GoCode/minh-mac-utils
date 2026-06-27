@@ -18,10 +18,13 @@ if ! command -v ffmpeg >/dev/null; then
         echo "✗ install ffmpeg (Parakeet needs it): brew install ffmpeg"; exit 1; }
 fi
 
-# 2. Per-project venv (pinned to 3.10 so the mlx/pyobjc/numpy wheels resolve) + deps
+# 2. Per-project venv (pinned to 3.10 so the mlx/pyobjc/numpy wheels resolve) + deps.
+#    IMPORTANT: target the .venv EXPLICITLY (--python .venv/bin/python). Otherwise, when this runs
+#    inside an active conda env (the machine default is conda py310), uv installs into THAT env
+#    instead of .venv, leaving .venv empty → the Nuitka freeze can't find mlx/parakeet_mlx.
 echo "• creating .venv (Python 3.10) + installing deps…"
-uv venv --python 3.10
-uv pip install -r requirements.txt
+uv venv --python 3.10 .venv
+uv pip install --python "$PWD/.venv/bin/python" -r requirements.txt
 
 # setup.sh now ONLY prepares the build prerequisites (venv + deps + ffmpeg). The app itself
 # is frozen with Nuitka and installed ROOT-OWNED by the sudo installer — it is NOT built into

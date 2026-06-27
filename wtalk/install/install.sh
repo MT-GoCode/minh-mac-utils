@@ -41,10 +41,11 @@ fi
 [ -d "$SRC" ] || { echo "✗ no app bundle to deploy"; exit 1; }
 
 # --- stop anything already running, nuke any old user-owned install ------------------------
-echo "▸ stopping any running wtalk"
+echo "▸ stopping any running wtalk + clearing old-era remnants"
 sudo -u "$USER_NAME" launchctl bootout "gui/$USER_UID/com.wtalk.agent" 2>/dev/null || true
 pkill -x wtalk 2>/dev/null || true
 rm -f "$USER_HOME/Library/LaunchAgents/com.wtalk.agent.plist"   # pre-sudo era (user-owned plist)
+rm -f "$USER_HOME/.local/bin/wtalk"                             # pre-sudo era PATH symlink (else `wtalk` runs the old path)
 rm -rf "$HERE/wtalk.app.old"
 
 echo "▸ deploying ROOT-OWNED to $DEST"
