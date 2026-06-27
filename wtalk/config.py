@@ -10,11 +10,31 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+# Two roots, deliberately split so the SEALED, root-owned frozen bundle never has
+# to load anything editable:
+#   BUNDLE_DIR — where this code lives (the repo in dev; inside /Applications/wtalk.app
+#                once frozen with Nuitka). READ-ONLY when installed (root:wheel). Ships
+#                the *default* config.txt + prompts.
+#   DATA_DIR   — ~/.wtalk, user-owned DATA: .env (API keys), config.txt, prompts/, logs,
+#                state.json, history.db. The installer seeds templates here. Editing a
+#                file here can only change DATA the binary *reads* — it can never redirect
+#                which code the sealed binary *runs* (no import path comes from here).
+BUNDLE_DIR = Path(__file__).resolve().parent
+DATA_DIR = Path(os.path.expanduser("~/.wtalk"))
+# Back-compat alias: existing code/UI uses config.ROOT for the user-editable config + the
+# "open in editor" actions, so point it at the writable DATA_DIR (NOT the sealed bundle).
+ROOT = DATA_DIR
+
+
+def _pref(rel):
+    """Prefer the user's DATA_DIR copy; fall back to the bundled default. Lets the app
+    run before the installer has seeded ~/.wtalk (and in a bare dev checkout)."""
+    p = DATA_DIR / rel
+    return p if p.exists() else BUNDLE_DIR / rel
 
 
 def _load_env():
-    env = ROOT / ".env"
+    env = DATA_DIR / ".env"          # API keys live ONLY in ~/.wtalk/.env (never the bundle)
     if not env.exists():
         return
     for line in env.read_text().splitlines():
@@ -26,7 +46,7 @@ def _load_env():
 
 def _load_cfg():
     cfg = {}
-    for line in (ROOT / "config.txt").read_text().splitlines():
+    for line in _pref("config.txt").read_text().splitlines():
         line = line.split("#", 1)[0].strip()
         if line and "=" in line:
             k, v = line.split("=", 1)
@@ -72,8 +92,11 @@ DB_PATH = _path(_cfg.get("db_path", "~/.wtalk/history.db"))
 STATE_PATH = _path(_cfg.get("state_path", "~/.wtalk/state.json"))
 TIMEZONE = _cfg.get("timezone", "local")
 
-SYSTEM_PROMPT_PATH = ROOT / "prompts" / "cleanup_system.txt"
-USER_PROMPT_PATH = ROOT / "prompts" / "user.txt"
+# Prompts are user-editable DATA: the installer seeds them into ~/.wtalk/prompts so they
+# can be edited without touching the sealed bundle; _pref falls back to the bundled
+# defaults if the user copy is absent.
+SYSTEM_PROMPT_PATH = _pref("prompts/cleanup_system.txt")
+USER_PROMPT_PATH = _pref("prompts/user.txt")
 
 
 def system_prompt():

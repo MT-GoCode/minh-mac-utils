@@ -39,6 +39,13 @@ settingslock/dist/
 wtalk/.venv/
 wtalk/wtalk.app/
 wtalk/.serve.pid
+# Nuitka build outputs (the frozen app is rebuilt on the target Mac by install/build.sh)
+wtalk/dist/
+wtalk/wtalk.build/
+wtalk/wtalk.dist/
+wtalk/wtalk.onefile-build/
+# secrets/data now live in ~/.wtalk, never the repo; the old repo .env is retired
+wtalk/.env
 
 # ---------- betterat / sudome / nextdns-discipline / nextdns-lockdown ----------
 # Pure source (bash; or C compiled to a temp dir at install) — nothing to ignore.

@@ -49,14 +49,16 @@ struct Settings: Codable {
          enforcedUser: String = "", wifiKeepOn: Bool = true, wifiDevice: String = "en0",
          spareApps: [String: String] = [
             // Our own (team BULCQM9J2V) apps are only safe here because spareVerified additionally
-            // requires a ROOT-OWNED bundle for self-team apps — both demonlock and serialize install
-            // to /Applications root:wheel, so you can't swap them for a browser without sudo, and a
-            // sibling app you re-sign with your own Team ID (in ~/Applications) fails the owner check.
-            // wtalk is deliberately NOT here (it's a user-path Python venv daemon — can't be root-owned
-            // cleanly; it's launchd-KeepAlive so a lockout-kill just self-revives). Third-party entries
-            // below need no owner check — you can't re-sign as their teams.
+            // requires a ROOT-OWNED bundle for self-team apps — demonlock, serialize, and wtalk all
+            // install to /Applications root:wheel, so you can't swap them for a browser without sudo,
+            // and a sibling app you re-sign with your own Team ID (in ~/Applications) fails the owner
+            // check. wtalk is additionally a Nuitka-FROZEN binary (compiled, --python-flag=isolated/
+            // no_site) so it can't be redirected to run arbitrary code — a plain Python .app could be.
+            // blockrem is NOT here (it's .accessory + self-managed, not a root-owned install). Third-
+            // party entries below need no owner check — you can't re-sign as their teams.
             "com.demonlock":                        "BULCQM9J2V",   // the enforcer itself (root-owned install)
             "com.serialize":                        "BULCQM9J2V",   // Serialize task widget (root-owned install)
+            "com.wtalk.daemon":                     "BULCQM9J2V",   // wtalk dictation (Nuitka-frozen, root-owned)
             "com.lwouis.alt-tab-macos":             "QXD7GW8FHY",   // AltTab
             "com.raycast.macos":                    "SY64MV22J9",   // Raycast (menubar launcher)
             "cc.ffitch.shottr":                     "2Y683PRQWN",   // Shottr (screenshot tool)

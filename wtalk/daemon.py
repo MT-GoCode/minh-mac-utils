@@ -186,8 +186,9 @@ def prompt_accessibility():
 
 def prime_mic_permission():
     """Open + immediately close a tiny input stream to trigger the macOS Microphone
-    TCC prompt (attributed to this signed 'wtalk' app). Best-effort; used by
-    `wtalk install` so the Mic dialog appears up front instead of on first record."""
+    TCC prompt (attributed to this signed 'wtalk' app). Best-effort; used by the
+    installer (`wtalk --prime-perms`) so the Mic dialog appears up front instead of
+    on first record."""
     try:
         s = sd.InputStream(channels=1, samplerate=16000)
         s.start(); sleep(0.15); s.stop(); s.close()
@@ -982,8 +983,10 @@ class Daemon:
 
 
 if __name__ == "__main__":
+    # Dev-only entry (`python daemon.py`). In the frozen app, wtalk.py is the entry and
+    # dispatches `daemon` / `--prime-perms` to Daemon().run() / the prompt helpers below.
     if "--prime-perms" in sys.argv:
-        # Fire both TCC prompts up front (used by `wtalk install`), then exit —
+        # Fire both TCC prompts up front (used by the installer), then exit —
         # does NOT load Parakeet.
         prompt_accessibility()      # Accessibility dialog (paste at cursor)
         prime_mic_permission()      # Microphone dialog (record)

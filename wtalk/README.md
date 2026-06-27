@@ -37,35 +37,54 @@ The red dot tells the truth: 🔴 listening · ◌ spinner = transcribing/cleani
 
 ## Clean install
 
-Copy the source to `~/code/wtalk` (a directory copy, or `git clone`), then run the
-setup script — it does everything except the two manual steps (your API key and the
-Karabiner binding):
+wtalk is frozen with **Nuitka** into a **sealed, code-signed, root-owned**
+`/Applications/wtalk.app` — the same model as the sibling tools `demonlock` and
+`serialize`. "Sealed + root-owned" matters: the bundle is `root:wheel` (you can't
+modify or swap it without `sudo`) **and** it's built with `--python-flag=isolated/no_site`
+so it ignores `PYTHONPATH`/env/user-site and can only ever run the code baked inside it.
+That immutability is what lets **demonlock safely whitelist wtalk** from its lockout.
+
+Two steps — prep, then install:
 
 ```bash
 cd ~/code/wtalk
-./setup.sh
+./setup.sh          # prereqs: Apple Silicon + uv + ffmpeg check, .venv (3.10) + deps
+sudo ./install.sh   # Nuitka-freeze + sign, deploy root-owned, seed ~/.wtalk, load launchd
 ```
 
-`setup.sh` checks for Apple Silicon + `uv` + `ffmpeg` (installs ffmpeg via brew),
-creates the `.venv` (pinned to Python 3.10 so the wheels resolve), installs
-`requirements.txt`, writes a `.env` template, symlinks `wtalk` into `~/.local/bin`
-and adds that to your `PATH` (via `~/.zshrc`) if needed, and —
-once your Gemini key is in `.env` — runs `wtalk install` (builds + signs `wtalk.app`,
-loads the launchd agent). It's idempotent; re-run it any time.
+`setup.sh` only prepares the **build prerequisites** (the `.venv` and wheels). It no
+longer builds the app or touches `~/.local/bin` — install is a root operation now.
 
-**The two manual bits it can't do for you:**
+`sudo ./install.sh` (build runs as *you* for the keychain; deploy runs as root):
+
+1. **Freezes + signs** `wtalk.app` with Nuitka (first compile is slow — several minutes).
+2. **Deploys it root-owned** to `/Applications/wtalk.app` (`chown root:wheel`, `chmod -R go-w`).
+3. Installs the CLI wrapper `/usr/local/bin/wtalk` → the bundle's binary.
+4. **Seeds `~/.wtalk`** (user-owned DATA) with `.env`, `config.txt`, and `prompts/` — only
+   if absent, so it never clobbers your edits/keys.
+5. Installs the **LaunchAgent** (`com.wtalk.agent`, root-owned plist in
+   `/Library/LaunchAgents`) and bootstraps it into your `gui/<uid>` session (run at login,
+   kept alive).
+
+> **Why `~/.wtalk` for your data?** Code is sealed and root-owned; **data is yours**. Your
+> keys (`.env`), settings (`config.txt`), prompts, logs, state, and history all live in
+> `~/.wtalk`. Editing them changes only what the binary *reads* — it can never redirect
+> which code the sealed binary *runs* (nothing there is on an import path). The frozen
+> bundle does **not** depend on the repo dir at runtime.
+
+> **Source-only copy:** everything is git-tracked source — `.venv/`, the Nuitka build
+> outputs (`wtalk.app/`, `dist/`, `wtalk.build/`), and secrets are gitignored and
+> regenerated locally. Copy the repo, run the two commands above, done.
+
+**The two manual bits the installer can't do for you:**
 
 ```bash
 # 1. Add your Gemini key (required) — https://aistudio.google.com/apikey
 #    and optionally Groq keys (fallback) — https://console.groq.com/keys
-$EDITOR .env          # then re-run ./setup.sh  (or: wtalk install)
+$EDITOR ~/.wtalk/.env          # then:  wtalk restart
 
 # 2. Bind F5 in Karabiner-Elements (see below)
 ```
-
-> **Source-only copy:** everything needed is git-tracked source — `.venv/`,
-> `wtalk.app/`, and `.env` are gitignored and rebuilt locally by `setup.sh`. Copy the
-> repo, run `setup.sh`, done.
 
 ### 6. Karabiner key binding
 
@@ -73,7 +92,7 @@ Karabiner owns the keys; wtalk just reacts to signals. Add a complex modificatio
 (Karabiner-Elements → Complex Modifications → Add your own) that runs, on **F5**:
 
 ```
-/Users/<you>/.local/bin/wtalk toggle
+/usr/local/bin/wtalk toggle
 ```
 
 Optionally bind another key to `wtalk cancel`. If F5 already does something on your
@@ -91,15 +110,15 @@ swallowed while dictating).
 
 ## Permissions (one-time)
 
-`wtalk install` builds a real **`wtalk.app`** bundle (code-signed, identity
+The installer freezes a real **`wtalk.app`** bundle (code-signed, bundle id
 `com.wtalk.daemon`) and runs it under launchd. So macOS treats it like any normal
 app: permissions show up as **“wtalk”** (not a hidden Python path), and it **prompts**
 you. Grant these in **System Settings → Privacy & Security**:
 
 | Permission | Why | How it's requested |
 |---|---|---|
-| **Microphone** | record your voice | `wtalk install` tries to prompt up front, but macOS **often defers it to your first dictation** (first real mic use) — approve it then |
-| **Accessibility** | synthesize ⌘V to paste | `wtalk install` pops the dialog → **Open System Settings** → toggle **wtalk** on |
+| **Microphone** | record your voice | `sudo ./install.sh` tries to prompt up front, but macOS **often defers it to your first dictation** (first real mic use) — approve it then |
+| **Accessibility** | synthesize ⌘V to paste | the installer pops the dialog → **Open System Settings** → toggle **wtalk** on |
 | ~~Input Monitoring~~ | not needed | Karabiner owns the keys |
 
 The daemon logs `WARNING: Accessibility NOT granted` at startup until you approve it,
@@ -108,13 +127,13 @@ cleaned text still lands on the clipboard — just press ⌘V.)
 
 ## Code signing
 
-Apple Silicon requires a signature to run at all. The installer auto-picks the best identity
-(shared `../sign-identity.sh`) and prints which it used:
+Apple Silicon requires a signature to run at all. `install/build.sh` auto-picks the best
+identity (shared `../sign-identity.sh`) and Nuitka deep-signs the whole bundle with it:
 
-1. **Developer ID Application** — if one is in your login keychain. Best: Apple-rooted, the TCC
-   grant persists across rebuilds, survives cert expiry (secure timestamp). *Get one (optional):*
-   a paid Apple Developer account, then Xcode ▸ Settings ▸ Accounts ▸ Manage Certificates ▸ ＋ ▸
-   Developer ID Application.
+1. **Developer ID Application** (team `BULCQM9J2V`) — if one is in your login keychain. Best:
+   Apple-rooted, the TCC grant persists across rebuilds, survives cert expiry (secure timestamp).
+   Required if you want to **notarize** (optional). *Get one:* a paid Apple Developer account,
+   then Xcode ▸ Settings ▸ Accounts ▸ Manage Certificates ▸ ＋ ▸ Developer ID Application.
 2. **Stable self-signed** (`Mac Utils Local Signing`) — created automatically (openssl → login
    keychain) when you have no Developer ID. TCC grant still persists across rebuilds; no Apple
    account needed.
@@ -122,38 +141,42 @@ Apple Silicon requires a signature to run at all. The installer auto-picks the b
 
 Override with `CODESIGN_IDENTITY="…"`.
 
-**wtalk signs WITHOUT the hardened runtime** (unlike demonlock/settingslock) — and must.
-Its interpreter loads conda/venv C-extensions (`fcntl`, `numpy`, `sounddevice`) that aren't
-signed with your Team ID; the hardened runtime's *library validation* would reject them and the
-daemon would die at `import fcntl`. A plain signature still anchors the Mic/Accessibility grants.
+**Hardened runtime stays ON.** This is the opposite of the old build — and it's only possible
+*because* of Nuitka. Nuitka bundles its own interpreter and **re-signs every dependency `.so`
+(mlx, numpy, sounddevice, pyobjc) under one identity**, so the hardened runtime's *library
+validation* is satisfied — all Mach-Os share our Team ID. (The old "copy the system interpreter
+into a `.app`" trick had to *disable* the hardened runtime because it carried unsigned conda/venv
+extensions; that whole class of problem is gone.) Do **not** add `--macos-disable-library-validation`.
 
-The `.app`'s executable is a per-machine copy of your Python interpreter (gitignored), so it's
-re-signed on each `wtalk install`. To carry a Developer ID to another Mac, export it from Keychain
-Access as a `.p12` and import it there. If you change the signature, an old grant can go stale —
-remove the `wtalk` entry and re-add it.
+The bundle is rebuilt + re-signed on each `sudo ./install.sh`. To carry a Developer ID to another
+Mac, export it from Keychain Access as a `.p12` and import it there. If you change the signature,
+an old TCC grant can go stale — remove the `wtalk` entry in Privacy & Security and re-add it.
+
+**Notarization (optional).** With a Developer ID identity, uncomment `--macos-sign-notarization`
+in `install/build.sh`, then `xcrun notarytool submit` + `xcrun stapler staple` the bundle. Only
+worth it to move the app between Macs without Gatekeeper prompts; for a local install it's unneeded.
 
 ---
 
 ## Uninstall / reinstall
 
-**Uninstall completely:**
+**Uninstall** (keeps `~/.wtalk` — your keys, config, history):
 ```bash
-wtalk uninstall                                  # stop + remove the launchd agent
-pkill -f daemon.py
-tccutil reset Microphone com.wtalk.daemon        # revoke permissions (optional)
+cd ~/code/wtalk
+sudo ./uninstall.sh            # boots out the agent, removes the app + plist + CLI wrapper
+# add --purge to also delete ~/.wtalk:
+sudo ./uninstall.sh --purge
+# optional — revoke the TCC grants:
+tccutil reset Microphone com.wtalk.daemon
 tccutil reset Accessibility com.wtalk.daemon
-rm -rf ~/code/wtalk/wtalk.app                     # the built app
-rm -rf ~/.wtalk                                   # state, logs, AND history.db (omit to keep history)
-rm -f ~/.local/bin/wtalk                          # the PATH symlink
 # (the Karabiner F5 rule is yours — remove it in Karabiner if you want)
 ```
 
-**Reinstall completely:**
+**Reinstall** (rebuilds the bundle, re-signs, redeploys, reloads):
 ```bash
 cd ~/code/wtalk
-uv venv && uv pip install -r requirements.txt     # only if .venv is gone
-ln -sf ~/code/wtalk/wtalk ~/.local/bin/wtalk
-wtalk install                                     # rebuilds wtalk.app, signs, loads, prompts both perms
+./setup.sh                    # only if .venv is gone (recreates venv + deps)
+sudo ./install.sh             # Nuitka-freeze, sign, deploy root-owned, reload the agent
 ```
 
 ---
@@ -161,20 +184,24 @@ wtalk install                                     # rebuilds wtalk.app, signs, l
 ## Use
 
 ```bash
-wtalk install     # build + sign the app, run at login (always-on), prompt for both perms
-wtalk uninstall   # stop and remove the login agent
-wtalk restart     # bounce the daemon (after editing config.txt or .env)
-wtalk             # status: ready / loading / not running
-wtalk status      # same as bare `wtalk`
-wtalk toggle      # what F5 does (start, or stop+clean+paste)
-wtalk cancel      # what Esc/cancel does
-wtalk history     # last 20 dictations
+sudo ./install.sh   # freeze + sign + deploy root-owned, seed ~/.wtalk, load the agent
+sudo ./uninstall.sh # stop + remove the app, plist, and CLI wrapper (--purge also wipes ~/.wtalk)
+
+wtalk               # status: ready / loading / not running
+wtalk status        # same as bare `wtalk`
+wtalk restart       # bounce the daemon (after editing ~/.wtalk/config.txt or ~/.wtalk/.env)
+wtalk toggle        # what F5 does (start, or stop+clean+paste)
+wtalk cancel        # what Esc/cancel does
+wtalk verbatim      # stop + paste the RAW transcript (no cleanup)
+wtalk history       # last 20 dictations
 wtalk help
 ```
 
-One mechanism: a launchd LaunchAgent (`com.wtalk.agent`, runs at login, kept alive).
-`install`/`uninstall`/`restart` all act on that same agent — there's no separate manual
-daemon, so "is it running?" is never ambiguous.
+Install/uninstall are **root operations** (the bundle is deployed root-owned), so they're
+shell scripts, not `wtalk` subcommands. Everything else is dispatched by the frozen binary
+itself. One mechanism: a launchd LaunchAgent (`com.wtalk.agent`, runs at login, kept alive) —
+`wtalk restart` and the installers all act on that same agent, so "is it running?" is never
+ambiguous.
 
 Then anywhere: **F5** = start/stop dictation. While listening, a small **hints** pill
 sits under the dot — click it to type spelling/term hints (variable names, jargon)
@@ -184,9 +211,10 @@ and Quit.
 
 ---
 
-## Config — `config.txt`
+## Config — `~/.wtalk/config.txt`
 
-Edit, then `wtalk restart`. Highlights:
+Your settings live in `~/.wtalk/config.txt` (seeded from the bundled default on first
+install; the sealed bundle is never edited). Edit, then `wtalk restart`. Highlights:
 
 - **Cleanup:** `gemini_model`, `groq_model`, `max_output_tokens`, and the escalation
   deadline (`deadline_floor_sec`, `deadline_multiplier`, `tok_per_sec`).
@@ -195,8 +223,8 @@ Edit, then `wtalk restart`. Highlights:
 - **Mic:** `mic = builtin` (default — never flips a Bluetooth headset into muffled
   hands-free mode), `default` (follow system input), or a device-name substring.
 - **Hints pill:** `hints_enabled`, `hints_max_chars`.
-- **Prompts:** standing corrections in `prompts/user.txt`; cleanup spec in
-  `prompts/cleanup_system.txt`.
+- **Prompts:** standing corrections in `~/.wtalk/prompts/user.txt`; cleanup spec in
+  `~/.wtalk/prompts/cleanup_system.txt` (both seeded from the bundle, editable in place).
 
 ---
 

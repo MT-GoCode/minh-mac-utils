@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Installed ROOT-OWNED to /Library/LaunchAgents (like demonlock's agent) so the user can't
+     edit ProgramArguments to launch a different binary as "the wtalk daemon". Bootstrapped into
+     the user's gui/<uid> domain at install time. __HOME__/__PATH__/__APP_EXE__ are filled in by
+     install/install.sh (sed) — a /Library agent has no $HOME of its own and StandardOutPath
+     can't use ~, so we bake the installing user's home + a homebrew-inclusive PATH (ffmpeg,
+     nowplaying-cli, karabiner_cli live there). -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>            <string>com.wtalk.agent</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__APP_EXE__</string>
+        <string>daemon</string>
+    </array>
+    <key>RunAtLoad</key>        <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key><false/>
+    </dict>
+    <key>ThrottleInterval</key> <integer>2</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>         <string>__HOME__</string>
+        <key>PATH</key>         <string>__PATH__</string>
+    </dict>
+    <key>StandardOutPath</key>  <string>__HOME__/.wtalk/daemon.log</string>
+    <key>StandardErrorPath</key><string>__HOME__/.wtalk/daemon.log</string>
+</dict>
+</plist>

@@ -199,12 +199,12 @@ auto-updates. For apps signed by **our own** Team (`BULCQM9J2V`), there's an ext
 be **root-owned** (you can re-sign anything with your own cert, so without this you could swap your own
 whitelisted app for a browser — root ownership means you'd need sudo to do it).
 
-Default whitelist: demonlock + Serialize (ours, root-owned installs in `/Applications`), AltTab
-(`com.lwouis.alt-tab-macos`), Raycast (`com.raycast.macos`), Shottr (`cc.ffitch.shottr`), Amphetamine
-(`com.if.Amphetamine`), Scroll Reverser (`com.pilotmoon.scroll-reverser`), BetterDisplay
-(`pro.betterdisplay.BetterDisplay`), Karabiner (`org.pqrs.Karabiner-*`). **Not** included: wtalk and
-blockrem — they're our-team apps not installed root-owned, so a team-pin can't protect them; wtalk
-self-revives under launchd KeepAlive anyway, and blockrem is `.accessory`+self-managed. Both daemon and agent reload settings.json **live** (every tick / feed), so add your
+Default whitelist: demonlock + Serialize + wtalk (ours, root-owned installs in `/Applications`;
+wtalk is additionally a Nuitka-frozen/sealed binary so it can't be redirected to run other code),
+AltTab (`com.lwouis.alt-tab-macos`), Raycast (`com.raycast.macos`), Shottr (`cc.ffitch.shottr`),
+Amphetamine (`com.if.Amphetamine`), Scroll Reverser (`com.pilotmoon.scroll-reverser`), BetterDisplay
+(`pro.betterdisplay.BetterDisplay`), Karabiner (`org.pqrs.Karabiner-*`). **Not** included: blockrem —
+our-team but `.accessory`/self-managed, not a root-owned install (so a team-pin couldn't protect it). Both daemon and agent reload settings.json **live** (every tick / feed), so add your
 own with no reinstall:
 
 ```sh

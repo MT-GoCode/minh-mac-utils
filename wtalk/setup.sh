@@ -23,39 +23,19 @@ echo "• creating .venv (Python 3.10) + installing deps…"
 uv venv --python 3.10
 uv pip install -r requirements.txt
 
-# 3. .env (API keys) — created as a template if missing
-if [[ ! -f .env ]]; then
-    cat > .env <<'EOF'
-# Required: Gemini cleanup (https://aistudio.google.com/apikey)
-GEMINI_API_KEY=
-# Optional fallback (https://console.groq.com/keys). A 2nd key doubles rate headroom.
-GROQ_API_KEY=
-GROQ_API_KEY_2=
-EOF
-    echo "• created .env — add your GEMINI_API_KEY to it."
-fi
-
-# 4. Put `wtalk` on PATH
-mkdir -p "$HOME/.local/bin"
-ln -sf "$ROOT/wtalk" "$HOME/.local/bin/wtalk"
-case ":$PATH:" in
-    *":$HOME/.local/bin:"*) ;;
-    *)  LINE='export PATH="$HOME/.local/bin:$PATH"'
-        grep -qsF "$LINE" "$HOME/.zshrc" 2>/dev/null || printf '\n%s\n' "$LINE" >> "$HOME/.zshrc"
-        echo "• added ~/.local/bin to PATH in ~/.zshrc — run: source ~/.zshrc (or open a new terminal)" ;;
-esac
-
-# 5. Install the always-on daemon (builds + signs wtalk.app, loads launchd) — only
-#    once a Gemini key is present, so the daemon actually works on first launch.
-if grep -qE '^GEMINI_API_KEY=.+' .env; then
-    "$ROOT/wtalk" install
-else
-    echo
-    echo "▸ Next: add GEMINI_API_KEY to $ROOT/.env, then run:  wtalk install"
-fi
-
+# setup.sh now ONLY prepares the build prerequisites (venv + deps + ffmpeg). The app itself
+# is frozen with Nuitka and installed ROOT-OWNED by the sudo installer — it is NOT built into
+# a user dir, and `wtalk install` no longer exists (install is a root operation now).
 echo
-echo "▸ wtalk install fires the Microphone + Accessibility prompts — approve both (shown as 'wtalk')."
-echo "▸ Last step (manual): bind F5 in Karabiner-Elements to run:"
-echo "      $HOME/.local/bin/wtalk toggle"
-echo "  (and optionally a key → 'wtalk cancel'). Then press F5 to dictate."
+echo "✓ build prerequisites ready (.venv + deps)."
+echo
+echo "▸ Next — freeze + install the sealed, root-owned app (handles keys, perms, launchd):"
+echo "      sudo ./install.sh"
+echo
+echo "  The installer will: Nuitka-freeze + sign wtalk.app, deploy it root:wheel to"
+echo "  /Applications, install the /usr/local/bin/wtalk CLI, seed ~/.wtalk (.env, config.txt,"
+echo "  prompts), and load the LaunchAgent. (First Nuitka compile is slow — several minutes.)"
+echo
+echo "  Then: add GEMINI_API_KEY to ~/.wtalk/.env (https://aistudio.google.com/apikey) and"
+echo "  'wtalk restart'; grant Microphone + Accessibility (shown as 'wtalk'); and bind F5 in"
+echo "  Karabiner-Elements to:  /usr/local/bin/wtalk toggle"
