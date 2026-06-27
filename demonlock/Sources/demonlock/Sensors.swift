@@ -2,6 +2,7 @@ import AppKit
 import CoreLocation
 import CoreWLAN
 import Foundation
+import Security
 
 /// Agent-side sensor PIPE. The root enforcer is the sole judge and sole state-holder (the
 /// held fix + its BSSID anchor live root-side, in heldfix.json — see MODEL.md).
@@ -213,21 +214,20 @@ final class SensorFeeder: NSObject, CLLocationManagerDelegate {
 
     /// PIDs of the user's GUI apps for the enforcer's LOCKED kill list. We SIGKILL every foreground
     /// (`.regular`) app — including Apple ones like Safari — PLUS third-party menubar (`.accessory`)
-    /// apps, so a distraction repackaged as LSUIElement can't dodge the lockout. NEVER killed:
-    /// `settings.spareBundleIDs` (persistent utilities that break when SIGKILLed — AltTab, Karabiner,
-    /// BetterDisplay, ScrollReverser, wtalk, blockrem, …), Apple's own `.accessory` items (`com.apple.*` —
-    /// Control Center's Wi-Fi/battery, Spotlight, Siri, the input menu), nil-bundle helpers, and this
-    /// agent itself (so the sensor survives a lockout and "back in policy" is detected instantly). The
-    /// spare-list is reloaded each feed, so editing settings.json takes effect live. (feed() runs on the
-    /// main thread, where NSWorkspace is happy.)
+    /// apps, so a distraction repackaged as LSUIElement can't dodge the lockout. NEVER killed: an app
+    /// in `settings.spareApps` whose LIVE code signature is VERIFIED (Apple-rooted + that bundle id +
+    /// that Team ID — so a distraction that merely spoofs a whitelisted bundle id from another signer
+    /// is still killed; Team ID survives app auto-updates); Apple's own `.accessory` items (`com.apple.*`);
+    /// nil-bundle helpers; and this agent itself (spared by PID, so the sensor survives the lockout).
+    /// spareApps is reloaded each feed (editing settings.json takes effect live). feed() runs on main.
     private func currentGuiPids() -> [Int32] {
         let me = getpid()
-        let spare = Set(Settings.load().spareBundleIDs)
+        let spare = Settings.load().spareApps
         return NSWorkspace.shared.runningApplications
             .filter { app in
                 guard app.processIdentifier > 0, app.processIdentifier != me else { return false }
                 let bid = app.bundleIdentifier ?? ""
-                if spare.contains(bid) { return false }
+                if let team = spare[bid], Self.spareVerified(app, bid: bid, team: team) { return false }
                 switch app.activationPolicy {
                 case .regular:
                     return true                                  // every foreground/Dock app (incl. com.apple.Safari)
@@ -238,5 +238,32 @@ final class SensorFeeder: NSObject, CLLocationManagerDelegate {
                 }
             }
             .map { $0.processIdentifier }
+    }
+
+    /// Our own Developer-ID Team. Apps signed by US are a Layer-1 hole (you can re-sign anything with
+    /// your own cert), so a Team-ID pin alone can't protect them — we additionally require the bundle
+    /// to be ROOT-OWNED (our installers put them in /Applications root:wheel; you can't replace that
+    /// without sudo). Third-party teams need no ownership check — you can't re-sign as their team.
+    private static let ourTeam = "BULCQM9J2V"
+
+    /// True iff `app` is genuinely the whitelisted signed app — Apple-rooted, exact bundle id, exact
+    /// Team ID (Team, not cdhash, so it survives auto-updates). Fails closed (kill) on any doubt.
+    private static func spareVerified(_ app: NSRunningApplication, bid: String, team: String) -> Bool {
+        if team == Self.ourTeam, !Self.rootOwnedBundle(app.bundleURL) { return false }
+        var code: SecCode?
+        let attrs = [kSecGuestAttributePid as String: app.processIdentifier] as CFDictionary
+        guard SecCodeCopyGuestWithAttributes(nil, attrs, [], &code) == errSecSuccess, let code else { return false }
+        let r = "anchor apple generic and identifier \"\(bid)\" and certificate leaf[subject.OU] = \"\(team)\""
+        var req: SecRequirement?
+        guard SecRequirementCreateWithString(r as CFString, [], &req) == errSecSuccess, let req else { return false }
+        return SecCodeCheckValidity(code, [], req) == errSecSuccess
+    }
+
+    /// The bundle is owned by root and not group/other-writable — i.e. unmodifiable without sudo.
+    private static func rootOwnedBundle(_ url: URL?) -> Bool {
+        guard let path = url?.standardizedFileURL.path else { return false }
+        var st = stat()
+        guard stat(path, &st) == 0 else { return false }
+        return st.st_uid == 0 && (st.st_mode & (S_IWGRP | S_IWOTH)) == 0
     }
 }

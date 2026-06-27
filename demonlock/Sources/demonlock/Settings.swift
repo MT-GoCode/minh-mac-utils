@@ -31,44 +31,51 @@ struct Settings: Codable {
     var enforcedUser: String           // username OR numeric uid this policy applies to
     var wifiKeepOn: Bool               // keep the Wi-Fi radio on at check time (location needs it)
     var wifiDevice: String             // BSD Wi-Fi device, e.g. en0
-    var spareBundleIDs: [String]       // bundle IDs NEVER force-killed during a lockout. The LOCKED kill now
-                                       // covers EVERY .regular app PLUS non-Apple .accessory (menubar) apps —
-                                       // so an LSUIElement distraction can't hide — which means persistent
-                                       // menubar utilities that break when SIGKILLed must be listed here.
-                                       // Apple's own menubar items (com.apple.* — Wi-Fi/battery/Control Center,
-                                       // Spotlight, Siri) are spared automatically; pure daemons (no GUI app)
-                                       // are never in the kill-list. The agent reloads this each feed, so
-                                       // editing settings.json takes effect live. NOTE: spares only the per-app
-                                       // kill; the agent-dead NUCLEAR `killall -9 WindowServer` takes ALL GUI.
+    var spareApps: [String: String]    // bundleID → expected TEAM ID. An app is spared from the lockout
+                                       // kill ONLY if it's listed here AND its live code signature satisfies
+                                       // "anchor apple generic + that Team ID + that identifier" — so a
+                                       // distraction that merely spoofs a whitelisted bundle id in its
+                                       // Info.plist is still killed. Team ID (not cdhash) so the spare
+                                       // survives app auto-updates. The LOCKED kill covers EVERY .regular app
+                                       // PLUS non-Apple .accessory (menubar) apps; Apple's own com.apple.*
+                                       // menubar items are spared automatically; pure daemons (no GUI app) are
+                                       // never in the kill-list. Reloaded each feed (edit settings.json live).
+                                       // NOTE: spares only the per-app kill; the agent-dead NUCLEAR
+                                       // `killall -9 WindowServer` takes ALL GUI regardless.
 
     init(pollSeconds: Double = 1.0, countdownPollSeconds: Double = 0.5, countdownSeconds: Double = 10,
          snoozeHHMM: String = "0500", graceSeconds: Double = 90,
          maxAccuracyMeters: Double = 400, scanSeconds: Double = 6, scanWindowSeconds: Double = 30,
          enforcedUser: String = "", wifiKeepOn: Bool = true, wifiDevice: String = "en0",
-         spareBundleIDs: [String] = [
-            "com.demonlock",                       // own .regular windows (zones/scan/disarm); agent also spared by PID
-            "com.blockrem",                        // the break-blocker sibling tool — keep it shielding
-            "com.lwouis.alt-tab-macos",            // AltTab
-            "com.raycast.macos",                   // Raycast (menubar launcher)
-            "cc.ffitch.shottr",                    // Shottr (screenshot tool)
-            "com.if.Amphetamine",                  // Amphetamine (keep-awake)
-            "com.serialize",                       // Serialize (always-on-top task widget)
-            "com.pilotmoon.scroll-reverser",       // Scroll Reverser
-            "pro.betterdisplay.BetterDisplay",     // BetterDisplay
-            "com.wtalk.daemon",                    // wtalk
-            "org.pqrs.Karabiner-Core-Service",     // Karabiner-Elements (runs as several processes)
-            "org.pqrs.Karabiner-Menu",
-            "org.pqrs.Karabiner-NotificationWindow",
-         ]) {  // persistent menubar utilities to keep alive through a lockout. Apple's com.apple.* menubar
-               // items (Wi-Fi/battery/Control Center) are spared automatically; pure daemons (betterat,
-               // nextdns*) have no GUI app and are never killed. Add your own by editing settings.json.
+         spareApps: [String: String] = [
+            // Our own (team BULCQM9J2V) apps are only safe here because spareVerified additionally
+            // requires a ROOT-OWNED bundle for self-team apps — both demonlock and serialize install
+            // to /Applications root:wheel, so you can't swap them for a browser without sudo, and a
+            // sibling app you re-sign with your own Team ID (in ~/Applications) fails the owner check.
+            // wtalk is deliberately NOT here (it's a user-path Python venv daemon — can't be root-owned
+            // cleanly; it's launchd-KeepAlive so a lockout-kill just self-revives). Third-party entries
+            // below need no owner check — you can't re-sign as their teams.
+            "com.demonlock":                        "BULCQM9J2V",   // the enforcer itself (root-owned install)
+            "com.serialize":                        "BULCQM9J2V",   // Serialize task widget (root-owned install)
+            "com.lwouis.alt-tab-macos":             "QXD7GW8FHY",   // AltTab
+            "com.raycast.macos":                    "SY64MV22J9",   // Raycast (menubar launcher)
+            "cc.ffitch.shottr":                     "2Y683PRQWN",   // Shottr (screenshot tool)
+            "com.if.Amphetamine":                   "U5SR49N3PT",   // Amphetamine (keep-awake)
+            "pro.betterdisplay.BetterDisplay":      "299YSU96J7",   // BetterDisplay
+            "com.pilotmoon.scroll-reverser":        "6W6K75YWQ9",   // Scroll Reverser
+            "org.pqrs.Karabiner-Core-Service":      "G43BCU2T37",   // Karabiner-Elements (several processes)
+            "org.pqrs.Karabiner-Menu":              "G43BCU2T37",
+            "org.pqrs.Karabiner-NotificationWindow":"G43BCU2T37",
+         ]) {  // persistent menubar utilities to keep alive through a lockout, each PINNED to its signer's
+               // Team ID (a spoofed bundle id from another signer is still killed). Add your own as
+               // "bundle.id": "TEAMID" (get the team via `codesign -dv --verbose=4 /path/App.app`).
         self.pollSeconds = pollSeconds; self.countdownPollSeconds = countdownPollSeconds
         self.countdownSeconds = countdownSeconds; self.snoozeHHMM = snoozeHHMM
         self.graceSeconds = graceSeconds
         self.maxAccuracyMeters = maxAccuracyMeters; self.scanSeconds = scanSeconds
         self.scanWindowSeconds = scanWindowSeconds; self.enforcedUser = enforcedUser
         self.wifiKeepOn = wifiKeepOn; self.wifiDevice = wifiDevice
-        self.spareBundleIDs = spareBundleIDs
+        self.spareApps = spareApps
     }
 
     init(from decoder: Decoder) throws {
@@ -85,7 +92,7 @@ struct Settings: Codable {
         enforcedUser         = (try? c.decode(String.self, forKey: .enforcedUser)) ?? d.enforcedUser
         wifiKeepOn           = (try? c.decode(Bool.self,   forKey: .wifiKeepOn)) ?? d.wifiKeepOn
         wifiDevice           = (try? c.decode(String.self, forKey: .wifiDevice)) ?? d.wifiDevice
-        spareBundleIDs       = (try? c.decode([String].self, forKey: .spareBundleIDs)) ?? d.spareBundleIDs
+        spareApps            = (try? c.decode([String: String].self, forKey: .spareApps)) ?? d.spareApps
     }
 
     static func load() -> Settings {

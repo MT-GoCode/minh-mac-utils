@@ -181,27 +181,35 @@ at expiry (no sudo needed then) — so the escape-then-resume flow is just `snoo
 `arm` = enforce now (cancels a snooze); `disarm` = off indefinitely. Settings live in
 `settings.json` (`pollSeconds`, `countdownSeconds`, `snoozeHHMM`, `graceSeconds`, `maxAccuracyMeters`,
 `scanSeconds`, `scanWindowSeconds`, `enforcedUser` [username **or** uid — the lockout target],
-`wifiKeepOn`, `wifiDevice`, `spareBundleIDs`). There is deliberately **no fix-age knob** and no
+`wifiKeepOn`, `wifiDevice`, `spareApps`). There is deliberately **no fix-age knob** and no
 startup-grace knob — a held fix is valid while it keeps being confirmed, never judged by raw age.
 See `MODEL.md`.
 
-**Sparing an app from the lockout kill** (`spareBundleIDs`): the LOCKED action SIGKILLs **every
+**Sparing an app from the lockout kill** (`spareApps`): the LOCKED action SIGKILLs **every
 `.regular` (Dock) app — including Apple ones like Safari — plus every non-Apple `.accessory`
 (menubar) app**, so a distraction repackaged as `LSUIElement` can't dodge the lockout. Spared
-automatically: Apple's own menubar items (`com.apple.*` — Wi-Fi/battery/Control Center, Spotlight,
-Siri), nil-bundle helpers, and this agent (by PID). Pure daemons (betterat, nextdns*) have no GUI app
-and are never in the kill-list. Everything else dies unless its bundle ID is in `spareBundleIDs`.
+automatically: Apple's own menubar items (`com.apple.*`), nil-bundle helpers, and this agent (by PID).
+Pure daemons (betterat, nextdns*) have no GUI app and are never in the kill-list. Everything else dies
+unless it's a **verified** entry in `spareApps`.
 
-The default whitelist keeps the usual menubar utilities alive — AltTab (`com.lwouis.alt-tab-macos`),
-Raycast (`com.raycast.macos`), Shottr (`cc.ffitch.shottr`), Amphetamine (`com.if.Amphetamine`),
-Serialize (`com.serialize`), Scroll Reverser (`com.pilotmoon.scroll-reverser`), BetterDisplay
-(`pro.betterdisplay.BetterDisplay`), wtalk (`com.wtalk.daemon`), Karabiner (`org.pqrs.Karabiner-*`),
-and the blockrem blocker (`com.blockrem`). Both daemon and agent reload settings.json **live** (every tick / feed), so add your
+`spareApps` is `bundle-ID → Team ID`. An app is spared only if its **live code signature is verified**
+(Apple-rooted + that bundle id + that Team ID) — so a distraction that merely spoofs a whitelisted
+bundle id from another signer is still killed. Team ID (not cdhash) so a spare survives app
+auto-updates. For apps signed by **our own** Team (`BULCQM9J2V`), there's an extra pin: the bundle must
+be **root-owned** (you can re-sign anything with your own cert, so without this you could swap your own
+whitelisted app for a browser — root ownership means you'd need sudo to do it).
+
+Default whitelist: demonlock + Serialize (ours, root-owned installs in `/Applications`), AltTab
+(`com.lwouis.alt-tab-macos`), Raycast (`com.raycast.macos`), Shottr (`cc.ffitch.shottr`), Amphetamine
+(`com.if.Amphetamine`), Scroll Reverser (`com.pilotmoon.scroll-reverser`), BetterDisplay
+(`pro.betterdisplay.BetterDisplay`), Karabiner (`org.pqrs.Karabiner-*`). **Not** included: wtalk and
+blockrem — they're our-team apps not installed root-owned, so a team-pin can't protect them; wtalk
+self-revives under launchd KeepAlive anyway, and blockrem is `.accessory`+self-managed. Both daemon and agent reload settings.json **live** (every tick / feed), so add your
 own with no reinstall:
 
 ```sh
-sudo vi "/Library/Application Support/Demonlock/settings.json"   # "spareBundleIDs": ["com.demonlock", "com.your.app"]
-osascript -e 'id of app "AltTab"'                                # find a bundle ID
+sudo vi "/Library/Application Support/Demonlock/settings.json"   # "spareApps": {"com.demonlock":"BULCQM9J2V","their.bundle":"TEAMID"}
+codesign -dv --verbose=4 /Applications/AltTab.app 2>&1 | grep -E 'Identifier|TeamIdentifier'   # bundle id + Team ID
 ```
 
 Keep `com.demonlock` in the list. The agent is already spared by PID regardless. Note: a spare only
