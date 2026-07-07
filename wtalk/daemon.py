@@ -247,14 +247,34 @@ def _write_wav(path, audio_f32, sr):
         w.writeframes(pcm.tobytes())
 
 
+def _clear_mlx_cache():
+    """Return MLX's Metal buffer-reuse pool to the OS. MLX caches freed GPU buffers keyed by size to
+    avoid re-allocating; across many dictations of varied audio lengths that pool grows without bound
+    (seen as 10 GB of cold/swapped 'IOAccelerator' regions). Call after every transcribe so idle
+    footprint falls back to ~the model weights. Best-effort; never let a cache call break dictation."""
+    try:
+        import mlx.core as mx
+        mx.clear_cache()
+    except Exception:
+        pass
+
+
 def load_parakeet():
     """Load Parakeet and compile kernels. Call once at startup."""
     global _model
     from parakeet_mlx import from_pretrained
+    # Cap the Metal buffer-reuse pool so it can't balloon even mid-session (belt-and-suspenders with
+    # the per-transcribe clear below). 512 MB is plenty of reuse for a 0.6B model on short clips.
+    try:
+        import mlx.core as mx
+        mx.set_cache_limit(512 * 1024 * 1024)
+    except Exception:
+        pass
     _model = from_pretrained(config.PARAKEET_MODEL)
     tmp = Path(tempfile.gettempdir()) / "wtalk_warmup.wav"
     _write_wav(tmp, np.zeros(config.TARGET_SR // 2, dtype=np.float32), config.TARGET_SR)
     _model.transcribe(str(tmp))
+    _clear_mlx_cache()                                   # drop warmup buffers before going idle
     return _model
 
 
@@ -424,8 +444,11 @@ class Session:
                                                config.PAUSE_THRESHOLD_SEC)
         toks = [t for s in self.result.sentences for t in s.tokens] if self.result else []
         conf = min((t.confidence for t in toks), default=0.0)
-        return {"text": plain, "marked": marked, "duration": self.duration,
-                "pauses": pauses, "confidence": conf}
+        out = {"text": plain, "marked": marked, "duration": self.duration,
+               "pauses": pauses, "confidence": conf}
+        self.result = None          # drop refs to any MLX arrays before releasing the pool
+        _clear_mlx_cache()          # return Metal buffers to the OS (else IOAccelerator grows to GBs)
+        return out
 
 
 # ===================== cleanup: Gemini + Groq + race =====================
