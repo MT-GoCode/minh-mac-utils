@@ -61,3 +61,6 @@ demonlock/yourpolicies.txt
 serialize/.build/
 serialize/Serialize.app/
 # (serialize/dist/Serialize.app IS committed on purpose, like demonlock/blockrem.)
+
+# ---------- foreman-uplink (Swift) ----------
+foreman-uplink/ForemanUplink.app/
