@@ -49,15 +49,15 @@ struct Settings: Codable {
          enforcedUser: String = "", wifiKeepOn: Bool = true, wifiDevice: String = "en0",
          spareApps: [String: String] = [
             // Our own (team BULCQM9J2V) apps are only safe here because spareVerified additionally
-            // requires a ROOT-OWNED bundle for self-team apps — demonlock, serialize, and wtalk all
-            // install to /Applications root:wheel, so you can't swap them for a browser without sudo,
-            // and a sibling app you re-sign with your own Team ID (in ~/Applications) fails the owner
-            // check. wtalk is additionally a FROZEN binary (PyInstaller bootloader, not a `python`
-            // CLI) so it can't be redirected to run arbitrary code — a plain Python .app could be.
-            // All four of ours (demonlock/serialize/wtalk/blockrem) are root-owned /Applications
-            // installs. Third-party entries below need no owner check — you can't re-sign as their teams.
+            // requires a ROOT-OWNED bundle for self-team apps — demonlock, wtalk, blockrem,
+            // foreman-uplink, and multistreamviewer all install to /Applications root:wheel, so you
+            // can't swap them for a browser without sudo, and a sibling app you re-sign with your own
+            // Team ID (in ~/Applications) fails the owner check. wtalk is additionally a FROZEN binary
+            // (PyInstaller bootloader, not a `python` CLI) so it can't be redirected to run arbitrary
+            // code — a plain Python .app could be. A self-team entry not actually root-owned installed
+            // just never spares (owner check fails), it doesn't get any looser exception. Third-party
+            // entries below need no owner check — you can't re-sign as their teams.
             "com.demonlock":                        "BULCQM9J2V",   // the enforcer itself (root-owned install)
-            "com.serialize":                        "BULCQM9J2V",   // Serialize task widget (root-owned install)
             "com.wtalk.daemon":                     "BULCQM9J2V",   // wtalk dictation (frozen, root-owned install)
             "com.blockrem":                         "BULCQM9J2V",   // blockrem break-blocker (root-owned install)
             "com.minh.foreman-uplink":              "BULCQM9J2V",   // Foreman Uplink tunnel supervisor (root-owned install)

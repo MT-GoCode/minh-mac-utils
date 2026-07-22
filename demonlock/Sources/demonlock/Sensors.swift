@@ -247,8 +247,9 @@ final class SensorFeeder: NSObject, CLLocationManagerDelegate {
 
     /// True iff `app` is genuinely a whitelisted app. Two regimes, picked by who could have put the
     /// bundle on disk — fails closed (kill) on any doubt:
-    ///   • ROOT-OWNED bundle (our own apps: demonlock/serialize/wtalk/blockrem install to /Applications
-    ///     root:wheel) → only sudo could have placed/modified it, and the adversary has no sudo. So we
+    ///   • ROOT-OWNED bundle (our own apps: demonlock/wtalk/blockrem/foreman-uplink/multistreamviewer
+    ///     install to /Applications root:wheel) → only sudo could have placed/modified it, and the
+    ///     adversary has no sudo. So we
     ///     just require an INTACT signature with the matching identifier, ANY identity. This is what
     ///     keeps your own apps spared even if you LOSE your Developer ID and fall back to self-signed
     ///     or ad-hoc (those aren't Apple-rooted and carry no Team ID) — `team` is unused for these.
