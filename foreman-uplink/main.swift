@@ -20,14 +20,20 @@
 
 import AppKit
 import ServiceManagement
+import Network
+import ApplicationServices
+import CoreGraphics
+import Security
 
 let PROBE_PORT = 18700          // local end of the health-probe forward
+let RELAY_PORT: UInt16 = 18701  // loopback-only capability relay (screenshot/type/click)
 let RESPAWN_DELAY: TimeInterval = 2.0
 let PROBE_INTERVAL: TimeInterval = 2.0
 let MAX_PROBE_FAILURES = 3      // consecutive failed probes with a "running" ssh -> kill it
 let SSHD_CHECK_EVERY = 15       // probe ticks between local-sshd checks (~30s)
 
 let sshDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh")
+let relayDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".foreman-uplink")
 
 // MARK: - small helpers
 
@@ -65,6 +71,171 @@ func stablePort(for name: String) -> Int {
     return 2200 + Int(h % 700)
 }
 
+// Bearer token gating the relay: generated once, root of trust for ~/.foreman-uplink/relay.token
+// (0600, only this user can read it — that's what an ssh-invoked `curl` reads to call the relay).
+func loadOrCreateRelayToken() -> String {
+    let fm = FileManager.default
+    try? fm.createDirectory(at: relayDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    let tokenURL = relayDir.appendingPathComponent("relay.token")
+    if let existing = try? String(contentsOf: tokenURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+       !existing.isEmpty {
+        return existing
+    }
+    var bytes = [UInt8](repeating: 0, count: 32)
+    _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+    let token = bytes.map { String(format: "%02x", $0) }.joined()
+    try? token.write(to: tokenURL, atomically: true, encoding: .utf8)
+    try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tokenURL.path)
+    return token
+}
+
+// MARK: - capability relay
+//
+// TCC (macOS's privacy gatekeeper) attributes a command run via `ssh mac <cmd>` to
+// sshd's own responsible process, which the OS refuses to ever prompt for Screen
+// Recording / Accessibility / etc — "does not allow prompting", permanently denied,
+// no dialog, nothing to click. There is no way to grant that identity anything.
+//
+// So privileged actions can't be shelled out directly over ssh. Instead: this GUI
+// app (a real, promptable, WindowServer-attached process) holds the permissions
+// itself, and listens on 127.0.0.1 only. `ssh mac curl ...` reaches in locally to
+// ask *this process* to do the privileged thing — using ITS grant, not sshd's.
+final class RelayServer {
+    private var listener: NWListener?
+    private let port: UInt16
+    private let token: String
+
+    init(port: UInt16, token: String) {
+        self.port = port
+        self.token = token
+    }
+
+    func start() {
+        let params = NWParameters.tcp
+        params.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!)
+        guard let listener = try? NWListener(using: params) else { return }
+        listener.newConnectionHandler = { [weak self] conn in self?.handle(conn) }
+        listener.start(queue: .main)
+        self.listener = listener
+    }
+
+    private func handle(_ conn: NWConnection) {
+        conn.start(queue: .main)
+        var buffer = Data()
+        func receiveMore() {
+            conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, _, error in
+                guard let self else { return }
+                if error != nil { conn.cancel(); return }
+                if let data, !data.isEmpty { buffer.append(data) }
+                guard let headerEnd = buffer.range(of: Data("\r\n\r\n".utf8)) else {
+                    if buffer.count > 1_000_000 { self.respond(conn, 400, "Bad Request") } else { receiveMore() }
+                    return
+                }
+                let headerStr = String(data: buffer[..<headerEnd.lowerBound], encoding: .utf8) ?? ""
+                let lines = headerStr.components(separatedBy: "\r\n").filter { !$0.isEmpty }
+                guard let requestLine = lines.first else { self.respond(conn, 400, "Bad Request"); return }
+                let parts = requestLine.split(separator: " ")
+                guard parts.count >= 2 else { self.respond(conn, 400, "Bad Request"); return }
+                var headers: [String: String] = [:]
+                for line in lines.dropFirst() {
+                    guard let idx = line.firstIndex(of: ":") else { continue }
+                    let k = line[..<idx].trimmingCharacters(in: .whitespaces).lowercased()
+                    let v = line[line.index(after: idx)...].trimmingCharacters(in: .whitespaces)
+                    headers[k] = v
+                }
+                let contentLength = Int(headers["content-length"] ?? "0") ?? 0
+                let bodyStart = headerEnd.upperBound
+                if buffer.count - bodyStart < contentLength { receiveMore(); return }
+                let body = Data(buffer[bodyStart..<(bodyStart + contentLength)])
+                self.route(conn, method: String(parts[0]), pathAndQuery: String(parts[1]), headers: headers, body: body)
+            }
+        }
+        receiveMore()
+    }
+
+    private func route(_ conn: NWConnection, method: String, pathAndQuery: String, headers: [String: String], body: Data) {
+        guard headers["authorization"] == "Bearer \(token)" else { respond(conn, 401, "unauthorized"); return }
+        let comps = pathAndQuery.split(separator: "?", maxSplits: 1)
+        let path = String(comps[0])
+        var params: [String: String] = [:]
+        if comps.count > 1 {
+            for pair in comps[1].split(separator: "&") {
+                let kv = pair.split(separator: "=", maxSplits: 1)
+                if kv.count == 2 { params[String(kv[0])] = String(kv[1]).removingPercentEncoding ?? String(kv[1]) }
+            }
+        }
+        switch (method, path) {
+        case ("GET", "/health"):
+            respondJSON(conn, ["screenRecording": CGPreflightScreenCaptureAccess(), "accessibility": AXIsProcessTrusted()])
+        case ("GET", "/screenshot"):
+            let tmp = "/tmp/.foreman-uplink-\(UUID().uuidString).png"
+            let res = run("/usr/sbin/screencapture", ["-x", tmp])
+            guard res.status == 0, let data = FileManager.default.contents(atPath: tmp) else {
+                respond(conn, 500, "screenshot failed — grant Screen Recording via Request Permissions…"); return
+            }
+            try? FileManager.default.removeItem(atPath: tmp)
+            respondBinary(conn, data, contentType: "image/png")
+        case ("POST", "/type"):
+            guard let text = String(data: body, encoding: .utf8), !text.isEmpty else { respond(conn, 400, "empty body"); return }
+            guard AXIsProcessTrusted() else { respond(conn, 403, "accessibility not granted"); return }
+            typeText(text)
+            respond(conn, 200, "ok")
+        case ("POST", "/click"):
+            guard let x = Double(params["x"] ?? ""), let y = Double(params["y"] ?? "") else { respond(conn, 400, "need x,y"); return }
+            guard AXIsProcessTrusted() else { respond(conn, 403, "accessibility not granted"); return }
+            clickAt(x: x, y: y)
+            respond(conn, 200, "ok")
+        default:
+            respond(conn, 404, "not found")
+        }
+    }
+
+    private func typeText(_ text: String) {
+        for scalar in text.unicodeScalars {
+            var chars = [UniChar(truncatingIfNeeded: scalar.value)]
+            if let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true) {
+                down.keyboardSetUnicodeString(stringLength: chars.count, unicodeString: &chars)
+                down.post(tap: .cghidEventTap)
+            }
+            if let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) {
+                up.keyboardSetUnicodeString(stringLength: chars.count, unicodeString: &chars)
+                up.post(tap: .cghidEventTap)
+            }
+        }
+    }
+
+    private func clickAt(x: Double, y: Double) {
+        let point = CGPoint(x: x, y: y)
+        CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+        CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+    }
+
+    private func respond(_ conn: NWConnection, _ code: Int, _ text: String) {
+        sendHTTP(conn, code: code, contentType: "text/plain", body: Data(text.utf8))
+    }
+
+    private func respondBinary(_ conn: NWConnection, _ data: Data, contentType: String) {
+        sendHTTP(conn, code: 200, contentType: contentType, body: data)
+    }
+
+    private func respondJSON(_ conn: NWConnection, _ obj: [String: Bool]) {
+        let body = "{" + obj.map { "\"\($0.key)\":\($0.value)" }.joined(separator: ",") + "}"
+        sendHTTP(conn, code: 200, contentType: "application/json", body: Data(body.utf8))
+    }
+
+    private func sendHTTP(_ conn: NWConnection, code: Int, contentType: String, body: Data) {
+        let statusText = ["200": "OK", "400": "Bad Request", "401": "Unauthorized", "403": "Forbidden",
+                           "404": "Not Found", "500": "Internal Server Error"]["\(code)"] ?? ""
+        var head = "HTTP/1.1 \(code) \(statusText)\r\n"
+        head += "Content-Type: \(contentType)\r\n"
+        head += "Content-Length: \(body.count)\r\n"
+        head += "Connection: close\r\n\r\n"
+        var full = Data(head.utf8)
+        full.append(body)
+        conn.send(content: full, completion: .contentProcessed { _ in conn.cancel() })
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var tunnel: Process?
     private var timer: Timer?
@@ -83,6 +254,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private var urlField: NSTextField?
     private var nameField: NSTextField?
+    private var relay: RelayServer?
 
     private var foremanURL: String {
         get { UserDefaults.standard.string(forKey: "foremanURL") ?? "http://100.59.145.138:8700" }
@@ -111,10 +283,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let cfg = NSMenuItem(title: "Configure…", action: #selector(configure), keyEquivalent: ",")
         cfg.target = self
         menu.addItem(cfg)
+        let perm = NSMenuItem(title: "Request Permissions…", action: #selector(requestPermissions), keyEquivalent: "")
+        perm.target = self
+        menu.addItem(perm)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit Foreman Uplink", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
         setIcon(green: false)
+
+        let token = loadOrCreateRelayToken()
+        relay = RelayServer(port: RELAY_PORT, token: token)
+        relay?.start()
 
         let pkill = Process()
         pkill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
@@ -347,6 +526,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func configure() {
         showConfigWindow()
+    }
+
+    // Prompts for this app's OWN grants — the only identity in the whole ssh path
+    // that macOS will ever show a dialog for. Remote privileged actions then go
+    // through the relay, which runs as this app and so carries these grants.
+    @objc private func requestPermissions() {
+        let screenOK = CGRequestScreenCaptureAccess()
+        let axOK = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary)
+
+        let alert = NSAlert()
+        alert.messageText = "Foreman Uplink Permissions"
+        alert.informativeText = """
+        Screen Recording: \(screenOK ? "granted ✓" : "prompted — click Allow, then relaunch Foreman Uplink")
+        Accessibility: \(axOK ? "granted ✓" : "prompted — click Allow, then relaunch Foreman Uplink")
+
+        These let remote commands (over ssh, via the relay) take screenshots and
+        simulate keystrokes/clicks as this app — sshd itself can never be granted
+        these, so this app does it on its behalf.
+        """
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Open System Settings")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertSecondButtonReturn {
+            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+        }
     }
 
     private func showConfigWindow() {

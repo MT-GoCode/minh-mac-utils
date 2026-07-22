@@ -41,6 +41,31 @@ ssh <name> <command>     # e.g. `ssh mac hostname` — works whenever the menu b
 
 That's the persistent endpoint agents (and eventually the mngr ssh provider) use.
 
+## Permissions + capability relay (menu → Request Permissions…)
+
+Commands run via `ssh <name> <cmd>` are attributed by TCC (macOS's privacy gatekeeper)
+to sshd's own responsible process — and macOS **refuses to ever prompt** for that
+identity ("does not allow prompting", permanently denied). So `ssh mac screencapture ...`
+can never work no matter what's granted; there's no dialog for sshd to click Allow on.
+
+**Request Permissions…** instead asks for Screen Recording + Accessibility for
+**this app** (a real, promptable, WindowServer-attached process — the one identity
+in the whole path that CAN be prompted). The app then also runs a tiny HTTP relay on
+`127.0.0.1:18701`, bearer-token-gated (token at `~/.foreman-uplink/relay.token`,
+0600), so remote ssh commands can ask *this process* to do the privileged thing
+instead of trying it themselves:
+
+```
+TOKEN=$(ssh <name> cat ~/.foreman-uplink/relay.token)
+ssh <name> curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:18701/screenshot -o shot.png
+ssh <name> curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:18701/health   # {"screenRecording":bool,"accessibility":bool}
+ssh <name> curl -s -H "Authorization: Bearer $TOKEN" -X POST --data 'hello' http://127.0.0.1:18701/type
+ssh <name> curl -s -H "Authorization: Bearer $TOKEN" -X POST 'http://127.0.0.1:18701/click?x=100&y=200'
+```
+
+Screen Recording takes effect immediately; Accessibility may need one relaunch of
+the app after granting (menu → Quit, then reopen) before `/type` and `/click` work.
+
 ## Requirements
 
 - Mac: Remote Login ON (System Settings › Sharing). The app checks and reports in the
