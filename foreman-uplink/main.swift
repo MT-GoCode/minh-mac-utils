@@ -168,7 +168,9 @@ final class RelayServer {
         case ("GET", "/health"):
             respondJSON(conn, ["screenRecording": CGPreflightScreenCaptureAccess(), "accessibility": AXIsProcessTrusted()])
         case ("GET", "/screenshot"):
-            let tmp = "/tmp/.foreman-uplink-\(UUID().uuidString).png"
+            // NOT a dot-prefixed path: screencapture silently fails to move the file into
+            // place for hidden filenames (exits 0, writes nothing — verified empirically).
+            let tmp = "/tmp/foreman-uplink-shot-\(UUID().uuidString).png"
             let res = run("/usr/sbin/screencapture", ["-x", tmp])
             guard res.status == 0, let data = FileManager.default.contents(atPath: tmp) else {
                 respond(conn, 500, "screenshot failed — grant Screen Recording via Request Permissions…"); return
