@@ -18,7 +18,7 @@ APP_EXE="$DEST/Contents/MacOS/wtalk"
 DATA="$USER_HOME/.wtalk"
 cd "$HERE"
 
-# --- choose the bundle to deploy (same signing ladder as demonlock/serialize) ---------------
+# --- choose the bundle to deploy (same signing ladder as demonlock) -------------------------
 # Build fresh as the user if a toolchain + venv are present; else deploy the prebuilt, already-
 # signed dist/wtalk.app. Don't ad-hoc-resign over a Developer-ID-signed dist copy.
 # `--prebuilt` skips the build and deploys dist/$APP as-is — use it to (re)install WITHOUT a

@@ -198,8 +198,8 @@ a **verified** entry in `spareApps`.
 `spareApps` is `bundle-ID → Team ID`, but an app is spared by **one of two regimes**, picked by
 whether its bundle is **root-owned** (`spareVerified` in `Sensors.swift`):
 
-- **Root-owned bundle** (our own apps — demonlock/serialize/wtalk/blockrem install to `/Applications`
-  `root:wheel`): spared if it has an **intact signature with the matching identifier — ANY signing
+- **Root-owned bundle** (our own apps — demonlock/wtalk/blockrem/foreman-uplink/multistreamviewer
+  install to `/Applications` `root:wheel`): spared if it has an **intact signature with the matching identifier — ANY signing
   identity**. No Team ID, no Apple anchor required (`team` is unused here). This means your own apps
   **keep working even if you lose your Developer ID** and fall back to self-signed/ad-hoc. It's safe
   because the adversary has no sudo, so they can't create or modify a root-owned bundle in the first
@@ -210,9 +210,9 @@ whether its bundle is **root-owned** (`spareVerified` in `Sensors.swift`):
   distraction that merely spoofs a whitelisted bundle id from another signer is still killed, and
   Team (not cdhash) survives the vendor's auto-updates.
 
-Default whitelist: demonlock + Serialize + wtalk + blockrem (all ours, root-owned installs in
-`/Applications`; wtalk is additionally a PyInstaller-frozen/sealed binary so it can't be redirected
-to run other code), plus the third-party AltTab (`com.lwouis.alt-tab-macos`), Raycast
+Default whitelist: demonlock + wtalk + blockrem + foreman-uplink + multistreamviewer (all ours,
+root-owned installs in `/Applications`; wtalk is additionally a PyInstaller-frozen/sealed binary so
+it can't be redirected to run other code), plus the third-party AltTab (`com.lwouis.alt-tab-macos`), Raycast
 (`com.raycast.macos`), Shottr (`cc.ffitch.shottr`), Amphetamine (`com.if.Amphetamine`), Scroll
 Reverser (`com.pilotmoon.scroll-reverser`), BetterDisplay (`pro.betterdisplay.BetterDisplay`), and
 Karabiner (`org.pqrs.Karabiner-*`). Both daemon and agent reload settings.json **live** (every tick /
@@ -244,10 +244,10 @@ sudo vi "/Library/Application Support/Demonlock/settings.json"
 
 demonlock re-reads that file every ~1 second. Skip either step → it gets killed on lockout.
 
-**Why a self-made `com.serialize` fake doesn't work:** even though `com.serialize` is on the list and
+**Why a self-made `com.demonlock` fake doesn't work:** even though `com.demonlock` is on the list and
 you can sign it with your own team, the running impostor would live somewhere you can write
 (`~/…`/`~/Applications`) = **user-owned** ⇒ it fails the root-owned check ⇒ killed. The only
-`com.serialize` that's spared is the genuine one installed `root:wheel` in `/Applications` (which took
+`com.demonlock` that's spared is the genuine one installed `root:wheel` in `/Applications` (which took
 sudo to put there). And you can't tamper the real one in place — it's root-owned, and editing it
 breaks the signature ⇒ also killed.
 

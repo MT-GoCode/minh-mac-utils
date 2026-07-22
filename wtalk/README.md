@@ -38,8 +38,8 @@ The red dot tells the truth: 🔴 listening · ◌ spinner = transcribing/cleani
 ## Clean install
 
 wtalk is frozen with **PyInstaller** into a **sealed, code-signed, root-owned**
-`/Applications/wtalk.app` — the same model as the sibling tools `demonlock` and
-`serialize`. "Sealed + root-owned" matters: the launched binary is the **PyInstaller
+`/Applications/wtalk.app` — the same model as the sibling tool `demonlock`.
+"Sealed + root-owned" matters: the launched binary is the **PyInstaller
 bootloader**, not a `python` CLI — it takes no `-c`/`-m`/argv-script and runs only the
 embedded bytecode, and PyInstaller ≥6 blocks a host `PYTHONPATH`/`PYTHONHOME` from
 overriding the bundled modules. Combined with the `root:wheel` install (you can't replace

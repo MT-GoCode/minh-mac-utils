@@ -19,7 +19,6 @@ the credential files on the target machine and you fill them in.
 | **settingslock** | kill System Settings the instant the FileVault recovery-key pane opens | `./install.sh` (self-sudos) | yes |
 | **betterat** | no-sudo `at(1)`: schedule shell commands, persist + catch up on reboot | `./betterat install` | no |
 | **wtalk** | push-to-talk dictation daemon (Parakeet transcribe + Gemini cleanup); Nuitka-frozen, sealed, root-owned | `sudo ./install.sh` | yes |
-| **serialize** | always-on-top one-line task widget (menu-bar accessory); root-owned so demonlock can spare it | `sudo ./install.sh` | yes |
 | **blockrem** | scheduled un-quittable break/reminder screen blocks (root daemon + GUI agent) | `sudo ./install.sh` | yes |
 | **fade-play-pause-chrome** | daemon that fades out + pauses browser music tabs and fades them back; `fadepause`/`faderesume` triggers | `./install.sh` | no |
 
@@ -51,8 +50,7 @@ tool — wtalk no longer drives it.
 4. **demonlock** — `cd ../demonlock && sudo ./install.sh` → `demonlock perm-ask` (grant **Location → Always**) → `demonlock scan` / `zones` / `sudo demonlock setpolicy '…'` → `sudo demonlock arm`.
 5. **settingslock** — `cd ../settingslock && ./install.sh` (run as **you**) → grant **Accessibility** to `/usr/local/bin/settingslock` → `sudo settingslock arm`.
 6. **wtalk** — `cd ../wtalk && ./setup.sh` (venv+deps+ffmpeg) → `sudo ./install.sh` (Nuitka-freeze, sign, deploy **root-owned** to `/Applications`, seed `~/.wtalk`) → put your Gemini key in `~/.wtalk/.env` → `wtalk restart` → bind a key in Karabiner to `/usr/local/bin/wtalk toggle` → grant **Microphone + Accessibility**.
-7. **serialize** — `cd ../serialize && sudo ./install.sh --login` → menu-bar icon → **Modify Text…**; grant **Accessibility** for the bar modes.
-8. **betterat** — `cd ../betterat && ./betterat install` (no sudo).
+7. **betterat** — `cd ../betterat && ./betterat install` (no sudo).
 
 ### 3. Only then harden
 Verify each tool's `status` / `selftest`. *Then* `sudome remove` to drop daily admin (re-login to
@@ -68,10 +66,10 @@ Installers scaffold these on the target Mac; you fill them in:
 | `~/.wtalk/.env` | wtalk `sudo ./install.sh` (template, user-owned `600`) | paste Gemini/Groq/HF keys |
 
 ## TCC permissions — human-click only
-**Location** → demonlock · **Accessibility** → settingslock + wtalk + serialize · **Microphone** → wtalk. macOS
+**Location** → demonlock · **Accessibility** → settingslock + wtalk · **Microphone** → wtalk. macOS
 won't let a script grant these; you click them once per machine.
 
-## Code signing (demonlock, settingslock, wtalk, serialize, blockrem)
+## Code signing (demonlock, settingslock, wtalk, blockrem)
 Only the three tools that build macOS `.app`s sign anything (the C tools auto-ad-hoc-sign via the
 compiler; the bash tools don't sign). All three call the **same** picker, `sign-identity.sh`, which
 chooses best-first and prints the choice at install:
@@ -112,8 +110,8 @@ cp /tmp/dl/settingslock settingslock/dist/settingslock
 ( cd settingslock && ./install.sh )
 ```
 (wtalk is now Nuitka-frozen + Developer-ID-signed like the others — `sudo ./install.sh` builds and
-deep-signs `wtalk.app` on the machine; deploying a prebuilt `dist/wtalk.app` works too. serialize and
-blockrem follow the same `dist/`-signed pattern.)
+deep-signs `wtalk.app` on the machine; deploying a prebuilt `dist/wtalk.app` works too. blockrem
+follows the same `dist/`-signed pattern.)
 
 ## JAMF / MDM caveats (org policy — can't be fixed in code)
 - A managed **content/network filter or pinned DNS** will fight nextdns-lockdown's `pf` + resolver lock.
