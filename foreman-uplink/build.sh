@@ -7,7 +7,7 @@ cd "$(dirname "$0")"
 
 APP="$PWD/ForemanUplink.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 swiftc -O -o "$APP/Contents/MacOS/ForemanUplink" main.swift \
     -framework AppKit -framework ServiceManagement
