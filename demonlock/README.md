@@ -251,6 +251,35 @@ you can sign it with your own team, the running impostor would live somewhere yo
 sudo to put there). And you can't tamper the real one in place — it's root-owned, and editing it
 breaks the signature ⇒ also killed.
 
+## Release valve
+
+A **self-serve, delay-gated admin grant** — get sudo back on *your* terms without holding a password
+day-to-day. You configure it once (sudo), then `--request` (no sudo); the daemon grants admin only
+after a delay and only inside a window you defined, for a fixed duration, then revokes it.
+
+```bash
+# configure (sudo; any subset per call):
+sudo demonlock release-valve --set-window-policy "IN_POLICY AND TIME_IS_ANY([*1000-1100])"
+sudo demonlock release-valve --set-request-delay "12h"      # wait after --request before eligible
+sudo demonlock release-valve --set-request-duration "1h"    # how long the grant lasts
+# use (no sudo, once all three are set):
+demonlock release-valve --request     # granted after the delay, at the next window, for the duration
+demonlock release-valve abort         # cancel a pending request / close a live grant now
+```
+
+- **`IN_POLICY`** is a new policy primitive, valid **only** in the window policy: it's the main
+  policy's current verdict, so you can gate grants on being in-policy (plus any time/location clause).
+- **Delay can't be gamed:** `--request` just drops a marker in a **user-owned** inbox
+  (`…/Demonlock/rv/`); the **root daemon stamps the request time with its own clock**, so you can't
+  backdate to skip the delay or request right before a window.
+- **No timers** — config + lifecycle live on disk (root-owned; the inbox is yours), driven by the
+  enforcer tick: each tick evaluates the main policy → feeds `IN_POLICY` → evaluates the window
+  policy → advances `delay → window → granted → expire`, calling `sudome --give-to-user` /
+  `--take-from-user` (idempotent). It grants **admin only** — it does not stand demonlock down, so
+  keep `IN_POLICY` in your window policy if you don't want to be locked out during the grant.
+- **Notifications** fire on grant and revoke (approve the notification prompt on first agent launch);
+  `demonlock status` and the panel show the phase, delay/duration remaining, and the window-eval tree.
+
 ## Code signing
 
 Apple Silicon requires a signature to run at all. The installer auto-picks the best identity
