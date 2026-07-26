@@ -35,10 +35,17 @@ final class AgentApp: NSObject, NSApplicationDelegate {
     /// Post a banner (release-valve grant/revoke) via osascript — reliable from the agent's GUI
     /// session with no per-app authorization dance (the launchd-spawned agent never reliably gets the
     /// UNUserNotification prompt to appear). Banner is attributed to "Script Editor".
+    ///
+    /// The text is passed as osascript `argv` positionals, NOT interpolated into the script source —
+    /// so it can never be parsed as AppleScript (no injection), even if a caller ever hands it an
+    /// adversary-controlled string (a policy/zone name, etc.). Args go argv-only via Proc (no shell).
     private func notify(_ title: String, _ body: String) {
-        func esc(_ s: String) -> String { s.replacingOccurrences(of: "\"", with: "\\\"") }
-        Proc.run("/usr/bin/osascript",
-                 ["-e", "display notification \"\(esc(body))\" with title \"\(esc(title))\""])
+        Proc.run("/usr/bin/osascript", [
+            "-e", "on run argv",
+            "-e", "display notification (item 1 of argv) with title (item 2 of argv)",
+            "-e", "end run",
+            body, title,
+        ])
     }
 
     /// Fire notifications on release-valve transitions into / out of the "granted" phase.
