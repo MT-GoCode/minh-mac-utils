@@ -9,18 +9,20 @@ back. **Revoking needs no password** (tightening is always allowed).
 sudome add        # prompts for the held password; if correct, makes you an admin (sudo)
 sudome remove     # drops your admin — no password
 
+sudome copy-master-password           # copy the held password to the clipboard (ANY user)
+
 # ROOT-ONLY (no password — root is already the authority). For a root DAEMON (e.g. demonlock's
 # scheduled-unlock door) or `sudo`, granting/revoking admin for a NAMED user:
 sudo sudome --give-to-user  <user>    # grant admin to <user>
 sudo sudome --take-from-user <user>   # revoke it
-sudo sudome copy-master-password      # copy the held password to the clipboard (pbcopy)
 ```
 
-⚠️ **`copy-master-password` note:** it adds no capability a root caller doesn't already have (root can
-`cat` the file directly) — it's convenience. But be aware: **anyone who reaches root can extract the
-master secret**, so the password is only ever as strong as your admin gate. If the whole point is that
-you *don't* hold the password day-to-day, don't grant yourself an admin window that lets you copy it
-out (or keep the secret somewhere root can't read).
+**On `copy-master-password` being open to any user:** by design here the password isn't meant to be
+secret *from you* — it's a **portable shared secret** (the same password gates settings on the phone)
+and a "make loosening deliberate" marker, not a root-proof lock. The real delay-teeth is Pluckeye, and
+admin already lets you change/undo everything. So handing the secret to your own user is intended.
+(Consequence, eyes open: this means the password gate alone stops nobody who can run `sudome` — lean
+on Pluckeye's delay for the actual teeth.)
 
 `--give-to-user` / `--take-from-user` are gated on the **real uid** (`getuid()==0`), so only a
 genuinely root-invoked caller reaches them — the setuid bit alone (which makes *everyone's* `euid`

@@ -287,9 +287,10 @@ static int copy_to_clipboard(const char *text) {
     return (w == (ssize_t)len && WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
-/* Root-only: read the held master password and put it on the clipboard. Adds no capability a root
- * caller lacks (root can already `cat` the file) — it's convenience. NOTE: this means anyone who can
- * reach root can extract the master secret, so the password is only as strong as your admin gate. */
+/* Read the held master password and put it on the clipboard (any caller). The setuid bit is what lets
+ * it read the 0600 root-only file. By design the password isn't secret from you — it's a portable
+ * shared secret (also used to unlock phone settings) and a deliberateness marker; Pluckeye's delay is
+ * the real lock. So handing it to your own user here is intended, not a leak. */
 static int do_copy_password(void) {
     char pw[256];
     if (load_password(pw, sizeof pw) != 0) return 1;
@@ -305,7 +306,7 @@ static void usage(void) {
         "usage: sudome {add|remove}                    # you toggle your OWN admin (add is password-gated)\n"
         "       sudome --give-to-user <user>           # ROOT-ONLY: grant admin to <user>, no password\n"
         "       sudome --take-from-user <user>         # ROOT-ONLY: revoke admin from <user>\n"
-        "       sudome copy-master-password            # ROOT-ONLY: copy the held password to the clipboard\n");
+        "       sudome copy-master-password            # copy the held password to the clipboard (any user)\n");
 }
 
 int main(int argc, char **argv) {
@@ -327,13 +328,12 @@ int main(int argc, char **argv) {
         set_user_explicit(argv[2]);
         return strcmp(argv[1], "--give-to-user") == 0 ? do_give() : do_take();
     }
-    if (argc == 2 && strcmp(argv[1], "copy-master-password") == 0) {
-        if (getuid() != 0) {
-            fprintf(stderr, "sudome: copy-master-password is root-only — run it as root (e.g. via sudo)\n");
-            return 1;
-        }
+    /* copy-master-password: allowed for ANY caller — your normal user OR root. It hands out the held
+     * secret, which is intended here: the password is a PORTABLE shared secret (it also gates phone
+     * settings) + a "make loosening deliberate" marker, not a root-proof lock. The real delay-teeth is
+     * Pluckeye; getting admin already lets you change/undo everything. */
+    if (argc == 2 && strcmp(argv[1], "copy-master-password") == 0)
         return do_copy_password();
-    }
 
     /* Self-service: the invoking (non-root) user toggles their OWN admin. */
     resolve_user();   /* target = whoever ran us (real uid); forbids root */
