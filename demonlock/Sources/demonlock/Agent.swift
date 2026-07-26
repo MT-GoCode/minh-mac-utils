@@ -1,6 +1,5 @@
 import AppKit
 import Foundation
-import UserNotifications
 
 /// The logged-in GUI agent: runs the sensor feed (location + BSSID) to the root enforcer and
 /// shows the status/countdown panel (phase, reason, red/green policy tree, Disarm). Closing the
@@ -25,8 +24,6 @@ final class AgentApp: NSObject, NSApplicationDelegate {
         activity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiatedAllowingIdleSystemSleep],
             reason: "demonlock sensor feed must keep reporting")
-        // Ask once for notification permission — the release valve posts a banner on grant/revoke.
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         feeder = SensorFeeder(settings: Settings.load())
         feeder.start()
         buildMenubar()
@@ -35,11 +32,13 @@ final class AgentApp: NSObject, NSApplicationDelegate {
         refresh()
     }
 
-    /// Post a local banner (release-valve grant/revoke).
+    /// Post a banner (release-valve grant/revoke) via osascript — reliable from the agent's GUI
+    /// session with no per-app authorization dance (the launchd-spawned agent never reliably gets the
+    /// UNUserNotification prompt to appear). Banner is attributed to "Script Editor".
     private func notify(_ title: String, _ body: String) {
-        let c = UNMutableNotificationContent(); c.title = title; c.body = body; c.sound = .default
-        UNUserNotificationCenter.current().add(
-            UNNotificationRequest(identifier: UUID().uuidString, content: c, trigger: nil))
+        func esc(_ s: String) -> String { s.replacingOccurrences(of: "\"", with: "\\\"") }
+        Proc.run("/usr/bin/osascript",
+                 ["-e", "display notification \"\(esc(body))\" with title \"\(esc(title))\""])
     }
 
     /// Fire notifications on release-valve transitions into / out of the "granted" phase.
