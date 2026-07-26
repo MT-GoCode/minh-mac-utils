@@ -250,16 +250,18 @@ static int do_give(void) {
 }
 
 static int do_take(void) {
+    /* Idempotent: if the user is already not an admin (e.g. they ran `sudome remove` themselves
+     * while a release-valve grant was live), skip the group edit entirely — just clean up and
+     * report success, so a daemon's expiry `--take-from-user` never errors. */
     int was_admin = is_admin();
-    int rc = set_admin(0);
+    int rc = was_admin ? set_admin(0) : 0;
     unlink(g_sudoers);
     clear_sudo_cache();
     if (rc != 0) {
         fprintf(stderr, "sudome: failed to remove %s from the admin group\n", g_user);
         return 1;
     }
-    printf("sudome: removed admin/sudo from %s%s\n", g_user,
-           was_admin ? "" : " (was already not an admin)");
+    printf("sudome: %s admin revoked%s\n", g_user, was_admin ? "" : " (was already not an admin)");
     return 0;
 }
 
