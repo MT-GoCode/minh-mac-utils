@@ -32,20 +32,21 @@ final class AgentApp: NSObject, NSApplicationDelegate {
         refresh()
     }
 
-    /// Post a banner (release-valve grant/revoke) via osascript — reliable from the agent's GUI
-    /// session with no per-app authorization dance (the launchd-spawned agent never reliably gets the
-    /// UNUserNotification prompt to appear). Banner is attributed to "Script Editor".
-    ///
-    /// The text is passed as osascript `argv` positionals, NOT interpolated into the script source —
-    /// so it can never be parsed as AppleScript (no injection), even if a caller ever hands it an
-    /// adversary-controlled string (a policy/zone name, etc.). Args go argv-only via Proc (no shell).
+    /// Surface a release-valve grant/revoke as an ALERT DIALOG, not a notification banner. Focus /
+    /// Do Not Disturb filters *notifications*, but a dialog is ordinary app UI — so it shows even
+    /// during a Sleep focus, which is what you want for "your admin just unlocked/relocked". Runs
+    /// DETACHED on a background queue (the alert is modal — blocking the agent's 0.25s refresh loop
+    /// would freeze the UI) and auto-dismisses after 10 min so a stale alert can't pile up. Text is
+    /// passed as osascript `argv` positionals (injection-proof — never parsed as AppleScript), no shell.
     private func notify(_ title: String, _ body: String) {
-        Proc.run("/usr/bin/osascript", [
-            "-e", "on run argv",
-            "-e", "display notification (item 1 of argv) with title (item 2 of argv)",
-            "-e", "end run",
-            body, title,
-        ])
+        DispatchQueue.global(qos: .utility).async {
+            Proc.run("/usr/bin/osascript", [
+                "-e", "on run argv",
+                "-e", "display alert (item 1 of argv) message (item 2 of argv) giving up after 600",
+                "-e", "end run",
+                title, body,
+            ])
+        }
     }
 
     /// Fire notifications on release-valve transitions into / out of the "granted" phase.
