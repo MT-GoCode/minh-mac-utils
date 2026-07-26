@@ -246,16 +246,14 @@ app in my logged-in session that holds those permissions. Rule of thumb: if a ba
 command fails with a permission or keychain error, re-run it as \`rac exec <same
 command>\` and it will go through.
 
-The \`rac\` tools (only needed for the GUI/keychain things above):
-  rac exec <command>       run ANYTHING with my GUI permissions + unlocked keychain, e.g.
-                             rac exec codesign -s "Developer ID" MyApp.app
-                             rac exec osascript -e 'tell app "Safari" to activate'
-                             rac exec open https://example.com
-  rac screenshot [file]    capture the whole screen (no file → PNG on stdout; then read it)
-  rac screenshot --app Safari shot.png     capture just that app's window
-  rac windows              list on-screen windows (id, app, title); ids feed --window <id>
-  rac type "text"          type text          rac click <x> <y>   click at a point
-  rac notify "Title" "msg" post a macOS notification
+The \`rac exec\` hand (only for the GUI/keychain things above) runs ANYTHING with my GUI
+permissions + unlocked keychain. Examples:
+  rac exec codesign -s "Developer ID" MyApp.app                          # keychain / signing
+  rac exec osascript -e 'tell app "Safari" to activate'                  # AppleScript, control apps
+  rac exec osascript -e 'display notification "done" with title "Build"' # notifications
+  rac exec screencapture -x /tmp/shot.png                                # screenshot the screen
+  rac exec pbpaste                                                       # read the clipboard
+  rac exec open https://example.com                                      # open a url / file / app
 
 Everything is one command at a time over ssh, but the connection is kept warm between
 commands, fire as many as you need, they're fast, that's expected.
@@ -282,7 +280,7 @@ cmd_guide() {
 
 ## 4. Tell the agent
     Access my personal computer with `ssh <MACHINE_NAME>`.
-    (GUI / keychain actions: prefix with `rac`, e.g. `rac screenshot`, `rac exec codesign ...`)
+    (GUI / keychain actions: prefix with `rac exec`, e.g. `rac exec codesign ...`, `rac exec osascript ...`)
 EOF
 }
 

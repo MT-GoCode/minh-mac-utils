@@ -87,33 +87,35 @@ etc.) are planned as a separate `mess-with-my-computer` CLI layered on top of `e
 
 ---
 
-## 4. The agent briefing (paste this to any agent on an authorized box)
+## 4. The agent briefing
 
-`authenticate-box` prints this with `<machine-name>` and your username filled in. It is the same
-text, kept here for reference:
+`authenticate-box` prints this with `<machine-name>` and your username filled in. Copy everything
+from the line below down and hand it to the agent:
 
-> You have SSH access to my personal Mac (macOS, Apple Silicon) as the user `<user>`.
-> Connect with: `ssh <machine-name>`
->
-> This is a real login shell on my actual computer. Act as if you were sitting at my terminal.
-> Normal commands just work, as me, with my files and environment: read and write files, git,
-> python or node, builds, brew, curl. Run them directly, no prefix.
->
-> The one macOS rule: a plain ssh session cannot do anything that needs GUI permission (see the
-> screen, move the mouse or keyboard, control other apps) or my login keychain (code signing).
-> macOS blocks that for ssh permanently; it is not a misconfiguration and retrying will not help.
-> For those, prefix the command with `rac`, which runs it inside a small app in my logged-in
-> session that holds those permissions. Rule of thumb: if a bare command fails with a permission
-> or keychain error, re-run it as `rac exec <same command>` and it will go through.
->
-> The `rac` tools: `rac exec <command>` runs anything with my GUI permissions and unlocked
-> keychain; `rac screenshot [file]` captures the screen (add `--app <name>` for one window);
-> `rac windows` lists windows; `rac type "text"` and `rac click <x> <y>` are synthetic input;
-> `rac notify "Title" "text"` posts a notification.
->
-> Everything is one command at a time over ssh, but the connection is kept warm between commands,
-> so fire as many as you need, they are fast. If `ssh <machine-name>` hangs or is refused, my
-> connector may be offline; tell me, do not hammer it. This is my personal machine: be deliberate.
+You have SSH access to my personal Mac (macOS, Apple Silicon) as the user `<user>`.
+Connect with: `ssh <machine-name>`
+
+This is a real login shell on my actual computer. Act as if you were sitting at my terminal.
+Normal commands just work, as me, with my files and environment: read and write files, git,
+python or node, builds, brew, curl. Run them directly, no prefix.
+
+The one macOS rule: a plain ssh session cannot do anything that needs GUI permission (see the
+screen, move the mouse or keyboard, control other apps) or my login keychain (code signing).
+macOS blocks that for ssh permanently; it is not a misconfiguration and retrying will not help.
+For those, prefix the command with `rac exec`, which runs it inside a small app in my logged-in
+session that holds those permissions. Rule of thumb: if a bare command fails with a permission
+or keychain error, re-run it as `rac exec <same command>` and it will go through. Examples:
+
+    rac exec codesign -s "Developer ID Application: <me>" MyApp.app          # keychain / signing
+    rac exec osascript -e 'tell application "Safari" to activate'            # AppleScript, control apps
+    rac exec osascript -e 'display notification "done" with title "Build"'   # notifications
+    rac exec screencapture -x /tmp/shot.png                                 # screenshot the screen
+    rac exec pbpaste                                                        # read the clipboard
+    rac exec open https://example.com                                       # open a url / file / app
+
+Everything is one command at a time over ssh, but the connection is kept warm between commands,
+so fire as many as you need, they are fast. If `ssh <machine-name>` hangs or is refused, my
+connector may be offline; tell me, do not hammer it. This is my personal machine: be deliberate.
 
 ---
 
