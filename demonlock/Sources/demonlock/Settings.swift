@@ -60,7 +60,7 @@ struct Settings: Codable {
             "com.demonlock":                        "BULCQM9J2V",   // the enforcer itself (root-owned install)
             "com.wtalk.daemon":                     "BULCQM9J2V",   // wtalk dictation (frozen, root-owned install)
             "com.blockrem":                         "BULCQM9J2V",   // blockrem break-blocker (root-owned install)
-            "com.minh.foreman-uplink":              "BULCQM9J2V",   // Foreman Uplink tunnel supervisor (root-owned install)
+            "com.minh.remote-agent-connector":      "BULCQM9J2V",   // Remote Agent Connector (foreman-uplink successor; .regular dock app, root-owned install)
             "com.minh.multistreamviewer":           "BULCQM9J2V",   // MultiStreamViewer
             "com.lwouis.alt-tab-macos":             "QXD7GW8FHY",   // AltTab
             "com.raycast.macos":                    "SY64MV22J9",   // Raycast (menubar launcher)

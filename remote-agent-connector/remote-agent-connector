@@ -1,0 +1,304 @@
+#!/bin/bash
+# remote-agent-connector, CLI companion to the Remote Agent Connector app.
+#
+# SETUP (run on the Mac). All idempotent; pass --redo to tear down and redo.
+#   make-and-get-CA [--redo]                 create/print the SSH CA, trust it on this Mac
+#   authenticate-middleman-box <ssh-target> <machine-name> [--redo]
+#                                            ssh into your middleman, set up the jump gate, and
+#                                            NAME this Mac (the alias agents use); set once here
+#   authenticate-box <ssh-target> [--redo]   ssh into a box and wire it up so its agents can
+#                                            `ssh <machine-name>` into this Mac (name inherited
+#                                            from the middleman step); prints an agent briefing
+#   middleman-script                         print the middleman block (manual fallback, no ssh)
+#   guide                                    print the whole guide
+#
+#   <ssh-target> is exactly what you'd type after `ssh` to reach the box yourself
+#   an alias (`foreman`) or `user@host` with flags (`ubuntu@1.2.3.4 -p 2222`).
+#
+# HAND (agents run this over ssh; it asks the app to act with ITS grants):
+#   exec <cmd...>   run a command AS THE APP: GUI permission (Screen Recording, Accessibility,
+#                   Automation) + your unlocked login keychain. The ONLY hand you need; anything
+#                   else is just a command through it:
+#                     rac exec screencapture -x /tmp/shot.png       # screenshots
+#                     rac exec osascript -e '...'                   # AppleScript / UI / notifications
+#                     rac exec codesign -s "Developer ID" App.app   # keychain / signing
+#
+# Symlinked as `rac`. exec is gated by a loopback bearer token only your user can read.
+set -euo pipefail
+
+RAC_DIR="$HOME/.remote-agent-connector"
+CA="$RAC_DIR/agent_ca"
+RELAY="http://127.0.0.1:18701"
+CERT_VALIDITY="${RAC_CERT_VALIDITY:-+12w}"   # how long an authenticated box stays valid
+
+die() { echo "rac: $*" >&2; exit 1; }
+
+# Live values the app writes (MAC_USER, TUNNEL_PORT, MIDDLEMAN_HOST, MACHINE_NAME).
+load_config() {
+  MAC_USER="$(whoami)"; TUNNEL_PORT="2298"; MIDDLEMAN_HOST="100.59.145.138"; MACHINE_NAME="remote-personal-machine"
+  [ -f "$RAC_DIR/config" ] && . "$RAC_DIR/config" || true
+  # The machine name (the alias agents use to reach this Mac) is set once, at middleman setup.
+  [ -f "$RAC_DIR/machine-name" ] && MACHINE_NAME="$(cat "$RAC_DIR/machine-name")"
+}
+store_machine_name() {
+  case "$1" in *[!a-z0-9-]*|'') die "machine name must be lowercase letters, digits, and dashes";; esac
+  mkdir -p "$RAC_DIR"; printf '%s\n' "$1" > "$RAC_DIR/machine-name"
+}
+
+token() {
+  [ -f "$RAC_DIR/relay.token" ] || die "no relay token, is the Remote Agent Connector app running?"
+  cat "$RAC_DIR/relay.token"
+}
+
+# Pull --redo out of the args → sets REDO, leaves the rest in POS[].
+REDO=0; POS=()
+parse_flags() { REDO=0; POS=(); local a; for a in "$@"; do if [ "$a" = "--redo" ]; then REDO=1; else POS+=("$a"); fi; done; }
+
+# ---- HANDS (call the local app) -------------------------------------------------
+
+hand_exec() {
+  [ $# -gt 0 ] || die "exec needs a command"
+  local body; printf -v body '%q ' "$@"
+  local hdr; hdr="$(mktemp)"
+  local out; out="$(curl -s -D "$hdr" -H "Authorization: Bearer $(token)" --data-binary "$body" "$RELAY/exec")"
+  printf '%s' "$out"
+  local code; code="$(sed -n 's/^[Xx]-[Ee]xit-[Cc]ode: *\([0-9]*\).*/\1/p' "$hdr" | tr -d '\r')"
+  rm -f "$hdr"; exit "${code:-0}"
+}
+# Everything else an agent wants is just `exec`, which runs as the app (GUI grants + keychain):
+#   rac exec screencapture -x /tmp/shot.png       # screenshots
+#   rac exec osascript -e '...'                   # AppleScript, UI automation, notifications
+#   rac exec cliclick c:100,200                   # mouse/keys, if cliclick is installed
+#   rac exec pbpaste  /  rac exec open <url>      # clipboard, open things
+
+# ---- SETUP ----------------------------------------------------------------------
+
+ca_pub() { cat "$CA.pub"; }
+trust_line() { echo "cert-authority,from=\"127.0.0.1,::1\" $(ca_pub | awk '{print $1" "$2}') remote-agent-connector-ca"; }
+trust_on_mac() {
+  local ak="$HOME/.ssh/authorized_keys"
+  mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"; touch "$ak"; chmod 600 "$ak"
+  grep -v 'remote-agent-connector-ca' "$ak" > "$ak.tmp" 2>/dev/null || true
+  trust_line >> "$ak.tmp"; mv "$ak.tmp" "$ak"; chmod 600 "$ak"
+}
+
+cmd_make_and_get_CA() {
+  parse_flags "$@"
+  mkdir -p "$RAC_DIR"; chmod 700 "$RAC_DIR"
+  if [ "$REDO" = 1 ]; then
+    echo "▸ --redo: removing existing CA and Mac trust"
+    rm -f "$CA" "$CA.pub"
+    local ak="$HOME/.ssh/authorized_keys"
+    [ -f "$ak" ] && { grep -v 'remote-agent-connector-ca' "$ak" > "$ak.tmp" 2>/dev/null || true; mv "$ak.tmp" "$ak"; chmod 600 "$ak"; }
+  fi
+  if [ ! -f "$CA" ]; then ssh-keygen -t ed25519 -N '' -q -f "$CA" -C remote-agent-connector-ca; echo "▸ created CA at $CA"
+  else echo "▸ CA already exists at $CA (use --redo to replace)"; fi
+  trust_on_mac; load_config
+  cat <<EOF
+
+✓ CA ready and trusted on this Mac.
+
+  Your CA public key:
+  ────────────────────────────────────────────────────────
+$(ca_pub)
+  ────────────────────────────────────────────────────────
+  Middleman : $MIDDLEMAN_HOST      tunnel port: $TUNNEL_PORT      you: $MAC_USER
+
+Next:  remote-agent-connector authenticate-middleman-box <ssh-target> <machine-name>   # step 2 (names this Mac)
+       remote-agent-connector authenticate-box <ssh-target>                            # step 3 (inherits the name)
+EOF
+}
+
+cmd_middleman_script() {
+  [ -f "$CA.pub" ] || die "no CA yet, run: remote-agent-connector make-and-get-CA"
+  load_config
+  cat <<EOF
+# ── Step 2 (manual): run this ON your middleman box ($MIDDLEMAN_HOST) ──
+CA='$(ca_pub)'
+sudo adduser --disabled-password --gecos '' agentjump 2>/dev/null || true
+sudo install -d -m700 -o agentjump -g agentjump /home/agentjump/.ssh
+echo "cert-authority,restrict,port-forwarding,permitopen=\"127.0.0.1:$TUNNEL_PORT\" \$CA" \\
+  | sudo tee /home/agentjump/.ssh/authorized_keys >/dev/null
+sudo chown agentjump:agentjump /home/agentjump/.ssh/authorized_keys
+sudo chmod 600 /home/agentjump/.ssh/authorized_keys
+EOF
+}
+
+# Step 2, automated: ssh into the middleman and stand up the locked-down jump user.
+cmd_authenticate_middleman_box() {
+  parse_flags "$@"
+  local target="${POS[0]:-}" name="${POS[1]:-}"
+  { [ -n "$target" ] && [ -n "$name" ]; } || die "usage: authenticate-middleman-box <ssh-target> <machine-name> [--redo]   (name this Mac; agents will run: ssh <machine-name>)"
+  [ -f "$CA.pub" ] || die "no CA yet, run: remote-agent-connector make-and-get-CA"
+  store_machine_name "$name"
+  load_config
+  local capub; capub="$(ca_pub)"
+  echo "▸ configuring middleman over: ssh $target"
+  echo "  this Mac's agent alias is now: $MACHINE_NAME   (agents will use: ssh $MACHINE_NAME)"
+  echo "  (needs sudo on that box)"
+  # shellcheck disable=SC2086  -- $target is intentionally word-split (may carry flags)
+  ssh $target "sudo bash -s" <<REMOTE
+set -e
+${REDO:+true}   # --redo simply reconverges; the writes below are already idempotent
+id agentjump >/dev/null 2>&1 || adduser --disabled-password --gecos '' agentjump
+install -d -m700 -o agentjump -g agentjump /home/agentjump/.ssh
+printf '%s\n' 'cert-authority,restrict,port-forwarding,permitopen="127.0.0.1:$TUNNEL_PORT" $capub' > /home/agentjump/.ssh/authorized_keys
+chown agentjump:agentjump /home/agentjump/.ssh/authorized_keys
+chmod 600 /home/agentjump/.ssh/authorized_keys
+echo "  agentjump ready, trusts your CA, can ONLY forward to 127.0.0.1:$TUNNEL_PORT"
+REMOTE
+  echo "✓ middleman '$target' set up (idempotent). The app keeps the reverse tunnel itself."
+}
+
+# Step 3, automated: reach into a box and wire it up end-to-end.
+cmd_authenticate_box() {
+  parse_flags "$@"
+  local target="${POS[0]:-}"
+  [ -n "$target" ] || die "usage: authenticate-box <ssh-target> [--redo]"
+  [ -f "$CA" ] || die "no CA yet, run: remote-agent-connector make-and-get-CA"
+  # The alias comes from middleman setup (set once). An optional 2nd arg overrides + restores it.
+  [ -n "${POS[1]:-}" ] && store_machine_name "${POS[1]}"
+  load_config
+  local name="$MACHINE_NAME"
+  echo "▸ preparing box over: ssh $target   (agents will use: ssh $name)"
+
+  # 1. Ensure the box has a dedicated key; emit its pubkey.
+  local regen=""; [ "$REDO" = 1 ] && regen="rm -f ~/.ssh/rac_$name ~/.ssh/rac_$name.pub;"
+  local pub
+  # shellcheck disable=SC2086
+  pub="$(ssh $target "bash -s" <<REMOTE
+set -e
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+$regen
+[ -f ~/.ssh/rac_$name ] || ssh-keygen -t ed25519 -N '' -q -f ~/.ssh/rac_$name -C rac-$name
+cat ~/.ssh/rac_$name.pub
+REMOTE
+)"
+  pub="$(printf '%s\n' "$pub" | grep -E '^ssh-' | tail -1)"
+  [ -n "$pub" ] || die "could not get a key from the box, does 'ssh $target' work?"
+
+  # 2. Sign it with the CA: one cert, both principals (clears the jump AND the Mac login).
+  local work; work="$(mktemp -d)"
+  printf '%s\n' "$pub" > "$work/box.pub"
+  local kid; kid="$name-$(printf '%s' "$target" | tr -c 'A-Za-z0-9' '_')"
+  ssh-keygen -s "$CA" -I "$kid" -n "$MAC_USER,agentjump" -V "$CERT_VALIDITY" "$work/box.pub" >/dev/null
+  local cert; cert="$(cat "$work/box-cert.pub")"; rm -rf "$work"
+
+  # 3. Push the cert + two config blocks (target + jump) back onto the box, idempotently.
+  # shellcheck disable=SC2086
+  ssh $target "bash -s" <<REMOTE
+set -e
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+cat > ~/.ssh/rac_$name-cert.pub <<'CERT'
+$cert
+CERT
+chmod 644 ~/.ssh/rac_$name-cert.pub
+touch ~/.ssh/config && chmod 600 ~/.ssh/config
+awk '/^# >>> rac:$name >>>/{s=1} s!=1{print} /^# <<< rac:$name <<</{s=0}' ~/.ssh/config > ~/.ssh/config.rac.tmp
+cat >> ~/.ssh/config.rac.tmp <<'CFG'
+# >>> rac:$name >>>
+Host $name
+  HostName 127.0.0.1
+  Port $TUNNEL_PORT
+  User $MAC_USER
+  ProxyJump $name-jump
+  IdentityFile ~/.ssh/rac_$name
+  CertificateFile ~/.ssh/rac_$name-cert.pub
+  IdentitiesOnly yes
+  # Multiplex: one persistent session per box, so commands reuse it (fast, no re-handshake)
+  # and it keeps a live connection, which is what the Mac's status light reflects.
+  ControlMaster auto
+  ControlPath ~/.ssh/cm-rac-$name
+  ControlPersist 20m
+Host $name-jump
+  HostName $MIDDLEMAN_HOST
+  User agentjump
+  IdentityFile ~/.ssh/rac_$name
+  CertificateFile ~/.ssh/rac_$name-cert.pub
+  IdentitiesOnly yes
+# <<< rac:$name <<<
+CFG
+mv ~/.ssh/config.rac.tmp ~/.ssh/config
+REMOTE
+
+  echo "✓ box '$target' authenticated as '$name' (cert valid $CERT_VALIDITY, idempotent)."
+  print_agent_briefing "$name"
+}
+
+# The paste-ready paragraph you hand to an agent.
+print_agent_briefing() {
+  local name="$1"; load_config
+  cat <<EOF
+
+════════════════════ COPY EVERYTHING BELOW TO YOUR AGENT ════════════════════
+You have SSH access to my personal Mac (macOS, Apple Silicon) as the user "$MAC_USER".
+Connect with:  ssh $name
+
+This is a REAL login shell on my actual computer, act as if you were sitting at my
+terminal. Normal commands just work, as me, with my files and environment: read/write
+files, git, python/node, builds, brew, curl, run them directly, no prefix.
+
+The one macOS rule: a plain ssh session can NOT do anything that needs GUI permission
+(see the screen, move the mouse/keyboard, control other apps) or my login keychain
+(code signing). macOS blocks that for ssh permanently, it is not a misconfig and
+retrying won't help. For those, prefix the command with \`rac\`: it runs inside a small
+app in my logged-in session that holds those permissions. Rule of thumb: if a bare
+command fails with a permission or keychain error, re-run it as \`rac exec <same
+command>\` and it will go through.
+
+The \`rac\` tools (only needed for the GUI/keychain things above):
+  rac exec <command>       run ANYTHING with my GUI permissions + unlocked keychain, e.g.
+                             rac exec codesign -s "Developer ID" MyApp.app
+                             rac exec osascript -e 'tell app "Safari" to activate'
+                             rac exec open https://example.com
+  rac screenshot [file]    capture the whole screen (no file → PNG on stdout; then read it)
+  rac screenshot --app Safari shot.png     capture just that app's window
+  rac windows              list on-screen windows (id, app, title); ids feed --window <id>
+  rac type "text"          type text          rac click <x> <y>   click at a point
+  rac notify "Title" "msg" post a macOS notification
+
+Everything is one command at a time over ssh, but the connection is kept warm between
+commands, fire as many as you need, they're fast, that's expected.
+
+If \`ssh $name\` hangs or is refused, my connector may be offline, tell me, don't hammer
+it. This is my personal machine: be deliberate, and don't do anything I wouldn't.
+═════════════════════════════════════════════════════════════════════════════
+EOF
+}
+
+cmd_guide() {
+  load_config
+  sed -e "s/<MACHINE_NAME>/$MACHINE_NAME/g" <<'EOF'
+# Giving remote agents access
+
+## 1. Create the CA, trust it, retrieve it   (on the Mac)
+    remote-agent-connector make-and-get-CA          # idempotent; --redo re-does
+
+## 2. Set up the middleman AND name this Mac   (ssh in and do it)
+    remote-agent-connector authenticate-middleman-box <ssh-target> <MACHINE_NAME>
+
+## 3. Authenticate a whole box   (ssh in, wire it up, print an agent briefing)
+    remote-agent-connector authenticate-box <ssh-target>       # inherits the name from step 2
+
+## 4. Tell the agent
+    Access my personal computer with `ssh <MACHINE_NAME>`.
+    (GUI / keychain actions: prefix with `rac`, e.g. `rac screenshot`, `rac exec codesign ...`)
+EOF
+}
+
+usage() { sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; }
+
+main() {
+  local cmd="${1:-}"; shift || true
+  case "$cmd" in
+    make-and-get-CA|make-and-get-ca)   cmd_make_and_get_CA "$@";;
+    authenticate-middleman-box)        cmd_authenticate_middleman_box "$@";;
+    authenticate-box)                  cmd_authenticate_box "$@";;
+    middleman-script)                  cmd_middleman_script "$@";;
+    guide)                             cmd_guide "$@";;
+    exec)                              hand_exec "$@";;
+    ""|-h|--help|help)                 usage;;
+    *)                                 die "unknown command: $cmd (try --help)";;
+  esac
+}
+main "$@"

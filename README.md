@@ -21,6 +21,7 @@ the credential files on the target machine and you fill them in.
 | **wtalk** | push-to-talk dictation daemon (Parakeet transcribe + Gemini cleanup); Nuitka-frozen, sealed, root-owned | `sudo ./install.sh` | yes |
 | **blockrem** | scheduled un-quittable break/reminder screen blocks (root daemon + GUI agent) | `sudo ./install.sh` | yes |
 | **fade-play-pause-chrome** | daemon that fades out + pauses browser music tabs and fades them back; `fadepause`/`faderesume` triggers | `./install.sh` | no |
+| **multistreamviewer** | virtual desktops (AeroSpace-style window groups) + overlay command center + cmd-tab window switcher; `msv` CLI | `sudo ./install.sh` | yes |
 
 (They don't share one rigid interface — most lockers happen to have `install`/`uninstall`/`arm`/
 `disarm`, but betterat, wtalk, and fade-play-pause-chrome don't fit that mold, and that's fine.)
