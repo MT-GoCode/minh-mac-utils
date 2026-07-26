@@ -8,7 +8,17 @@ back. **Revoking needs no password** (tightening is always allowed).
 ```bash
 sudome add        # prompts for the held password; if correct, makes you an admin (sudo)
 sudome remove     # drops your admin — no password
+
+# ROOT-ONLY (no password — root is already the authority). For a root DAEMON (e.g. demonlock's
+# scheduled-unlock door) or `sudo`, granting/revoking admin for a NAMED user:
+sudo sudome --give-to-user  <user>    # grant admin to <user>
+sudo sudome --take-from-user <user>   # revoke it
 ```
+
+`--give-to-user` / `--take-from-user` are gated on the **real uid** (`getuid()==0`), so only a
+genuinely root-invoked caller reaches them — the setuid bit alone (which makes *everyone's* `euid`
+0) is not enough. A normal user still has to use the password-gated `add`. This lets a root process
+manage a scheduled/emergency window without the password, while non-root self-service stays gated.
 
 ## Architecture
 
@@ -23,8 +33,11 @@ sudoers rule) and GUI admin elevation.
 - **`remove`** takes **no** password: `dseditgroup -d` (un-admin) + delete any stale
   `/etc/sudoers.d/sudome-<user>` + wipe cached sudo timestamps.
 
-The target user is taken from the **real uid** (`getpwuid(getuid())`); the binary *refuses* to run
-as root/`sudo`, so you can't aim it at a different account via args or env.
+For `add`/`remove` the target is taken from the **real uid** (`getpwuid(getuid())`) and the binary
+*refuses* to run as root/`sudo`, so a non-root user can't aim those at another account. The
+`--give-to-user` / `--take-from-user` modes are the inverse: **root-only** (real uid must be 0) and
+take an explicit username — so a root daemon (not a normal user) can grant/revoke for a named
+account, no password.
 
 ## Source files
 

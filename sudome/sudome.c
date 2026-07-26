@@ -61,6 +61,18 @@ static void resolve_user(void) {
     snprintf(g_sudoers, sizeof g_sudoers, "/etc/sudoers.d/sudome-%s", g_user);
 }
 
+/* Set the target to an EXPLICIT username (for the root-only --give/--take modes).
+ * Validates the account exists; exits otherwise. */
+static void set_user_explicit(const char *name) {
+    struct passwd *pw = getpwnam(name);
+    if (!pw || !pw->pw_name || !pw->pw_name[0]) {
+        fprintf(stderr, "sudome: no such user '%s'\n", name);
+        exit(1);
+    }
+    snprintf(g_user, sizeof g_user, "%s", pw->pw_name);
+    snprintf(g_sudoers, sizeof g_sudoers, "/etc/sudoers.d/sudome-%s", g_user);
+}
+
 /* Load the password from the root-only credentials file. Read while EUID==0
  * (setuid), and refuse if the file isn't locked down. The whole file IS the
  * password; surrounding whitespace / trailing newline is trimmed. */
@@ -224,19 +236,66 @@ static int do_remove(void) {
     return 0;
 }
 
+/* Root-only grant/revoke for a NAMED user, no password. For a genuinely root
+ * caller (a root daemon like demonlock's scheduler, or `sudo sudome …`); root is
+ * already the authority, so no password gate. Reuses set_admin + the same cleanup
+ * as remove. See the getuid()==0 gate in main() — it's what keeps non-root out. */
+static int do_give(void) {
+    if (set_admin(1) != 0) {
+        fprintf(stderr, "sudome: failed to add %s to the admin group\n", g_user);
+        return 1;
+    }
+    printf("sudome: granted admin/sudo to %s (effective on next login)\n", g_user);
+    return 0;
+}
+
+static int do_take(void) {
+    int was_admin = is_admin();
+    int rc = set_admin(0);
+    unlink(g_sudoers);
+    clear_sudo_cache();
+    if (rc != 0) {
+        fprintf(stderr, "sudome: failed to remove %s from the admin group\n", g_user);
+        return 1;
+    }
+    printf("sudome: removed admin/sudo from %s%s\n", g_user,
+           was_admin ? "" : " (was already not an admin)");
+    return 0;
+}
+
+static void usage(void) {
+    fprintf(stderr,
+        "usage: sudome {add|remove}                    # you toggle your OWN admin (add is password-gated)\n"
+        "       sudome --give-to-user <user>           # ROOT-ONLY: grant admin to <user>, no password\n"
+        "       sudome --take-from-user <user>         # ROOT-ONLY: revoke admin from <user>\n");
+}
+
 int main(int argc, char **argv) {
     if (geteuid() != 0) {
         fprintf(stderr, "sudome: not running as root — must be installed setuid-root (mode 4711)\n");
         return 1;
     }
-    resolve_user();   /* target = whoever ran us (real uid), not a hardcoded name */
-    if (argc != 2) {
-        fprintf(stderr, "usage: sudome {add|remove}\n");
-        return 2;
+
+    /* Root-only, explicit-target modes. Gated on the REAL uid (getuid), NOT euid:
+     * the setuid bit forces euid==0 for every caller, so only a process genuinely
+     * INVOKED by root (a root daemon, or `sudo sudome …`) has getuid()==0. A normal
+     * user hitting these gets refused — they must use the password-gated `add`. */
+    if (argc == 3 && (strcmp(argv[1], "--give-to-user") == 0 ||
+                      strcmp(argv[1], "--take-from-user") == 0)) {
+        if (getuid() != 0) {
+            fprintf(stderr, "sudome: %s is root-only — run it as root (e.g. via sudo or a root daemon)\n", argv[1]);
+            return 1;
+        }
+        set_user_explicit(argv[2]);
+        return strcmp(argv[1], "--give-to-user") == 0 ? do_give() : do_take();
     }
+
+    /* Self-service: the invoking (non-root) user toggles their OWN admin. */
+    resolve_user();   /* target = whoever ran us (real uid); forbids root */
+    if (argc != 2) { usage(); return 2; }
     if (strcmp(argv[1], "add") == 0)    return do_add();
     if (strcmp(argv[1], "remove") == 0) return do_remove();
 
-    fprintf(stderr, "usage: sudome {add|remove}\n");
+    usage();
     return 2;
 }
