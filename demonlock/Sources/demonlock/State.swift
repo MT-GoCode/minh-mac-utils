@@ -45,6 +45,7 @@ struct StateSnapshot: Codable {
     var insideZones: [String]
     var sshAddr: String?         // "minh@192.168.1.42 · mac.local" — shown so you can SSH in to disarm
     var health: Health
+    var releaseValve: RVStatus?  // the delay-gated admin-grant valve (nil ⇒ never configured)
 }
 
 // MARK: - Feed payload (agent → root over the trusted socket)

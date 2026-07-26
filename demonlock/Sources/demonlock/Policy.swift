@@ -19,6 +19,7 @@ indirect enum Policy {
     case locatedInAny([String])         // zone names
     case foundInNearbyBSSID([String])   // normalized lowercase MACs
     case timeIsAny([TimeWindow])
+    case inPolicy                       // release-valve only: the MAIN policy's current verdict (Tri)
 }
 
 struct TimeWindow {
@@ -50,6 +51,7 @@ struct PolicyInputs {
     var fix: (lat: Double, lon: Double)?   // nil ⇒ unknown. Exact containment — accuracy is gated upstream.
     var bssids: Set<String>?                                 // nil ⇒ unknown (normalized lowercase)
     var zones: [Zone]
+    var inPolicy: Tri = .unknown           // the MAIN policy's verdict — what IN_POLICY returns (window-policy only)
 }
 
 // MARK: - Errors
@@ -111,14 +113,21 @@ enum PolicyEngine {
             let (match, nowDesc) = TimeWindow.matches(windows, at: inp.now)
             let r: Tri = match ? .t : .f
             return (r, EvalNode(kind: "TIME_IS_ANY", label: label, result: r.bool, detail: nowDesc))
+
+        case .inPolicy:
+            let detail = inp.inPolicy == .t ? "in policy" : (inp.inPolicy == .f ? "out of policy" : "can't determine policy")
+            return (inp.inPolicy, EvalNode(kind: "IN_POLICY", label: "IN_POLICY", result: inp.inPolicy.bool, detail: detail))
         }
     }
 
-    /// For `setpolicy`: parse and confirm every referenced zone exists. Throws PolicyError on any problem.
+    /// For `setpolicy` / `set-window-policy`: parse and confirm every referenced zone exists. `IN_POLICY`
+    /// is only meaningful in the release-valve window policy, so it's rejected unless `allowInPolicy`.
+    /// Throws PolicyError on any problem.
     @discardableResult
-    static func validate(_ s: String, zones: [Zone]) throws -> Policy {
+    static func validate(_ s: String, zones: [Zone], allowInPolicy: Bool = false) throws -> Policy {
         let p = try parse(s)
         var missing: [String] = []
+        var usedInPolicy = false
         func walk(_ p: Policy) {
             switch p {
             case .and(let a), .or(let a): a.forEach(walk)
@@ -126,9 +135,13 @@ enum PolicyEngine {
             case .locatedInAny(let names):
                 for n in names where !ZoneStore.hasZone(named: n, in: zones) { missing.append(n) }
             case .foundInNearbyBSSID, .timeIsAny: break
+            case .inPolicy: usedInPolicy = true
             }
         }
         walk(p)
+        if usedInPolicy && !allowInPolicy {
+            throw PolicyError(message: "IN_POLICY is only valid in the release-valve window policy, not the main policy.")
+        }
         if !missing.isEmpty {
             let uniq = Set(missing).sorted().map { "\"\($0)\"" }.joined(separator: ", ")
             throw PolicyError(message: "policy references unknown zone(s): \(uniq). Create them with `demonlock edit-zones` first.")
@@ -224,6 +237,7 @@ private final class Parser {
         }
         guard case .word(let w) = t else { throw PolicyError(message: "expected a function call or '('") }
         i += 1
+        if w.uppercased() == "IN_POLICY" { return .inPolicy }   // bare primitive, no parens/args
         try expect(.lparen, "'(' after \(w)")
         let items = try list()
         try expect(.rparen, "')'")

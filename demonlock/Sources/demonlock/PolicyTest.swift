@@ -36,6 +36,27 @@ func runPolicyTest() {
         check("false time clause forces block despite unknown loc", isMonMidnight ? true : r == .f)
     } catch { check("parse AND policy: \(error)", false) }
 
+    // IN_POLICY (release-valve window primitive) — passes through the main verdict.
+    do {
+        let ip = try PolicyEngine.parse("IN_POLICY")
+        func eval(_ tri: Tri) -> Tri {
+            PolicyEngine.evaluate(ip, PolicyInputs(now: Date(), fix: nil, bssids: nil, zones: zones, inPolicy: tri)).0
+        }
+        check("IN_POLICY passes through .t",       eval(.t) == .t)
+        check("IN_POLICY passes through .f",       eval(.f) == .f)
+        check("IN_POLICY passes through .unknown", eval(.unknown) == .unknown)
+        let wp = try PolicyEngine.parse("IN_POLICY AND TIME_IS_ANY([*0000-2400])")
+        func w(_ tri: Tri) -> Tri {
+            PolicyEngine.evaluate(wp, PolicyInputs(now: Date(), fix: nil, bssids: nil, zones: zones, inPolicy: tri)).0
+        }
+        check("window IN_POLICY(.t) AND all-day → allow", w(.t) == .t)
+        check("window IN_POLICY(.f) AND all-day → block", w(.f) == .f)
+    } catch { check("parse IN_POLICY: \(error)", false) }
+    do { _ = try PolicyEngine.validate("IN_POLICY", zones: zones); check("IN_POLICY rejected in main policy", false) }
+    catch { check("IN_POLICY rejected in main policy", true) }
+    do { _ = try PolicyEngine.validate("IN_POLICY", zones: zones, allowInPolicy: true); check("IN_POLICY allowed in window policy", true) }
+    catch { check("IN_POLICY allowed in window policy: \(error)", false) }
+
     func expectError(_ s: String, _ name: String) {
         do { _ = try PolicyEngine.validate(s, zones: zones); check(name, false) }
         catch { check(name + "  (\(error))", true) }

@@ -40,6 +40,25 @@ func runStatus() {
     print("  policy        : \(s.policyString.isEmpty ? "(none set)" : s.policyString)")
     if let t = s.tree { print("\n  policy evaluation  (✓ true · ✗ false · · unknown):\n" + t.asText(indent: 2)) }
     if !s.health.locationTrail.isEmpty { print("\n  location:\n" + s.health.locationTrail.joined(separator: "\n")) }
+    if let rv = s.releaseValve { printReleaseValve(rv) }
+}
+
+/// Release-valve section of `status`.
+private func printReleaseValve(_ rv: RVStatus) {
+    func left(_ e: Double?) -> String { e.map { let s = max(0, Int($0 - nowEpoch())); return "\(s/3600)h\(s%3600/60)m\(s%60)s" } ?? "?" }
+    print("\n  release valve : ", terminator: "")
+    if !rv.configured { print("not configured (set window-policy + delay + duration)"); return }
+    switch rv.phase {
+    case "granted":  print("GRANTED — admin held, \(left(rv.grantExpiresEpoch)) left, then auto-revoked")
+    case "delay":    print("REQUEST pending — in delay, eligible in \(left(rv.eligibleAtEpoch))")
+    case "waiting":  print("REQUEST pending — eligible now, waiting for the window to open")
+    default:         print("idle (no active request) — `demonlock release-valve --request`")
+    }
+    if let d = rv.delaySec, let u = rv.durationSec {
+        print("                  delay \(Int(d/60))m · grant duration \(Int(u/60))m")
+    }
+    if let wp = rv.windowPolicy { print("                  window-policy: \(wp)") }
+    if let t = rv.windowTree { print("\n  release-valve window eval  (✓ true · ✗ false · · unknown):\n" + t.asText(indent: 2)) }
 }
 
 // MARK: - zones list (user, no GUI)
@@ -240,6 +259,96 @@ func runDisarm() {
     print("✓ DISARMED — everything keeps running and the countdown still shows, but nothing gets killed.")
 }
 
+// MARK: - release valve
+
+private let rvUsage = """
+usage:
+  # config (sudo; any subset in one call):
+  sudo demonlock release-valve --set-window-policy "<expr>"   # when a request may be granted; policy
+                                                              #   syntax + the IN_POLICY primitive
+  sudo demonlock release-valve --set-request-delay  "<dur>"   # wait after --request before eligible (d/h/m/s)
+  sudo demonlock release-valve --set-request-duration "<dur>" # how long the grant lasts before revoke
+  # use (no sudo; all three above must be set first):
+  demonlock release-valve --request                           # request admin; granted after the delay,
+                                                              #   at the next window, for the duration
+  demonlock release-valve abort                               # cancel a pending request / close a live grant
+"""
+
+func runReleaseValve(_ args: [String]) {
+    if args.first == "abort" { rvDropMarker(Paths.rvAbortMarker, "abort"); return }
+
+    var request = false
+    var winPol: String?, delay: String?, dur: String?
+    var i = 0
+    while i < args.count {
+        func val() -> String { i + 1 < args.count ? args[i + 1] : "" }
+        switch args[i] {
+        case "--request":             request = true; i += 1
+        case "--set-window-policy":   winPol = val(); i += 2
+        case "--set-request-delay":   delay  = val(); i += 2
+        case "--set-request-duration":dur    = val(); i += 2
+        default: fail("✗ unknown argument '\(args[i])'\n" + rvUsage)
+        }
+    }
+    let anySet = winPol != nil || delay != nil || dur != nil
+    if request && anySet { fail("✗ --request can't be combined with the --set-* flags.\n" + rvUsage) }
+
+    if anySet { rvSet(winPol, delay, dur); return }
+    if request { rvRequest(); return }
+    print(rvUsage)
+}
+
+/// --set-* (sudo): validate + persist the window policy / delay / duration (any subset).
+private func rvSet(_ winPol: String?, _ delay: String?, _ dur: String?) {
+    requireRoot("release-valve --set-*")
+    var cfg = ReleaseValveConfig.load()
+    if let wp = winPol {
+        let s = wp.trimmingCharacters(in: .whitespacesAndNewlines)
+        do { try PolicyEngine.validate(s, zones: ZoneStore.load(), allowInPolicy: true) }
+        catch { fail("✗ invalid window policy: \(error)") }
+        cfg.windowPolicy = s
+    }
+    if let d = delay {
+        guard let secs = parseSnoozeDuration(d), secs >= 0 else { fail("✗ bad --set-request-delay — use e.g. \"12h\", \"90m\", \"1h30m\"") }
+        cfg.delaySec = secs
+    }
+    if let d = dur {
+        guard let secs = parseSnoozeDuration(d), secs > 0 else { fail("✗ bad --set-request-duration — use e.g. \"1h\", \"30m\"") }
+        cfg.durationSec = secs
+    }
+    do { try cfg.save() } catch { fail("✗ couldn't write release-valve config: \(error)") }
+    func fmtDur(_ s: Double?) -> String { s.map { "\(Int($0/3600))h\(Int($0.truncatingRemainder(dividingBy: 3600)/60))m" } ?? "(unset)" }
+    print("✓ release-valve config:")
+    print("    window-policy : \(cfg.windowPolicy ?? "(unset)")")
+    print("    request-delay : \(fmtDur(cfg.delaySec))")
+    print("    duration      : \(fmtDur(cfg.durationSec))")
+    print(cfg.isComplete ? "  all set — `demonlock release-valve --request` is ready." :
+                           "  ⚠️  still missing a field; --request won't work until all three are set.")
+}
+
+/// --request (no sudo): drop a request marker for the daemon (which stamps the real time).
+private func rvRequest() {
+    let cfg = ReleaseValveConfig.load()
+    guard cfg.isComplete else {
+        fail("✗ release-valve isn't configured — set all three first (sudo):\n" + rvUsage)
+    }
+    let st = ReleaseValveState.load()
+    if !st.isIdle {
+        let phase = st.isGranted ? "granted" : "pending"
+        fail("✗ a request is already \(phase). Cancel it first: `demonlock release-valve abort`.")
+    }
+    rvDropMarker(Paths.rvRequestMarker, "request")
+    print("✓ requested — after the \(Int(cfg.delaySec ?? 0))s delay the daemon grants admin at the next window,")
+    print("  for \(Int((cfg.durationSec ?? 0)/60))m. Watch it with `demonlock status`; cancel with `release-valve abort`.")
+}
+
+/// Touch a marker file in the user-owned inbox. Non-root; the daemon consumes it next tick.
+private func rvDropMarker(_ path: String, _ what: String) {
+    do { try Data().write(to: URL(fileURLWithPath: path)) }
+    catch { fail("✗ couldn't write the \(what) marker (\(path)). Is the release-valve inbox present? Try reinstalling.\n  \(error)") }
+    if what == "abort" { print("✓ abort sent — any pending request is cancelled and a live grant closes on the next tick.") }
+}
+
 // MARK: - perm-ask (user)
 
 func runPermAsk() {
@@ -267,6 +376,8 @@ func printHelp() {
       scan                Continuously scan nearby Wi-Fi (SSID + BSSID) until Ctrl+C —
                           walk your office to capture every access point (run WITHOUT sudo)
       perm-ask            (Re)grant the Location permission the agent needs
+      release-valve --request   Ask for a delay-gated admin grant (granted after the delay, at the
+                          next window, for the set duration). `release-valve abort` cancels/closes it.
       help                This help
 
     SUDO COMMANDS (require `sudo`):
@@ -278,6 +389,10 @@ func printHelp() {
                           then RE-ARM automatically — no sudo needed at resume. Implies armed, so this
                           is the escape-then-resume flow: just snooze (don't `disarm`/`arm` around it).
                           e.g. sudo demonlock snooze "for 90m"  ·  sudo demonlock snooze "until 0730"
+      release-valve --set-window-policy "<expr>" | --set-request-delay "<dur>" |
+                    --set-request-duration "<dur>"
+                          Configure the release valve (any subset per call). window-policy uses the
+                          policy syntax + IN_POLICY; then `release-valve --request` (no sudo) works.
 
     POLICY LANGUAGE  (the ALLOW condition — combine with AND / OR / NOT / parentheses):
       LOCATED_IN_ANY(["zone name", ...])
@@ -287,6 +402,8 @@ func printHelp() {
       TIME_IS_ANY([M0900-1700, *1000-1800, ...])
           true when now is in a window; days M T W R F S U (R=Thu, U=Sun) or * = all 7;
           HHMM 0000-2400, start < end (no midnight wrap — split into two windows)
+      IN_POLICY   (release-valve window policy ONLY)
+          true when the MAIN policy currently allows — e.g. --set-window-policy "IN_POLICY AND TIME_IS_ANY([*1000-1100])"
 
       example:
         sudo demonlock setpolicy '(LOCATED_IN_ANY(["office"]) OR FOUND_IN_NEARBY_BSSID(["a4:97:33:5f:aa:b6"])) AND TIME_IS_ANY([MTWRF0700-2000])'

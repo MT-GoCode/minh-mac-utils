@@ -77,6 +77,12 @@ chown -R root:wheel "$SUPPORT"
 chmod 755 "$SUPPORT" "$SUPPORT/logs"
 chmod 644 "$SUPPORT"/settings.json "$SUPPORT"/armed "$SUPPORT"/snooze "$SUPPORT"/zones.json 2>/dev/null || true
 [ -f "$SUPPORT/policy.txt" ] && chmod 644 "$SUPPORT/policy.txt"
+# Release-valve inbox: USER-owned so `release-valve --request`/`abort` drop a marker without sudo
+# (the daemon stamps the real request time, so the delay can't be backdated). Config + state stay
+# root-owned in $SUPPORT (root/daemon-written), world-readable for `status`.
+mkdir -p "$SUPPORT/rv"
+chown "$USER_NAME" "$SUPPORT/rv"
+chmod 755 "$SUPPORT/rv"
 
 echo "▸ installing launchd jobs"
 cp install/com.demonlock.enforcerd.plist /Library/LaunchDaemons/

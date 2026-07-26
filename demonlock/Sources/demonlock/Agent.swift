@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import UserNotifications
 
 /// The logged-in GUI agent: runs the sensor feed (location + BSSID) to the root enforcer and
 /// shows the status/countdown panel (phase, reason, red/green policy tree, Disarm). Closing the
@@ -18,17 +19,59 @@ final class AgentApp: NSObject, NSApplicationDelegate {
     private var disarmButton: NSButton!
     private var permButton: NSButton!
     private var lastPhase = ""
+    private var lastRVPhase = ""
 
     func applicationDidFinishLaunching(_ note: Notification) {
         activity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiatedAllowingIdleSystemSleep],
             reason: "demonlock sensor feed must keep reporting")
+        // Ask once for notification permission — the release valve posts a banner on grant/revoke.
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         feeder = SensorFeeder(settings: Settings.load())
         feeder.start()
         buildMenubar()
         buildWindow()
         Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.refresh() }
         refresh()
+    }
+
+    /// Post a local banner (release-valve grant/revoke).
+    private func notify(_ title: String, _ body: String) {
+        let c = UNMutableNotificationContent(); c.title = title; c.body = body; c.sound = .default
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: UUID().uuidString, content: c, trigger: nil))
+    }
+
+    /// Fire notifications on release-valve transitions into / out of the "granted" phase.
+    private func handleReleaseValve(_ rv: RVStatus?) {
+        let phase = rv?.phase ?? "idle"
+        defer { lastRVPhase = phase }
+        guard !lastRVPhase.isEmpty else { return }        // skip the very first refresh
+        if phase == "granted" && lastRVPhase != "granted" {
+            let mins = rv?.durationSec.map { Int($0 / 60) } ?? 0
+            notify("Release valve granted", "Admin access unlocked for \(mins) min.")
+        } else if phase != "granted" && lastRVPhase == "granted" {
+            notify("Release valve closed", "Admin access has been revoked.")
+        }
+    }
+
+    /// The RELEASE VALVE section shown in the panel (phase + delay/duration + the window-policy tree).
+    private func releaseValveText(_ rv: RVStatus?) -> String {
+        guard let rv, rv.configured else { return "" }
+        func left(_ e: Double?) -> String {
+            e.map { let s = max(0, Int($0 - nowEpoch())); return "\(s/3600)h\(s%3600/60)m\(s%60)s" } ?? "?"
+        }
+        let line: String
+        switch rv.phase {
+        case "granted": line = "GRANTED — admin held, \(left(rv.grantExpiresEpoch)) left"
+        case "delay":   line = "REQUEST pending — in delay, eligible in \(left(rv.eligibleAtEpoch))"
+        case "waiting": line = "REQUEST pending — eligible, waiting for the window"
+        default:        line = "idle (no active request)"
+        }
+        var out = "\n\nRELEASE VALVE\n\(line)"
+        if let d = rv.delaySec, let u = rv.durationSec { out += "\n  delay \(Int(d/60))m · grant \(Int(u/60))m" }
+        if let t = rv.windowTree { out += "\n  window eval:\n" + t.asText(indent: 1) }
+        return out
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { false }
@@ -139,7 +182,8 @@ final class AgentApp: NSObject, NSApplicationDelegate {
 
         let policy = "POLICY\n" + (s.tree?.asText() ?? "(no policy / no evaluation)")
         let locMap = s.health.locationTrail.isEmpty ? "" : "\n\nLOCATION\n" + s.health.locationTrail.joined(separator: "\n")
-        treeView.string = policy + locMap                 // location section (ending in `zones:`) is last
+        treeView.string = policy + locMap + releaseValveText(s.releaseValve)
+        handleReleaseValve(s.releaseValve)
         let h = s.health
         healthLabel.stringValue = s.sshAddr ?? ""          // SSH-in hint (sshd/tmux survive a lockout → disarm)
         permButton.isHidden = !h.needsPermAsk

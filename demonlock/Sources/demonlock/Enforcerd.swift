@@ -157,17 +157,22 @@ final class Enforcer {
         // Evaluate the policy (three-valued).
         let zones = ZoneStore.load()
         let policyText = PolicyStore.text()
+        let baseInputs = PolicyInputs(now: now, fix: fix, bssids: bssids, zones: zones)
         var tree: EvalNode?
         var result: Tri
         var staticReason = ""
         if let policyText, let policy = try? PolicyEngine.parse(policyText) {
-            let (r, t) = PolicyEngine.evaluate(policy, PolicyInputs(now: now, fix: fix, bssids: bssids, zones: zones))
+            let (r, t) = PolicyEngine.evaluate(policy, baseInputs)
             result = r; tree = t
         } else {
             result = .unknown
             staticReason = policyText == nil ? "no policy set" : "policy is invalid"
             tree = EvalNode(kind: "ERROR", label: staticReason, result: nil)
         }
+
+        // Release valve: same inputs + the main verdict feeds IN_POLICY; drives the delay-gated grant.
+        let rv = ReleaseValve.tick(now: now, mainResult: result, baseInputs: baseInputs,
+                                   username: usernameForUID(consoleUID))
 
         let inside = fix.map { ZoneStore.containing(lat: $0.lat, lon: $0.lon, zones: zones) } ?? []
         let policyStr = policyText ?? ""
@@ -192,7 +197,7 @@ final class Enforcer {
             }
             publish(phase: elapsed ? "locked" : "countdown", verdict: "block", reason: reason, now: now,
                     armed: armed, deadline: countdownDeadline, tree: tree, inside: inside, policy: policyStr,
-                    ssh: ssh, health: health)
+                    ssh: ssh, health: health, rv: rv)
             return cdpoll
         }
 
@@ -200,7 +205,7 @@ final class Enforcer {
         case .t:
             clearCountdown()
             publish(phase: "monitoring", verdict: "allow", reason: "in policy", now: now, armed: armed,
-                    tree: tree, inside: inside, policy: policyStr, ssh: ssh, health: health)
+                    tree: tree, inside: inside, policy: policyStr, ssh: ssh, health: health, rv: rv)
             return poll
         case .f:
             return enterBlock(staticReason.isEmpty ? "out of policy" : staticReason)
@@ -341,7 +346,7 @@ final class Enforcer {
     private func publish(phase: String, verdict: String?, reason: String, now: Date,
                          armed: Bool, snoozeUntil: Date? = nil, deadline: Date? = nil,
                          tree: EvalNode? = nil, inside: [String] = [], policy: String = "",
-                         ssh: String? = nil, health: Health = Health()) {
+                         ssh: String? = nil, health: Health = Health(), rv: RVStatus? = nil) {
         StateStore.write(StateSnapshot(
             updatedEpoch: nowEpoch(),
             lastCheckEpoch: now.timeIntervalSince1970,
@@ -358,7 +363,14 @@ final class Enforcer {
             tree: tree,
             insideZones: inside,
             sshAddr: ssh,
-            health: health))
+            health: health,
+            releaseValve: rv))
+    }
+
+    /// Resolve a uid to its login name (for `sudome --give/--take-from-user`). nil if unknown.
+    private func usernameForUID(_ uid: uid_t) -> String? {
+        guard let pw = getpwuid(uid) else { return nil }
+        return String(cString: pw.pointee.pw_name)
     }
 }
 
