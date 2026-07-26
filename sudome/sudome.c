@@ -263,11 +263,49 @@ static int do_take(void) {
     return 0;
 }
 
+/* Pipe `text` into /usr/bin/pbcopy (no shell, no trailing newline → the clipboard is exactly the
+ * password). Same fork/exec discipline as run(). */
+static int copy_to_clipboard(const char *text) {
+    int fds[2];
+    if (pipe(fds) != 0) { perror("sudome: pipe"); return -1; }
+    pid_t pid = fork();
+    if (pid < 0) { perror("sudome: fork"); close(fds[0]); close(fds[1]); return -1; }
+    if (pid == 0) {                              /* child: pbcopy reads from the pipe */
+        close(fds[1]);
+        dup2(fds[0], STDIN_FILENO);
+        close(fds[0]);
+        char *av[] = { "/usr/bin/pbcopy", NULL };
+        execv(av[0], av);
+        _exit(127);
+    }
+    close(fds[0]);
+    size_t len = strlen(text);
+    ssize_t w = write(fds[1], text, len);
+    close(fds[1]);
+    int status;
+    waitpid(pid, &status, 0);
+    return (w == (ssize_t)len && WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
+}
+
+/* Root-only: read the held master password and put it on the clipboard. Adds no capability a root
+ * caller lacks (root can already `cat` the file) — it's convenience. NOTE: this means anyone who can
+ * reach root can extract the master secret, so the password is only as strong as your admin gate. */
+static int do_copy_password(void) {
+    char pw[256];
+    if (load_password(pw, sizeof pw) != 0) return 1;
+    int rc = copy_to_clipboard(pw);
+    memset(pw, 0, sizeof pw);                    /* don't leave it on the stack */
+    if (rc != 0) { fprintf(stderr, "sudome: failed to copy to clipboard (is pbcopy reachable?)\n"); return 1; }
+    printf("sudome: master password copied to the clipboard — paste it, then clear your clipboard\n");
+    return 0;
+}
+
 static void usage(void) {
     fprintf(stderr,
         "usage: sudome {add|remove}                    # you toggle your OWN admin (add is password-gated)\n"
         "       sudome --give-to-user <user>           # ROOT-ONLY: grant admin to <user>, no password\n"
-        "       sudome --take-from-user <user>         # ROOT-ONLY: revoke admin from <user>\n");
+        "       sudome --take-from-user <user>         # ROOT-ONLY: revoke admin from <user>\n"
+        "       sudome copy-master-password            # ROOT-ONLY: copy the held password to the clipboard\n");
 }
 
 int main(int argc, char **argv) {
@@ -288,6 +326,13 @@ int main(int argc, char **argv) {
         }
         set_user_explicit(argv[2]);
         return strcmp(argv[1], "--give-to-user") == 0 ? do_give() : do_take();
+    }
+    if (argc == 2 && strcmp(argv[1], "copy-master-password") == 0) {
+        if (getuid() != 0) {
+            fprintf(stderr, "sudome: copy-master-password is root-only — run it as root (e.g. via sudo)\n");
+            return 1;
+        }
+        return do_copy_password();
     }
 
     /* Self-service: the invoking (non-root) user toggles their OWN admin. */

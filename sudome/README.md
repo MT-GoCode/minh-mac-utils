@@ -13,7 +13,14 @@ sudome remove     # drops your admin — no password
 # scheduled-unlock door) or `sudo`, granting/revoking admin for a NAMED user:
 sudo sudome --give-to-user  <user>    # grant admin to <user>
 sudo sudome --take-from-user <user>   # revoke it
+sudo sudome copy-master-password      # copy the held password to the clipboard (pbcopy)
 ```
+
+⚠️ **`copy-master-password` note:** it adds no capability a root caller doesn't already have (root can
+`cat` the file directly) — it's convenience. But be aware: **anyone who reaches root can extract the
+master secret**, so the password is only ever as strong as your admin gate. If the whole point is that
+you *don't* hold the password day-to-day, don't grant yourself an admin window that lets you copy it
+out (or keep the secret somewhere root can't read).
 
 `--give-to-user` / `--take-from-user` are gated on the **real uid** (`getuid()==0`), so only a
 genuinely root-invoked caller reaches them — the setuid bit alone (which makes *everyone's* `euid`
