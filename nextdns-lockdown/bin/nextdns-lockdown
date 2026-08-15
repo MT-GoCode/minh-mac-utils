@@ -4,7 +4,7 @@
 #
 #   nextdns-lockdown status     show current enforcement state            (any user)
 #   nextdns-lockdown selftest   actively probe real bypass vectors        (any user)
-#   nextdns-lockdown arm        turn enforcement ON                       (root/sudo)
+#   nextdns-lockdown arm        turn enforcement ON      (no sudo — tightens; passwordless grant)
 #   nextdns-lockdown disarm     turn enforcement OFF                      (root/sudo)
 #   nextdns-lockdown reload     re-validate + reload the pf ruleset        (root/sudo)
 #
@@ -134,6 +134,14 @@ cmd_selftest() {
 }
 
 cmd_arm() {
+    # arm TIGHTENS enforcement, so it's allowed WITHOUT admin via a passwordless sudoers grant (the
+    # installer adds `NOPASSWD: /usr/local/bin/nextdns-lockdown arm`). Run as a normal user → re-exec
+    # through `sudo -n`; the elevated copy re-enters here as root. disarm loosens → no grant, stays gated.
+    if [ "$(id -u)" != 0 ]; then
+        sudo -n /usr/local/bin/nextdns-lockdown arm && exit 0
+        echo "✗ couldn't arm without admin — the passwordless grant may be missing (reinstall), or run \`sudo nextdns-lockdown arm\`." >&2
+        exit 1
+    fi
     need_root arm
     # Safety: arming blocks every public DNS path. The ONLY remaining resolver is
     # the Encrypted-DNS profile's DoH. If that profile isn't installed (or DNS

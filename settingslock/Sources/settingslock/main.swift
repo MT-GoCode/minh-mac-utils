@@ -184,7 +184,24 @@ func runStatus() {
 // down — same model as your other tools.
 func setArmedCLI(_ on: Bool) {
     if geteuid() != 0 {
-        print("settingslock: \(on ? "arm" : "disarm") requires root — use `sudo settingslock \(on ? "arm" : "disarm")`")
+        // arm TIGHTENS (enables blocking) → allowed WITHOUT admin via a passwordless sudoers grant;
+        // re-exec through `sudo -n` and the elevated copy does it. disarm LOOSENS → no grant, stays gated.
+        if on {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+            p.arguments = ["-n", "/usr/local/bin/settingslock", "arm"]
+            do {
+                try p.run(); p.waitUntilExit()
+                if p.terminationStatus != 0 {
+                    print("settingslock: couldn't arm without admin — the passwordless grant may be missing (reinstall), or run `sudo settingslock arm`")
+                    exit(1)
+                }
+                exit(0)
+            } catch {
+                print("settingslock: failed to elevate arm: \(error.localizedDescription)"); exit(1)
+            }
+        }
+        print("settingslock: disarm requires root — use `sudo settingslock disarm`")
         exit(1)
     }
     _ = sh("/bin/mkdir", ["-p", ARMED_DIR])
@@ -211,8 +228,8 @@ default:
     settingslock — kill System Settings the instant it shows the FileVault pane.
 
       settingslock status        is it armed / running?
-      sudo settingslock arm      enable blocking (admin)
-      sudo settingslock disarm   stand down (admin)
+      settingslock arm           enable blocking (no admin — arming only tightens)
+      sudo settingslock disarm   stand down (admin — loosening stays gated)
       settingslock dump          AX text of the current Settings pane (trigger tuning)
       settingslock watch         the detector agent (launchd, your GUI session)
       settingslock guard         the root watchdog that keeps `watch` alive

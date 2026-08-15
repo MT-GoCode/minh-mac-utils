@@ -1,8 +1,9 @@
 /* nextdns_discipline.c — self-discipline NextDNS list manager.
  *
- * Compiled twice:
- *   block:  cc -O2 -Wall -DMODE_BLOCK -o nextdns-block nextdns_discipline.c
- *   allow:  cc -O2 -Wall -DMODE_ALLOW -o nextdns-allow nextdns_discipline.c
+ * Compiled three ways:
+ *   block:        cc -O2 -Wall -DMODE_BLOCK       -o nextdns-block       nextdns_discipline.c
+ *   allow:        cc -O2 -Wall -DMODE_ALLOW       -o nextdns-allow       nextdns_discipline.c
+ *   delay-allow:  cc -O2 -Wall -DMODE_DELAY_ALLOW -o nextdns-delay-allow nextdns_discipline.c
  *
  * Per domain (NextDNS API; 204 = success):
  *   block <d>  ->  DELETE allowlist/<d>   then  POST denylist  {"id":<d>,"active":true}
@@ -18,12 +19,18 @@
  *                   then drops to the invoking user before running curl.
  *   nextdns-allow : mode 0700 root:wheel, NOT setuid; refuses unless EUID==0,
  *                   i.e. only via `sudo` (the admin/Pluckeye-gated escape).
+ *   nextdns-delay-allow : setuid-root (4711). A NON-sudo self-serve allow that lands after 12h — the
+ *                   wait IS the gate. Enqueue/status/abort run as any user (setuid lets them touch the
+ *                   root-owned queue; they only ADD a delayed loosening or CANCEL one). The actual API
+ *                   allow runs via `--apply`, gated on the REAL uid being root (getuid()==0), so only
+ *                   the root LaunchDaemon (or sudo) applies — a user running the setuid binary can't.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <time.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/types.h>
@@ -44,8 +51,10 @@
 
 static char g_apikey[256];
 static char g_profile[64];
+#ifndef MODE_DELAY_ALLOW
 static char *g_domains[MAX_DOMAINS];
 static int   g_ndomains = 0;
+#endif
 
 /* ----- validation ------------------------------------------------------- */
 
@@ -188,7 +197,171 @@ static int do_domain(const char *d) {
 #endif
 }
 
-/* ----- args / file ------------------------------------------------------ */
+/* ----- delayed allow: root-owned queue + periodic root applier ---------- */
+/* nextdns-delay-allow enqueues {domain, apply_at} lines; a root LaunchDaemon runs `--apply` on a
+ * timer and applies the ones whose time has come (reusing do_domain's allow path). The 12h wait is
+ * the commitment device — impulse-you can queue a loosening, only calm-you-12h-later gets it. */
+#ifdef MODE_DELAY_ALLOW
+#ifndef QUEUE_FILE                 /* overridable at compile time for tests */
+#define QUEUE_FILE    "/usr/local/etc/nextdns-discipline/delay-allow-queue"
+#endif
+#ifndef DELAY_SECONDS
+#define DELAY_SECONDS (12L * 3600L)
+#endif
+
+struct qent { long apply_at; char domain[MAX_DOMAIN + 1]; };
+
+/* Read the queue (missing = empty). Malformed lines are skipped, fail-closed. */
+static int q_read(struct qent *e, int max) {
+    FILE *f = fopen(QUEUE_FILE, "r");
+    if (!f) return 0;
+    int n = 0; char line[512];
+    while (n < max && fgets(line, sizeof line, f)) {
+        char *nl = strpbrk(line, "\r\n"); if (nl) *nl = '\0';
+        if (line[0] == '\0' || line[0] == '#') continue;
+        long t; char d[MAX_DOMAIN + 1];
+        if (sscanf(line, "%ld %252s", &t, d) == 2 && valid_domain(d)) {
+            e[n].apply_at = t; snprintf(e[n].domain, sizeof e[n].domain, "%s", d); n++;
+        }
+    }
+    fclose(f);
+    return n;
+}
+
+/* Atomic replace: tmp -> rename, forced root:wheel 0600 (the user can't tamper the queue directly). */
+static int q_write(const struct qent *e, int n) {
+    char tmp[600]; snprintf(tmp, sizeof tmp, "%s.tmp", QUEUE_FILE);
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) { perror("open queue"); return -1; }
+    FILE *f = fdopen(fd, "w");
+    if (!f) { close(fd); unlink(tmp); return -1; }
+    for (int i = 0; i < n; i++) fprintf(f, "%ld %s\n", e[i].apply_at, e[i].domain);
+    fflush(f);
+    if (fchown(fileno(f), 0, 0) != 0) { /* best-effort; euid is root here */ }
+    fchmod(fileno(f), 0600);
+    fclose(f);
+    if (rename(tmp, QUEUE_FILE) != 0) { perror("rename queue"); unlink(tmp); return -1; }
+    return 0;
+}
+
+static void fmt_when(long t, char *out, size_t n) {
+    time_t tt = (time_t)t; struct tm lt; localtime_r(&tt, &lt);
+    strftime(out, n, "%a %Y-%m-%d %H:%M", &lt);
+}
+
+static int delay_status(void) {
+    struct qent e[MAX_DOMAINS]; int n = q_read(e, MAX_DOMAINS);
+    if (n == 0) { printf("delay-allow: nothing queued.\n"); return 0; }
+    long now = (long)time(NULL);
+    printf("delay-allow queue (%d):\n", n);
+    for (int i = 0; i < n; i++) {
+        long left = e[i].apply_at - now; if (left < 0) left = 0;
+        char w[64]; fmt_when(e[i].apply_at, w, sizeof w);
+        printf("  %-40s lands %s  (%ldh %ldm left)\n", e[i].domain, w, left / 3600, (left % 3600) / 60);
+    }
+    return 0;
+}
+
+/* Remove matching domains (or ALL if none named) — only ever tightens, so any user may. */
+static int delay_abort(char **doms, int nd) {
+    struct qent e[MAX_DOMAINS]; int n = q_read(e, MAX_DOMAINS);
+    if (n == 0) { printf("delay-allow: nothing queued to abort.\n"); return 0; }
+    int kept = 0, removed = 0;
+    for (int i = 0; i < n; i++) {
+        int drop = (nd == 0);
+        for (int j = 0; j < nd; j++) if (strcmp(e[i].domain, doms[j]) == 0) { drop = 1; break; }
+        if (drop) removed++; else e[kept++] = e[i];
+    }
+    if (q_write(e, kept) != 0) return 1;
+    printf("delay-allow: aborted %d queued %s.\n", removed, removed == 1 ? "entry" : "entries");
+    return 0;
+}
+
+static void delay_usage(void) {
+    fprintf(stderr,
+        "usage: nextdns-delay-allow <domain ...>    # queue an allow that lands in 12h (no sudo)\n"
+        "       nextdns-delay-allow --status        # show queued allows + when they land\n"
+        "       nextdns-delay-allow --abort [d ...]  # cancel queued allow(s); no name = all\n"
+        "       nextdns-delay-allow --help\n"
+        "  (status/abort/help also work without the leading --)\n");
+}
+
+static int delay_enqueue(char **doms, int nd) {
+    for (int j = 0; j < nd; j++)
+        if (!valid_domain(doms[j])) {
+            fprintf(stderr, "error: not a valid domain: %s\n\n", doms[j]);
+            delay_usage();
+            return 2;
+        }
+    struct qent e[MAX_DOMAINS]; int n = q_read(e, MAX_DOMAINS);
+    long apply_at = (long)time(NULL) + DELAY_SECONDS;
+    int added = 0;
+    for (int j = 0; j < nd; j++) {
+        int dup = 0;
+        for (int i = 0; i < n; i++) if (strcmp(e[i].domain, doms[j]) == 0) { dup = 1; break; }
+        if (dup) { fprintf(stderr, "note: %s already queued — keeping its original landing time\n", doms[j]); continue; }
+        if (n >= MAX_DOMAINS) { fprintf(stderr, "error: queue full\n"); break; }
+        e[n].apply_at = apply_at; snprintf(e[n].domain, sizeof e[n].domain, "%s", doms[j]); n++; added++;
+    }
+    if (added == 0) { fprintf(stderr, "delay-allow: nothing new queued.\n"); return 1; }
+    if (q_write(e, n) != 0) return 1;
+    char w[64]; fmt_when(apply_at, w, sizeof w);
+    printf("delay-allow: queued %d %s — allow lands %s (in 12h), NO sudo needed then.\n",
+           added, added == 1 ? "domain" : "domains", w);
+    printf("  view: nextdns-delay-allow --status    cancel: nextdns-delay-allow --abort [domain ...]\n");
+    return 0;
+}
+
+/* Applied by the root LaunchDaemon on a timer. REAL-root only: a user running the setuid binary has
+ * getuid()==501 and is refused, so only the daemon (or sudo) turns a queued entry into an API allow. */
+static int delay_apply(void) {
+    if (getuid() != 0) {
+        fprintf(stderr, "nextdns-delay-allow --apply: real-root only (run by the daemon or via sudo)\n");
+        return 1;
+    }
+    struct qent e[MAX_DOMAINS]; int n = q_read(e, MAX_DOMAINS);
+    if (n == 0) return 0;
+    long now = (long)time(NULL);
+    int due = 0; for (int i = 0; i < n; i++) if (e[i].apply_at <= now) due++;
+    if (due == 0) return 0;
+    load_credentials();
+    struct qent keep[MAX_DOMAINS]; int nk = 0, applied = 0, failed = 0;
+    for (int i = 0; i < n; i++) {
+        if (e[i].apply_at <= now) {
+            if (do_domain(e[i].domain)) applied++;          /* success → drop from queue */
+            else { failed++; keep[nk++] = e[i]; }           /* keep to retry next tick */
+        } else keep[nk++] = e[i];
+    }
+    if (q_write(keep, nk) != 0) return 1;
+    fprintf(stderr, "delay-allow --apply: %d applied, %d failed, %d still pending\n",
+            applied, failed, nk - failed);
+    return failed ? 1 : 0;
+}
+
+/* argv[1] matches a subcommand word, with or without the leading "--". */
+static int is_cmd(const char *a, const char *word) {
+    return !strcmp(a, word) || (a[0] == '-' && a[1] == '-' && !strcmp(a + 2, word));
+}
+
+static int delay_main(int argc, char **argv) {
+    if (argc < 2) { delay_usage(); return 2; }
+    const char *a = argv[1];
+    /* subcommands — bare (status/abort/help) OR flagged (--status/--abort/--help). --apply is the
+     * daemon's, kept flag-only. Recognizing the bare words stops `... status` / `... help` from being
+     * silently enqueued as "domains" (they pass the charset check). */
+    if (is_cmd(a, "apply"))  return delay_apply();
+    if (is_cmd(a, "status")) return delay_status();
+    if (is_cmd(a, "abort"))  return delay_abort(argv + 2, argc - 2);
+    if (is_cmd(a, "help") || !strcmp(a, "-h")) { delay_usage(); return 0; }
+    /* any other dashed token is a bad flag → usage (don't treat it as a domain) */
+    if (a[0] == '-') { fprintf(stderr, "error: unknown option: %s\n\n", a); delay_usage(); return 2; }
+    /* otherwise the args are domains to queue */
+    return delay_enqueue(argv + 1, argc - 1);
+}
+#endif  /* MODE_DELAY_ALLOW */
+
+/* ----- args / file (block/allow only) ----------------------------------- */
+#ifndef MODE_DELAY_ALLOW
 
 static void add_domain(const char *d) {
     if (g_ndomains >= MAX_DOMAINS) { fprintf(stderr, "error: too many domains (max %d)\n", MAX_DOMAINS); exit(2); }
@@ -219,8 +392,12 @@ static void usage(const char *prog) {
         "  domain    one or more domains as arguments (may combine with -f; -f may repeat)\n",
         prog);
 }
+#endif  /* !MODE_DELAY_ALLOW */
 
 int main(int argc, char **argv) {
+#ifdef MODE_DELAY_ALLOW
+    return delay_main(argc, argv);
+#else
     for (int i = 1; i < argc; i++)
         if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) { usage(argv[0]); return 0; }
 
@@ -266,4 +443,5 @@ int main(int argc, char **argv) {
     }
     fprintf(stderr, "%s: %d/%d succeeded\n", ACTION_NAME, ok, g_ndomains);
     return 0;
+#endif  /* MODE_DELAY_ALLOW else */
 }

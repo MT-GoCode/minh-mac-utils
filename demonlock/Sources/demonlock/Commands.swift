@@ -15,6 +15,36 @@ private func fail(_ msg: String) -> Never {
     FileHandle.standardError.write(Data((msg + "\n").utf8)); exit(1)
 }
 
+// MARK: - shared CLI contract for the no-sudo request commands
+
+/// Uniform `--help` / `--status` / `--abort` handling — accepted BARE or `--`-prefixed — shared by
+/// every no-sudo request command (release-valve, delaysetpolicy, delayzones, igotshitdueatmidnight).
+/// Returns true when it consumed the arg (the caller should `return`); false to fall through to that
+/// command's own verb (its request / enqueue / --set-*). Reserving these words as subcommands stops a
+/// bare `status`/`help` from being mis-parsed as a payload (the bug that queued "status"/"help").
+private func handleRequestFlags(_ first: String?, usage: String, abortMarker: String,
+                                abortNote: String = "", status: () -> Void) -> Bool {
+    switch first {
+    case "--help", "help", "-h":
+        print(usage)
+    case "--status", "status":
+        status()
+    case "--abort", "abort":
+        dropDelayMarker(abortMarker)
+        print("✓ abort sent — cancels a pending request on the next tick.")
+        if !abortNote.isEmpty { print("  " + abortNote) }
+    default:
+        return false
+    }
+    return true
+}
+
+/// `release-valve --status`: print the valve's published state (or a hint if the daemon isn't up).
+private func printReleaseValveStatusCLI() {
+    if let rv = StateStore.read()?.releaseValve { printReleaseValve(rv) }
+    else { print("release valve: no state yet — is the enforcer running?") }
+}
+
 // MARK: - status (user)
 
 func runStatus() {
@@ -41,6 +71,23 @@ func runStatus() {
     if let t = s.tree { print("\n  policy evaluation  (✓ true · ✗ false · · unknown):\n" + t.asText(indent: 2)) }
     if !s.health.locationTrail.isEmpty { print("\n  location:\n" + s.health.locationTrail.joined(separator: "\n")) }
     if let rv = s.releaseValve { printReleaseValve(rv) }
+    printDelayedStatus("policy", s.delayedPolicy)
+    printDelayedStatus("zones", s.delayedZones)
+    if let ds = s.delayedSnooze, ds.pending, let a = ds.applyAtEpoch {
+        let f = DateFormatter(); f.dateFormat = "EEE HH:mm"
+        let left = max(0, Int(a - nowEpoch()))
+        print("  midnight snz  : REQUESTED — stands down until 12:05 AM at \(f.string(from: Date(timeIntervalSince1970: a)))  (in \(left/3600)h \(left%3600/60)m)")
+    }
+}
+
+/// A queued delayed-change line in `status` (only shown when something is pending).
+private func printDelayedStatus(_ label: String, _ d: DelayedStatus?) {
+    guard let d, d.pending else { return }
+    let f = DateFormatter(); f.dateFormat = "EEE yyyy-MM-dd HH:mm"
+    let when = d.applyAtEpoch.map { f.string(from: Date(timeIntervalSince1970: $0)) } ?? "?"
+    let left = d.applyAtEpoch.map { max(0, Int($0 - nowEpoch())) } ?? 0
+    print("  delayed \(label) : QUEUED — lands \(when)  (\(left/3600)h \(left%3600/60)m left)")
+    if let p = d.payloadPreview { print("                  \(p)") }
 }
 
 /// Release-valve section of `status`.
@@ -243,7 +290,14 @@ private func nextWeekdayHHMM(weekday: Int, hhmm: Int) -> Date? {
 // MARK: - arm / disarm (sudo)
 
 func runArm() {
-    requireRoot("arm")
+    // arm TIGHTENS enforcement, so it's allowed WITHOUT admin via a passwordless sudoers grant (the
+    // installer adds `NOPASSWD: /usr/local/bin/demonlock arm`). disarm loosens → no grant, stays gated.
+    // Run as you → re-exec through `sudo -n`; the elevated copy lands back here as root and does it.
+    if geteuid() != 0 {
+        let rc = Proc.run("/usr/bin/sudo", ["-n", Paths.cliWrapper, "arm"])
+        if rc != 0 { fail("✗ couldn't arm without admin — the passwordless grant may be missing (reinstall), or run `sudo demonlock arm`.") }
+        exit(0)
+    }
     do { try ArmStore.set(true) } catch { fail("✗ couldn't arm: \(error)") }
     var note = ""
     if SnoozeStore.until() != nil {            // arming means enforcement is truly live NOW
@@ -271,11 +325,15 @@ usage:
   # use (no sudo; all three above must be set first):
   demonlock release-valve --request                           # request admin; granted after the delay,
                                                               #   at the next window, for the duration
-  demonlock release-valve abort                               # cancel a pending request / close a live grant
+  demonlock release-valve --status                            # show the valve's phase / countdown
+  demonlock release-valve --abort                             # cancel a pending request / close a live grant
+                                                              #   (--status / --abort / --help also work bare)
 """
 
 func runReleaseValve(_ args: [String]) {
-    if args.first == "abort" { rvDropMarker(Paths.rvAbortMarker, "abort"); return }
+    if handleRequestFlags(args.first, usage: rvUsage, abortMarker: Paths.rvAbortMarker,
+                          abortNote: "(also closes a live admin grant on the next tick.)",
+                          status: printReleaseValveStatusCLI) { return }
 
     var request = false
     var winPol: String?, delay: String?, dur: String?
@@ -349,6 +407,123 @@ private func rvDropMarker(_ path: String, _ what: String) {
     if what == "abort" { print("✓ abort sent — any pending request is cancelled and a live grant closes on the next tick.") }
 }
 
+// MARK: - delaysetpolicy (NO sudo — queues a policy that lands after 36h)
+
+private let dspUsage = """
+usage (no sudo — the change lands after a fixed delay, no sudo needed then either):
+  demonlock delaysetpolicy "<policy>"   # queue a new allow-policy; applies in 36h (validated now AND
+                                        #   again at apply time). Re-queueing resets the 36h.
+  demonlock delaysetpolicy --status     # show what's queued and when it lands
+  demonlock delaysetpolicy --abort      # cancel a queued change
+  demonlock delaysetpolicy --help       # this help   (--status / --abort / --help also work bare)
+"""
+
+func runDelaySetPolicy(_ args: [String]) {
+    if handleRequestFlags(args.first, usage: dspUsage, abortMarker: Paths.dspAbortMarker,
+                          status: printDelayedPolicyStatus) { return }
+    let delayH = Int(DelayedChange.policyDelaySec / 3600)
+    let p = args.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+    if p.isEmpty { print(dspUsage); return }
+    if p.hasPrefix("--") { fail("✗ unknown option '\(args[0])'.\n" + dspUsage) }
+    do { try PolicyEngine.validate(p, zones: ZoneStore.load()) } catch { fail("✗ invalid policy: \(error)\n\n(fix it, then re-queue.)") }
+    if let cur = DelayedState.load(Paths.delayedPolicyFile).pending {
+        print("⚠️  replacing an already-queued policy (its \(delayH)h timer restarts):\n    \(cur.payload)\n")
+    }
+    dropDelayMarker(Paths.dspRequestMarker, payload: p)
+    print("✓ queued — this policy applies in \(delayH)h (re-validated then). It takes effect with NO sudo.")
+    print("  Watch it: `demonlock status`  ·  cancel: `demonlock delaysetpolicy --abort`")
+}
+
+/// Print the queued delayed-policy state (from the published snapshot, else the on-disk pending file).
+private func printDelayedPolicyStatus() {
+    let delayH = Int(DelayedChange.policyDelaySec / 3600)
+    if let pc = DelayedState.load(Paths.delayedPolicyFile).pending {
+        let f = DateFormatter(); f.dateFormat = "EEE yyyy-MM-dd HH:mm"
+        let left = max(0, Int(pc.applyAt - nowEpoch()))
+        print("delayed policy: QUEUED — lands \(f.string(from: Date(timeIntervalSince1970: pc.applyAt)))" +
+              "  (\(left/3600)h \(left%3600/60)m left)")
+        print("  \(pc.payload)")
+    } else {
+        print("delayed policy: none queued.  Queue one with `demonlock delaysetpolicy \"<policy>\"` (lands in \(delayH)h).")
+    }
+}
+
+// MARK: - igotshitdueatmidnight (NO sudo — delay-gated snooze until 12:05 AM)
+
+private let dsnUsage = """
+usage (no sudo):
+  demonlock igotshitdueatmidnight            # in 1.5h, stand down until 12:05 AM tonight, then re-arm
+  demonlock igotshitdueatmidnight --status   # show a pending request + when it kicks in
+  demonlock igotshitdueatmidnight --abort    # cancel a pending request
+  demonlock igotshitdueatmidnight --help     # this help   (--status / --abort / --help also work bare)
+"""
+
+func runIGotShitDueAtMidnight(_ args: [String]) {
+    if handleRequestFlags(args.first, usage: dsnUsage, abortMarker: Paths.dsnAbortMarker,
+                          abortNote: "if the snooze already kicked in, cancel that with `sudo demonlock arm`.",
+                          status: printMidnightSnoozeStatus) { return }
+    // No further verb — the only action is the (bare) request.
+    guard args.isEmpty else { fail("✗ unknown argument '\(args[0])'.\n" + dsnUsage) }
+    if !DelayedSnoozeState.load().isIdle {
+        fail("✗ a midnight-snooze request is already pending. Cancel it first: `demonlock igotshitdueatmidnight --abort`.")
+    }
+    dropDelayMarker(Paths.dsnRequestMarker)
+    let mins = Int(DelayedSnooze.delaySec / 60)
+    print("✓ requested — in \(mins)m demonlock stands down until 12:05 AM tonight, then re-arms automatically.")
+    print("  It kicks in even mid-lockout. Watch: `demonlock status`  ·  cancel: `demonlock igotshitdueatmidnight --abort`")
+    // Fail-closed edge: if 12:05 AM is under 1.5h away, by apply time it'll have passed → no snooze.
+    if nextHHMM(DelayedSnooze.targetHHMM).timeIntervalSinceNow < DelayedSnooze.delaySec {
+        print("  ⚠️  but 12:05 AM is under \(mins)m away — by the time the delay is up midnight will have")
+        print("      passed, so you'll get NO snooze. This only helps if you ask earlier in the evening.")
+    }
+}
+
+private func printMidnightSnoozeStatus() {
+    let st = DelayedSnoozeState.load()
+    guard let applyAt = st.applyAt else {
+        print("midnight snooze: none pending.  Request one with `demonlock igotshitdueatmidnight` (kicks in 1.5h later).")
+        return
+    }
+    let f = DateFormatter(); f.dateFormat = "EEE HH:mm"
+    let left = max(0, Int(applyAt - nowEpoch()))
+    print("midnight snooze: REQUESTED — stands down until 12:05 AM at \(f.string(from: Date(timeIntervalSince1970: applyAt)))" +
+          "  (in \(left/3600)h \(left%3600/60)m, mid-lockout too)")
+}
+
+private let dzUsage = """
+usage (no sudo — a zones change is CREATED from the map's "Save in 36h"; here you view / cancel it):
+  demonlock delayzones --status   # show a queued zones change and when it lands
+  demonlock delayzones --abort    # cancel a queued zones change
+  demonlock delayzones --help     # this help   (--status / --abort / --help also work bare)
+"""
+
+private func printDelayZonesStatus() {
+    if let pc = DelayedState.load(Paths.delayedZonesFile).pending {
+        let f = DateFormatter(); f.dateFormat = "EEE yyyy-MM-dd HH:mm"
+        let left = max(0, Int(pc.applyAt - nowEpoch()))
+        print("delayed zones: QUEUED — lands \(f.string(from: Date(timeIntervalSince1970: pc.applyAt)))  (\(left/3600)h \(left%3600/60)m left)")
+        print("  cancel with `demonlock delayzones --abort`")
+    } else {
+        print("delayed zones: none queued.  Queue one from the map (`demonlock zones` → add → \"Save in 36h\").")
+    }
+}
+
+/// delayzones (NO sudo): a queued zones change is CREATED from the map ("Save in 36h"); here you can
+/// only view or cancel it. Bare `delayzones` shows status; unknown args → usage.
+func runDelayZones(_ args: [String]) {
+    if handleRequestFlags(args.first, usage: dzUsage, abortMarker: Paths.dzAbortMarker,
+                          status: printDelayZonesStatus) { return }
+    if let a = args.first { fail("✗ unknown argument '\(a)'.\n" + dzUsage) }
+    printDelayZonesStatus()
+}
+
+/// Drop a delayed-change marker in the user-owned inbox (non-root). `payload` (the new policy/zones)
+/// becomes the request marker's contents; the daemon reads, validates, and stamps the real time itself.
+func dropDelayMarker(_ path: String, payload: String = "") {
+    do { try Data(payload.utf8).write(to: URL(fileURLWithPath: path)) }
+    catch { fail("✗ couldn't write the marker (\(path)). Is the inbox present? Try reinstalling demonlock.\n  \(error)") }
+}
+
 // MARK: - perm-ask (user)
 
 func runPermAsk() {
@@ -378,11 +553,16 @@ func printHelp() {
       perm-ask            (Re)grant the Location permission the agent needs
       release-valve --request   Ask for a delay-gated admin grant (granted after the delay, at the
                           next window, for the set duration). `release-valve abort` cancels/closes it.
+      delaysetpolicy "<expr>"   Queue a NEW allow-policy that lands in 36h — no sudo now OR at apply
+                          time (the commitment device is the wait). --abort cancels · --status shows it.
+      delayzones --status|--abort   View / cancel a zones change queued from the map's "Save in 36h".
+      igotshitdueatmidnight   Request a delayed snooze: in 1.5h, stand down until 12:05 AM tonight,
+                          then re-arm (kicks in even mid-lockout). --status / --abort.
+      arm                 Turn enforcement ON (no sudo — arming only TIGHTENS; passwordless grant)
       help                This help
 
     SUDO COMMANDS (require `sudo`):
       setpolicy "<expr>"  Set the allow-policy (validated before it takes effect)
-      arm                 Turn enforcement ON
       disarm              Turn enforcement OFF (everything keeps running; countdown just no-ops)
       snoozetonight       Allow everything until the next snooze time (default 05:00)
       snooze "<spec>"     Stand down until "for <duration>" or "until <[day]HHMM>" (capped 18h),

@@ -79,28 +79,63 @@ fi
 TMPD="$(mktemp -d)"
 trap 'rm -rf "$TMPD"' EXIT
 echo "Compiling..."
-cc -O2 -Wall -DMODE_BLOCK -o "$TMPD/nextdns-block" "$SRC"
-cc -O2 -Wall -DMODE_ALLOW -o "$TMPD/nextdns-allow" "$SRC"
+cc -O2 -Wall -DMODE_BLOCK       -o "$TMPD/nextdns-block"       "$SRC"
+cc -O2 -Wall -DMODE_ALLOW       -o "$TMPD/nextdns-allow"       "$SRC"
+cc -O2 -Wall -DMODE_DELAY_ALLOW -o "$TMPD/nextdns-delay-allow" "$SRC"
 
 # --- install (nuke + reinstall) ------------------------------------------
-rm -f "$PREFIX_BIN/nextdns-block" "$PREFIX_BIN/nextdns-allow" "$PREFIX_BIN/nextdns-test"
+rm -f "$PREFIX_BIN/nextdns-block" "$PREFIX_BIN/nextdns-allow" "$PREFIX_BIN/nextdns-delay-allow" "$PREFIX_BIN/nextdns-test"
 
 # block: setuid-root, execute-only for non-root (4711) -> user can run, can't read.
 install -o root -g wheel -m 4711 "$TMPD/nextdns-block" "$PREFIX_BIN/nextdns-block"
 # allow: root-only, not setuid -> only usable via sudo.
 install -o root -g wheel -m 0700 "$TMPD/nextdns-allow" "$PREFIX_BIN/nextdns-allow"
+# delay-allow: setuid-root (4711). User-runnable enqueue/status/abort (touch the root queue, only
+# add/cancel a delayed loosening); the actual API allow is real-root-gated in `--apply`, run by the
+# LaunchDaemon below on a timer, so a user can't shortcut the 12h wait.
+install -o root -g wheel -m 4711 "$TMPD/nextdns-delay-allow" "$PREFIX_BIN/nextdns-delay-allow"
 # test: plain script, user-runnable, no secrets (just dig).
 install -o root -g wheel -m 0755 "$SRC_DIR/nextdns-test" "$PREFIX_BIN/nextdns-test"
 
 # Re-assert modes explicitly (guarantee the setuid bit survived).
 chmod 4711 "$PREFIX_BIN/nextdns-block"
 chmod 0700 "$PREFIX_BIN/nextdns-allow"
+chmod 4711 "$PREFIX_BIN/nextdns-delay-allow"
 chmod 0755 "$PREFIX_BIN/nextdns-test"
 
+# --- delayed-allow applier LaunchDaemon (runs `--apply` on a timer, as root) --------------
+DAEMON_LABEL="com.nextdns-discipline.delay-allow"
+DAEMON_PLIST="/Library/LaunchDaemons/$DAEMON_LABEL.plist"
+echo "Installing applier daemon $DAEMON_LABEL (every 60s)..."
+cat > "$DAEMON_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>            <string>$DAEMON_LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$PREFIX_BIN/nextdns-delay-allow</string>
+        <string>--apply</string>
+    </array>
+    <key>RunAtLoad</key>        <true/>
+    <key>StartInterval</key>    <integer>60</integer>
+    <key>ProcessType</key>      <string>Background</string>
+    <key>StandardErrorPath</key><string>/var/log/nextdns-delay-allow.log</string>
+</dict>
+</plist>
+EOF
+chown root:wheel "$DAEMON_PLIST"; chmod 644 "$DAEMON_PLIST"
+launchctl bootout system "$DAEMON_PLIST" 2>/dev/null || true
+launchctl bootstrap system "$DAEMON_PLIST" 2>/dev/null \
+    || launchctl load -w "$DAEMON_PLIST" 2>/dev/null || true
+
 echo "Installed:"
-ls -l "$PREFIX_BIN/nextdns-block" "$PREFIX_BIN/nextdns-allow" "$PREFIX_BIN/nextdns-test"
+ls -l "$PREFIX_BIN/nextdns-block" "$PREFIX_BIN/nextdns-allow" "$PREFIX_BIN/nextdns-delay-allow" "$PREFIX_BIN/nextdns-test"
 echo
 echo "Done."
 echo "  nextdns-block instagram.com tiktok.com       # user-runnable"
-echo "  sudo nextdns-allow instagram.com             # sudo-gated"
+echo "  sudo nextdns-allow instagram.com             # sudo-gated (immediate)"
+echo "  nextdns-delay-allow instagram.com            # no sudo; the allow lands in 12h"
+echo "  nextdns-delay-allow --status | --abort       # view / cancel a queued allow"
 echo "  nextdns-test instagram.com                   # check if actually blocked"

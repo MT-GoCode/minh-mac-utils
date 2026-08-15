@@ -82,6 +82,22 @@ func loadOrCreateRelayToken() -> String {
     return token
 }
 
+// Parse the CLI-managed config (~/.remote-agent-connector/config): KEY=VALUE lines, # comments.
+// The `rac` CLI owns this file; the app only reads it to know where to tunnel.
+func readConfig() -> [String: String] {
+    guard let txt = try? String(contentsOf: racDir.appendingPathComponent("config"), encoding: .utf8) else { return [:] }
+    var d: [String: String] = [:]
+    for raw in txt.split(separator: "\n", omittingEmptySubsequences: false) {
+        var line = String(raw)
+        if let h = line.firstIndex(of: "#") { line = String(line[..<h]) }
+        guard let eq = line.firstIndex(of: "=") else { continue }
+        let k = line[..<eq].trimmingCharacters(in: .whitespaces)
+        let v = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
+        if !k.isEmpty { d[k] = v }
+    }
+    return d
+}
+
 // MARK: - capability relay
 //
 // TCC attributes a command run via `ssh mac <cmd>` to sshd's responsible process,
@@ -311,21 +327,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusLine: NSMenuItem!
     private var relay: RelayServer?
 
-    private var middlemanURL: String {
-        get { UserDefaults.standard.string(forKey: "foremanURL") ?? "http://100.59.145.138:8700" }
-        set { UserDefaults.standard.set(newValue, forKey: "foremanURL") }
-    }
-    private var macName: String {
-        get {
-            if let v = UserDefaults.standard.string(forKey: "macName"), !v.isEmpty { return v }
-            let host = run("/usr/sbin/scutil", ["--get", "LocalHostName"]).out.trimmingCharacters(in: .whitespacesAndNewlines)
-            return sanitizedName(host.isEmpty ? "mac" : host)
-        }
-        set { UserDefaults.standard.set(newValue, forKey: "macName") }
-    }
-    private var tunnelPort: Int { stablePort(for: macName) }
-    private var middlemanHost: String { URL(string: middlemanURL)?.host ?? "100.59.145.138" }
-
     func applicationDidFinishLaunching(_ note: Notification) {
         try? SMAppService.mainApp.register()
 
@@ -341,18 +342,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
         setIcon()
 
-        writeCLIConfig()
-
         let token = loadOrCreateRelayToken()
         relay = RelayServer(port: RELAY_PORT, token: token)
         relay?.start()
 
+        // Clear a tunnel left by a previous instance, then start ours from config.
         let pkill = Process()
         pkill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        pkill.arguments = ["-f", "ssh -N .*foreman-tunnel"]
+        pkill.arguments = ["-f", "ssh -N -i .*remote-agent-connector/tunnel_key"]
         try? pkill.run(); pkill.waitUntilExit()
 
-        provisionInBackground()
         startTunnel()
         timer = Timer.scheduledTimer(withTimeInterval: PROBE_INTERVAL, repeats: true) { [weak self] _ in self?.tick() }
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in self?.kickTunnel() }
@@ -373,112 +372,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return m
     }
 
-    // The CLI (`remote-agent-connector`) reads this to fill the guide + certs with live values.
-    private func writeCLIConfig() {
-        try? FileManager.default.createDirectory(at: racDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let cfg = """
-        MAC_USER=\(NSUserName())
-        TUNNEL_PORT=\(tunnelPort)
-        MIDDLEMAN_HOST=\(middlemanHost)
-        MACHINE_NAME=remote-personal-machine
-        """
-        try? cfg.write(to: racDir.appendingPathComponent("config"), atomically: true, encoding: .utf8)
-    }
-
-    // MARK: - provisioning (unchanged core: converges the reverse-tunnel contract on both sides)
-
-    private func provisionInBackground() {
-        let name = macName, port = tunnelPort, host = middlemanHost, user = NSUserName()
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let note = Self.provision(name: name, port: port, foremanHost: host, macUser: user)
-            DispatchQueue.main.async { self?.provisionNote = note }
-        }
-    }
-
-    private static func provision(name: String, port: Int, foremanHost: String, macUser: String) -> String {
-        let fm = FileManager.default
-        try? fm.createDirectory(at: sshDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let keyPath = sshDir.appendingPathComponent("foreman_tunnel").path
-        if !fm.fileExists(atPath: keyPath) {
-            run("/usr/bin/ssh-keygen", ["-t", "ed25519", "-N", "", "-q", "-f", keyPath, "-C", "remote-agent-connector-tunnel"])
-        }
-        guard let pub = try? String(contentsOfFile: keyPath + ".pub", encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines), !pub.isEmpty
-        else { return "cannot create tunnel key" }
-        let pubParts = pub.split(separator: " ")
-        guard pubParts.count >= 2 else { return "malformed tunnel pubkey" }
-        let pubBlob = String(pubParts[1])
-
-        let cfgURL = sshDir.appendingPathComponent("config")
-        let cfg = (try? String(contentsOf: cfgURL, encoding: .utf8)) ?? ""
-        if !cfg.contains("Host foreman-tunnel") {
-            let block = """
-
-            Host foreman-tunnel
-              User ubuntu
-              IdentityFile ~/.ssh/foreman_tunnel
-              IdentitiesOnly yes
-              BatchMode yes
-              StrictHostKeyChecking accept-new
-              ExitOnForwardFailure yes
-              ServerAliveInterval 15
-              ServerAliveCountMax 2
-              ConnectTimeout 10
-
-            """
-            if let h = FileHandle(forWritingAtPath: cfgURL.path) { h.seekToEndOfFile(); h.write(block.data(using: .utf8)!); h.closeFile() }
-            else { try? block.write(to: cfgURL, atomically: true, encoding: .utf8) }
-        }
-
-        let script = """
-        set -e
-        mkdir -p ~/.ssh && chmod 700 ~/.ssh
-        [ -f ~/.ssh/mac_agent_key ] || ssh-keygen -t ed25519 -N '' -q -f ~/.ssh/mac_agent_key -C foreman-agents
-        touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
-        grep -vF '\(pubBlob)' ~/.ssh/authorized_keys > ~/.ssh/ak.tmp || true
-        printf '%s\\n' 'restrict,port-forwarding,permitlisten="127.0.0.1:\(port)" \(pub)' >> ~/.ssh/ak.tmp
-        mv ~/.ssh/ak.tmp ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
-        if [ ! -f /etc/ssh/sshd_config.d/60-tunnel-keepalive.conf ]; then
-          printf 'ClientAliveInterval 30\\nClientAliveCountMax 3\\n' | sudo tee /etc/ssh/sshd_config.d/60-tunnel-keepalive.conf >/dev/null
-          sudo systemctl reload ssh 2>/dev/null || true
-        fi
-        touch ~/.ssh/config
-        awk '/^# >>> foreman-uplink:\(name) >>>/{skip=1} skip!=1{print} /^# <<< foreman-uplink:\(name) <<</{skip=0}' ~/.ssh/config > ~/.ssh/cfg.tmp
-        { echo '# >>> foreman-uplink:\(name) >>>'
-          echo 'Host \(name)'
-          echo '  HostName localhost'
-          echo '  Port \(port)'
-          echo '  User \(macUser)'
-          echo '  IdentityFile ~/.ssh/mac_agent_key'
-          echo '  IdentitiesOnly yes'
-          echo '  StrictHostKeyChecking accept-new'
-          echo '# <<< foreman-uplink:\(name) <<<'
-        } >> ~/.ssh/cfg.tmp
-        mv ~/.ssh/cfg.tmp ~/.ssh/config
-        cat ~/.ssh/mac_agent_key.pub
-        """
-        let remote = run("/usr/bin/ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "HostName=\(foremanHost)", "foreman", "bash -s"], stdin: script)
-        guard remote.status == 0 else { return "provisioning: cannot reach middleman admin alias" }
-        guard let agentPub = remote.out.split(separator: "\n").last.map(String.init), agentPub.hasPrefix("ssh-")
-        else { return "provisioning: no agent pubkey returned" }
-
-        let akURL = sshDir.appendingPathComponent("authorized_keys")
-        var lines = ((try? String(contentsOf: akURL, encoding: .utf8)) ?? "").split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
-        lines.removeAll { $0.contains("foreman-agents") }
-        lines.append("from=\"127.0.0.1,::1\" \(agentPub)")
-        try? (lines.joined(separator: "\n") + "\n").write(to: akURL, atomically: true, encoding: .utf8)
-        try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: akURL.path)
-        return ""
-    }
-
     // MARK: - tunnel
 
     private func startTunnel() {
         guard !shuttingDown, tunnel?.isRunning != true else { return }
+        // Everything derives from the ssh target + name in config — nothing else to store.
+        // Until `rac setup` fills those in, there's no middleman: stay idle.
+        let c = readConfig()
+        guard let mid = c["MIDDLEMAN"], !mid.isEmpty,
+              let name = c["MACHINE_NAME"], !name.isEmpty else { return }
+        // Pass the target verbatim so ~/.ssh/config fully applies (aliases, ProxyJump,
+        // per-hop identities). Resolving to user@host here would strip the jump path and
+        // dial hosts that are only reachable through it.
+        let target = mid.split(separator: " ").map(String.init)
+        let key = racDir.appendingPathComponent("tunnel_key").path
+        guard FileManager.default.fileExists(atPath: key) else { return }
+        let port = String(stablePort(for: name))
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        p.arguments = ["-N", "-o", "HostName=\(middlemanHost)",
-                       "-R", "127.0.0.1:\(tunnelPort):127.0.0.1:22",
-                       "foreman-tunnel"]
+        p.arguments = ["-N", "-i", key,
+                       "-o", "IdentitiesOnly=yes",
+                       "-o", "StrictHostKeyChecking=accept-new",
+                       "-o", "ExitOnForwardFailure=yes",
+                       "-o", "ServerAliveInterval=15",
+                       "-o", "ServerAliveCountMax=2",
+                       "-o", "ConnectTimeout=10",
+                       "-o", "BatchMode=yes",
+                       "-R", "127.0.0.1:\(port):127.0.0.1:22"]
+                      + target
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
         p.terminationHandler = { [weak self] _ in DispatchQueue.main.async { self?.scheduleRespawn() } }

@@ -24,8 +24,8 @@ echo ">> restoring default pf and disabling"
 pfctl -f /etc/pf.conf 2>/dev/null || true
 pfctl -d 2>/dev/null || true
 
-echo ">> removing binaries"
-rm -f /usr/local/bin/nextdns-lockdown /usr/local/bin/nextdns-lockdownd
+echo ">> removing binaries + passwordless arm grant"
+rm -f /usr/local/bin/nextdns-lockdown /usr/local/bin/nextdns-lockdownd /etc/sudoers.d/nextdns-lockdown
 
 if [ "${1:-}" = "--purge" ]; then
     echo ">> purging config + state"

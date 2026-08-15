@@ -13,6 +13,7 @@ launchctl bootout "gui/$UID_NUM/$WATCH" 2>/dev/null || true
 rm -f /usr/local/bin/settingslock \
       "/Library/LaunchAgents/$WATCH.plist" \
       "/Library/LaunchDaemons/$GUARD.plist" \
+      /etc/sudoers.d/settingslock \
       /tmp/settingslock-*.log /tmp/settingslock.heartbeat
 rm -rf /usr/local/etc/settingslock
 

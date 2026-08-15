@@ -52,6 +52,7 @@ rm -f "$USER_HOME/.local/bin/wtalk"                             # drop any stale
 rm -rf "$HERE/wtalk.app.old"
 
 echo "▸ deploying ROOT-OWNED to $DEST"
+rm -rf "$USER_HOME/Applications/wtalk.app"   # never leave a user-owned duplicate behind
 rm -rf "$DEST"
 cp -R "$SRC" "$DEST"
 chown -R root:wheel "$DEST"        # root-owned ⇒ unmodifiable without sudo (the seal)
@@ -121,6 +122,9 @@ sudo -u "$USER_NAME" launchctl bootstrap "gui/$USER_UID" "$PLIST" 2>/dev/null \
     || sudo -u "$USER_NAME" launchctl kickstart -k "gui/$USER_UID/com.wtalk.agent" 2>/dev/null || true
 
 echo
+
+echo "▸ verifying demonlock will spare it"
+bash "$(cd "$(dirname "$0")/../.." && pwd)/verify-spare.sh" /Applications/wtalk.app com.wtalk.daemon
 echo "✓ installed $DEST  (root:wheel, sealed — demonlock can now safely spare it)"
 echo "  Next steps:"
 echo "    1. Add your Gemini key:   \$EDITOR $DATA/.env   (GEMINI_API_KEY=…), then:  wtalk restart"

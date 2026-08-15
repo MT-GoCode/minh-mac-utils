@@ -36,9 +36,12 @@ fi
 [ -d "$APP_SRC" ] || { echo "✗ no app bundle to deploy"; exit 1; }
 
 echo "▸ deploying app + CLI"
-rm -rf /Applications/Demonlock.app
+# A user-owned duplicate in ~/Applications could be launched instead of this one and
+# would only be spared under the stricter signature rule — never leave one behind.
+rm -rf "$(eval echo "~$USER_NAME")/Applications/Demonlock.app" /Applications/Demonlock.app
 cp -R "$APP_SRC" /Applications/Demonlock.app
 chown -R root:wheel /Applications/Demonlock.app
+chmod -R go-w /Applications/Demonlock.app   # group/other-writable ⇒ fails spareVerified's owner test
 xattr -dr com.apple.quarantine /Applications/Demonlock.app 2>/dev/null || true
 
 cat > /usr/local/bin/demonlock <<'EOF'
@@ -52,7 +55,13 @@ chown root:wheel /usr/local/bin/demonlock
 # so it's safe to allow without admin (and it survives you removing your admin rights). Adding a
 # zone still needs admin. The _zonedel subcommand only removes a named zone, nothing else.
 SUDOERS=/etc/sudoers.d/demonlock
-printf '%s ALL=(root) NOPASSWD: /usr/local/bin/demonlock _zonedel *\n' "$USER_NAME" > "$SUDOERS"
+# Two passwordless grants, both TIGHTEN-only (safe to allow without admin; survive you dropping admin):
+#   _zonedel * : delete a named zone (shrinks the allow-set)
+#   arm        : turn enforcement ON. disarm (loosening) is deliberately NOT granted — it stays admin-gated.
+{
+  printf '%s ALL=(root) NOPASSWD: /usr/local/bin/demonlock _zonedel *\n' "$USER_NAME"
+  printf '%s ALL=(root) NOPASSWD: /usr/local/bin/demonlock arm\n' "$USER_NAME"
+} > "$SUDOERS"
 chown root:wheel "$SUDOERS"; chmod 440 "$SUDOERS"
 visudo -cf "$SUDOERS" >/dev/null 2>&1 || { echo "  ⚠️  sudoers entry invalid — removing"; rm -f "$SUDOERS"; }
 
@@ -77,9 +86,10 @@ chown -R root:wheel "$SUPPORT"
 chmod 755 "$SUPPORT" "$SUPPORT/logs"
 chmod 644 "$SUPPORT"/settings.json "$SUPPORT"/armed "$SUPPORT"/snooze "$SUPPORT"/zones.json 2>/dev/null || true
 [ -f "$SUPPORT/policy.txt" ] && chmod 644 "$SUPPORT/policy.txt"
-# Release-valve inbox: USER-owned so `release-valve --request`/`abort` drop a marker without sudo
-# (the daemon stamps the real request time, so the delay can't be backdated). Config + state stay
-# root-owned in $SUPPORT (root/daemon-written), world-readable for `status`.
+# Self-serve inbox: USER-owned so the no-sudo requests — `release-valve --request`/`abort`,
+# `delaysetpolicy`, and the map's "Save in 36h" (delayzones) — can drop a marker without sudo (the
+# daemon stamps the real request time, so the delay can't be backdated). The pending state + config
+# stay root-owned in $SUPPORT (root/daemon-written), world-readable for `status`.
 mkdir -p "$SUPPORT/rv"
 chown "$USER_NAME" "$SUPPORT/rv"
 chmod 755 "$SUPPORT/rv"
@@ -102,6 +112,9 @@ launchctl bootstrap "gui/$USER_UID" /Library/LaunchAgents/com.demonlock.agent.pl
     || launchctl kickstart -k "gui/$USER_UID/com.demonlock.agent" 2>/dev/null || true
 
 echo
+
+echo "▸ verifying demonlock will spare it"
+bash "$(cd "$(dirname "$0")/../.." && pwd)/verify-spare.sh" /Applications/Demonlock.app com.demonlock
 echo "✓ installed — currently DISARMED. Next steps:"
 echo "    demonlock scan                 # walk your office, capture BSSIDs (run WITHOUT sudo)"
 echo "    demonlock zones                # add zones (admin) / delete zones (free) on a map"

@@ -289,10 +289,13 @@ static int copy_to_clipboard(const char *text) {
     return (w == (ssize_t)len && WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
 }
 
-/* Read the held master password and put it on the clipboard (any caller). The setuid bit is what lets
- * it read the 0600 root-only file. By design the password isn't secret from you — it's a portable
- * shared secret (also used to unlock phone settings) and a deliberateness marker; Pluckeye's delay is
- * the real lock. So handing it to your own user here is intended, not a leak. */
+/* Read the held master password and put it on the clipboard. ROOT-ONLY, same gate as
+ * --give-to-user/--take-from-user: handing out the held secret is a loosening action, so it
+ * requires the authority you'd need to undo everything anyway. The setuid bit is what lets it
+ * read the 0600 root-only file; the getuid()==0 check in main() is what keeps a plain user out.
+ * (The password isn't cryptographically secret from you — it's a portable shared secret and a
+ * deliberateness marker; Pluckeye's delay is the real lock. The gate just keeps it from being a
+ * one-keystroke bypass of the `add` prompt.) */
 static int do_copy_password(void) {
     char pw[256];
     if (load_password(pw, sizeof pw) != 0) return 1;
@@ -308,7 +311,7 @@ static void usage(void) {
         "usage: sudome {add|remove}                    # you toggle your OWN admin (add is password-gated)\n"
         "       sudome --give-to-user <user>           # ROOT-ONLY: grant admin to <user>, no password\n"
         "       sudome --take-from-user <user>         # ROOT-ONLY: revoke admin from <user>\n"
-        "       sudome copy-master-password            # copy the held password to the clipboard (any user)\n");
+        "       sudome copy-master-password            # ROOT-ONLY: copy the held password to the clipboard\n");
 }
 
 int main(int argc, char **argv) {
@@ -317,25 +320,23 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Root-only, explicit-target modes. Gated on the REAL uid (getuid), NOT euid:
-     * the setuid bit forces euid==0 for every caller, so only a process genuinely
-     * INVOKED by root (a root daemon, or `sudo sudome …`) has getuid()==0. A normal
-     * user hitting these gets refused — they must use the password-gated `add`. */
-    if (argc == 3 && (strcmp(argv[1], "--give-to-user") == 0 ||
-                      strcmp(argv[1], "--take-from-user") == 0)) {
+    /* ── ROOT-ONLY modes: --give-to-user, --take-from-user, copy-master-password ──
+     * All three are gated on the REAL uid (getuid), NOT euid: the setuid bit forces
+     * euid==0 for every caller, so only a process genuinely INVOKED by root (a root
+     * daemon like demonlock's enforcerd, or `sudo sudome …`) has getuid()==0. A normal
+     * user hitting any of these gets refused — they must use the password-gated `add`. */
+    int give  = argc == 3 && strcmp(argv[1], "--give-to-user") == 0;
+    int take  = argc == 3 && strcmp(argv[1], "--take-from-user") == 0;
+    int copypw = argc == 2 && strcmp(argv[1], "copy-master-password") == 0;
+    if (give || take || copypw) {
         if (getuid() != 0) {
             fprintf(stderr, "sudome: %s is root-only — run it as root (e.g. via sudo or a root daemon)\n", argv[1]);
             return 1;
         }
+        if (copypw) return do_copy_password();
         set_user_explicit(argv[2]);
-        return strcmp(argv[1], "--give-to-user") == 0 ? do_give() : do_take();
+        return give ? do_give() : do_take();
     }
-    /* copy-master-password: allowed for ANY caller — your normal user OR root. It hands out the held
-     * secret, which is intended here: the password is a PORTABLE shared secret (it also gates phone
-     * settings) + a "make loosening deliberate" marker, not a root-proof lock. The real delay-teeth is
-     * Pluckeye; getting admin already lets you change/undo everything. */
-    if (argc == 2 && strcmp(argv[1], "copy-master-password") == 0)
-        return do_copy_password();
 
     /* Self-service: the invoking (non-root) user toggles their OWN admin. */
     resolve_user();   /* target = whoever ran us (real uid); forbids root */

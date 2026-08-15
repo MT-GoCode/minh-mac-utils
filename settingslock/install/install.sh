@@ -13,6 +13,7 @@ if [ "$(id -u)" -eq 0 ]; then
     exit 1
 fi
 UID_NUM="$(id -u)"
+USER_NAME="$(id -un)"
 
 # Build fresh if you have a Developer ID cert (or no prebuilt). Otherwise deploy a prebuilt
 # dist/settingslock — e.g. a Developer-ID-signed binary from a GitHub release (see root README) —
@@ -26,9 +27,9 @@ fi
 [ -f "$BIN_SRC" ] || { echo "no binary at $BIN_SRC (need Xcode CLT to build, or a prebuilt dist/settingslock)" >&2; exit 1; }
 
 echo "==> [2/3] deploy + load (needs admin) — also cleans up any prior install"
-sudo bash -s -- "$BIN_SRC" "$UID_NUM" "$INSTALL_DIR" <<'ROOT'
+sudo bash -s -- "$BIN_SRC" "$UID_NUM" "$INSTALL_DIR" "$USER_NAME" <<'ROOT'
 set -euo pipefail
-BIN_SRC="$1"; UID_NUM="$2"; INSTALL_DIR="$3"
+BIN_SRC="$1"; UID_NUM="$2"; INSTALL_DIR="$3"; USER_NAME="$4"
 BIN="/usr/local/bin/settingslock"
 WATCH="com.settingslock.watch"; GUARD="com.settingslock.guard"
 LA="/Library/LaunchAgents"; LD="/Library/LaunchDaemons"
@@ -48,6 +49,13 @@ codesign --verify --strict "$BIN" || { echo "deployed signature invalid"; exit 1
 mkdir -p /usr/local/etc/settingslock
 [ -f /usr/local/etc/settingslock/armed ] || printf '1' > /usr/local/etc/settingslock/armed
 chown root:wheel /usr/local/etc/settingslock/armed; chmod 644 /usr/local/etc/settingslock/armed
+
+# --- passwordless grant for `arm` ONLY (tightening → safe without admin; survives dropping admin).
+#     disarm loosens and is deliberately NOT granted — it stays admin-gated. ---
+SUDOERS=/etc/sudoers.d/settingslock
+printf '%s ALL=(root) NOPASSWD: /usr/local/bin/settingslock arm\n' "$USER_NAME" > "$SUDOERS"
+chown root:wheel "$SUDOERS"; chmod 440 "$SUDOERS"
+visudo -cf "$SUDOERS" >/dev/null 2>&1 || { echo "   ⚠️  sudoers entry invalid — removing"; rm -f "$SUDOERS"; }
 
 # --- install plists + load atomically ---
 install -o root -g wheel -m 644 "$INSTALL_DIR/$WATCH.plist" "$LA/$WATCH.plist"

@@ -21,6 +21,9 @@ final class Enforcer {
     private var nextNuclear: Date?          // rate-limit for the nuclear (agent-dead) WindowServer kill
     private var nextAgentKick: Date?        // rate-limit for force-restarting a wedged-but-alive agent
     private var lastAgentSeen = Date()      // last fresh feed — gates the startup/recovery grace below
+    private var dpPolicyStatus: DelayedStatus?   // last-computed delayed-policy status (published every tick)
+    private var dpZonesStatus: DelayedStatus?    // last-computed delayed-zones status (published every tick)
+    private var dsnStatus: DelayedSnoozeStatus?  // last-computed midnight-snooze request status
 
     // The one location truth (persisted root-owned; survives restarts — login "just works").
     private var held: HeldFix? = HeldFixStore.read()
@@ -58,6 +61,14 @@ final class Enforcer {
         let poll = settings.pollSeconds
         let cdpoll = settings.countdownPollSeconds
         let armed = ArmStore.isArmed()
+
+        // Delayed changes land here — BEFORE any early return — so a queued policy/zones edit applies on
+        // schedule regardless of arm / snooze / who's logged in, and this tick's evaluation below reads
+        // the freshly-written policy.txt / zones.json. Statuses are stashed for every publish() call.
+        runDelayedChanges(now.timeIntervalSince1970)
+        // Midnight-snooze request: same top-of-tick placement so an applied snooze is picked up by the
+        // snooze check below THIS tick (stands the user down / clears the countdown immediately).
+        dsnStatus = DelayedSnooze.tick(now: now.timeIntervalSince1970)
 
         // STANDBY: only enforce the configured user's live console session.
         guard let consoleUID = consoleUser() else {
@@ -364,13 +375,37 @@ final class Enforcer {
             insideZones: inside,
             sshAddr: ssh,
             health: health,
-            releaseValve: rv))
+            releaseValve: rv,
+            delayedPolicy: dpPolicyStatus,
+            delayedZones: dpZonesStatus,
+            delayedSnooze: dsnStatus))
     }
 
     /// Resolve a uid to its login name (for `sudome --give/--take-from-user`). nil if unknown.
     private func usernameForUID(_ uid: uid_t) -> String? {
         guard let pw = getpwuid(uid) else { return nil }
         return String(cString: pw.pointee.pw_name)
+    }
+
+    /// Drive both delayed-change slots (policy + zones) one tick. Each validates its payload against the
+    /// CURRENT zones/syntax at both queue and apply time, and applies as root (this daemon). Runs before
+    /// the tick's own policy read so a change that lands this tick takes effect immediately.
+    private func runDelayedChanges(_ nowSec: Double) {
+        dpPolicyStatus = DelayedChange.tick(
+            kind: "policy", now: nowSec, stateFile: Paths.delayedPolicyFile,
+            requestMarker: Paths.dspRequestMarker, abortMarker: Paths.dspAbortMarker,
+            delaySec: DelayedChange.policyDelaySec,
+            validate: { (try? PolicyEngine.validate($0, zones: ZoneStore.load())) != nil },
+            apply: { (try? PolicyStore.write($0)) != nil })
+        dpZonesStatus = DelayedChange.tick(
+            kind: "zones", now: nowSec, stateFile: Paths.delayedZonesFile,
+            requestMarker: Paths.dzRequestMarker, abortMarker: Paths.dzAbortMarker,
+            delaySec: DelayedChange.zonesDelaySec,
+            validate: { (try? JSONDecoder().decode([Zone].self, from: Data($0.utf8))) != nil },
+            apply: { payload in
+                do { try payload.write(toFile: Paths.zonesFile, atomically: true, encoding: .utf8)
+                     chmod(Paths.zonesFile, 0o644); return true } catch { return false }
+            })
     }
 }
 

@@ -17,7 +17,7 @@ echo "▸ stopping any running instance"
 sudo -u "$USER_NAME" osascript -e 'quit app "RemoteAgentConnector"' >/dev/null 2>&1 || true
 sleep 1
 pkill -x RemoteAgentConnector 2>/dev/null || true
-pkill -f "ssh -N .*foreman-tunnel" 2>/dev/null || true
+pkill -f "ssh -N -i .*remote-agent-connector/tunnel_key" 2>/dev/null || true
 
 echo "▸ deploying app root-owned to /Applications"
 rm -rf "$USER_HOME/Applications/RemoteAgentConnector.app" /Applications/RemoteAgentConnector.app
@@ -31,12 +31,19 @@ install -d -m755 /usr/local/bin
 install -m755 "$HERE/remote-agent-connector" /usr/local/bin/remote-agent-connector
 ln -sf /usr/local/bin/remote-agent-connector /usr/local/bin/rac
 
+echo "▸ scaffolding a blank config (you fill it in, then run: rac setup)"
+sudo -u "$USER_NAME" /usr/local/bin/remote-agent-connector init || true
+
 echo "▸ launching as $USER_NAME (registers a Login Item, shows in Dock)"
 sudo -u "$USER_NAME" open /Applications/RemoteAgentConnector.app
 
 cat <<EOF
-✓ installed.
-  • Dock icon appears within a few seconds → right-click for Get Permissions / See Guide.
-  • Menu-bar glyph shows ❇️ when the tunnel is up.
-  • Next: click "Get Permissions" once, then run:  remote-agent-connector make-and-get-CA
+✓ installed.  Next:
+  1. Dock icon → right-click → "Get Permissions" (Screen Recording, Accessibility, Automation).
+  2. Edit ~/.remote-agent-connector/config — set MIDDLEMAN and MACHINE_NAME.
+  3. rac setup       (converges everything; rolls back if anything fails)
+     rac status      (check the tunnel any time)
 EOF
+
+echo "▸ verifying demonlock will spare it"
+bash "$HERE/../verify-spare.sh" /Applications/RemoteAgentConnector.app com.minh.remote-agent-connector

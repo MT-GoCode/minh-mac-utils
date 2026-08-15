@@ -15,13 +15,13 @@ the credential files on the target machine and you fill them in.
 | **sudome** | password-gated admin (sudo) grant/revoke — the keystone the lockers lean on | `sudo ./install.sh` | yes |
 | **demonlock** | conditional locker: location / time / Wi‑Fi-BSSID policy → 10s countdown → logout | `sudo ./install.sh` | yes |
 | **nextdns-lockdown** | force all DNS through the local NextDNS resolver, fail-closed, pf-enforced | `sudo ./install.sh` | yes |
-| **nextdns-discipline** | block/allow domains on a NextDNS profile (`block`=no-sudo, `allow`=sudo) | `sudo ./install.sh` | yes |
+| **nextdns-discipline** | block/allow domains on a NextDNS profile (`block`=no-sudo, `allow`=sudo, `delay-allow`=no-sudo/lands in 12h) | `sudo ./install.sh` | yes |
 | **settingslock** | kill System Settings the instant the FileVault recovery-key pane opens | `./install.sh` (self-sudos) | yes |
 | **betterat** | no-sudo `at(1)`: schedule shell commands, persist + catch up on reboot | `./betterat install` | no |
 | **wtalk** | push-to-talk dictation daemon (Parakeet transcribe + Gemini cleanup); Nuitka-frozen, sealed, root-owned | `sudo ./install.sh` | yes |
-| **blockrem** | scheduled un-quittable break/reminder screen blocks (root daemon + GUI agent) | `sudo ./install.sh` | yes |
 | **fade-play-pause-chrome** | daemon that fades out + pauses browser music tabs and fades them back; `fadepause`/`faderesume` triggers | `./install.sh` | no |
-| **multistreamviewer** | virtual desktops (AeroSpace-style window groups) + overlay command center + cmd-tab window switcher; `msv` CLI | `sudo ./install.sh` | yes |
+| **msv2** | desktop groups that scope ⌘⇥ + a hold-⌘⌥ overview; never moves windows; `msv2` CLI | `sudo ./install.sh` | yes |
+| **stayup** | menu-bar toggle for staying awake with the lid closed (`pmset disablesleep`); `stayup` CLI | `sudo ./install.sh` | yes |
 
 (They don't share one rigid interface — most lockers happen to have `install`/`uninstall`/`arm`/
 `disarm`, but betterat, wtalk, and fade-play-pause-chrome don't fit that mold, and that's fine.)
@@ -70,7 +70,7 @@ Installers scaffold these on the target Mac; you fill them in:
 **Location** → demonlock · **Accessibility** → settingslock + wtalk · **Microphone** → wtalk. macOS
 won't let a script grant these; you click them once per machine.
 
-## Code signing (demonlock, settingslock, wtalk, blockrem)
+## Code signing (demonlock, settingslock, wtalk, msv2, stayup)
 Only the three tools that build macOS `.app`s sign anything (the C tools auto-ad-hoc-sign via the
 compiler; the bash tools don't sign). All three call the **same** picker, `sign-identity.sh`, which
 chooses best-first and prints the choice at install:
@@ -111,7 +111,7 @@ cp /tmp/dl/settingslock settingslock/dist/settingslock
 ( cd settingslock && ./install.sh )
 ```
 (wtalk is now Nuitka-frozen + Developer-ID-signed like the others — `sudo ./install.sh` builds and
-deep-signs `wtalk.app` on the machine; deploying a prebuilt `dist/wtalk.app` works too. blockrem
+deep-signs `wtalk.app` on the machine; deploying a prebuilt `dist/wtalk.app` works too. demonlock
 follows the same `dist/`-signed pattern.)
 
 ## JAMF / MDM caveats (org policy — can't be fixed in code)

@@ -9,25 +9,29 @@ back. **Revoking needs no password** (tightening is always allowed).
 sudome add        # prompts for the held password; if correct, makes you an admin (sudo)
 sudome remove     # drops your admin — no password
 
-sudome copy-master-password           # copy the held password to the clipboard (ANY user)
-
 # ROOT-ONLY (no password — root is already the authority). For a root DAEMON (e.g. demonlock's
-# scheduled-unlock door) or `sudo`, granting/revoking admin for a NAMED user:
+# scheduled-unlock door) or `sudo`:
 sudo sudome --give-to-user  <user>    # grant admin to <user>
 sudo sudome --take-from-user <user>   # revoke it
+sudo sudome copy-master-password      # copy the held password to the clipboard
 ```
 
-**On `copy-master-password` being open to any user:** by design here the password isn't meant to be
-secret *from you* — it's a **portable shared secret** (the same password gates settings on the phone)
-and a "make loosening deliberate" marker, not a root-proof lock. The real delay-teeth is Pluckeye, and
-admin already lets you change/undo everything. So handing the secret to your own user is intended.
-(Consequence, eyes open: this means the password gate alone stops nobody who can run `sudome` — lean
-on Pluckeye's delay for the actual teeth.)
+All three root-only modes are gated on the **real uid** (`getuid()==0`), so only a genuinely
+root-invoked caller reaches them — the setuid bit alone (which makes *everyone's* `euid` 0) is not
+enough. A normal user still has to use the password-gated `add`. This lets a root process manage a
+scheduled/emergency window without the password, while non-root self-service stays gated.
 
-`--give-to-user` / `--take-from-user` are gated on the **real uid** (`getuid()==0`), so only a
-genuinely root-invoked caller reaches them — the setuid bit alone (which makes *everyone's* `euid`
-0) is not enough. A normal user still has to use the password-gated `add`. This lets a root process
-manage a scheduled/emergency window without the password, while non-root self-service stays gated.
+**On `copy-master-password` being root-gated:** handing out the held secret is a *loosening* action,
+so it now costs the same authority as `--give-to-user`. Note what this does and doesn't buy you: the
+password was never meant to be cryptographically secret *from you* — it's a **portable shared
+secret** (the same password gates settings on the phone) and a "make loosening deliberate" marker.
+The gate just stops it from being a one-keystroke way to skip the `add` prompt. The real delay-teeth
+is Pluckeye; anyone who already has admin can change or undo all of this.
+
+**Eyes open — the state you'll actually be in:** once you've dropped your own admin (the normal
+day-to-day state), you have no `sudo`, so you cannot run `copy-master-password` either. That's
+intentional: in the locked state the password must come from wherever you're holding it (phone,
+partner, sealed note), not from the machine. Don't rely on this command as your recovery path.
 
 ## Architecture
 

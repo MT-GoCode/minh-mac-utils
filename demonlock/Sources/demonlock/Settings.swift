@@ -49,8 +49,8 @@ struct Settings: Codable {
          enforcedUser: String = "", wifiKeepOn: Bool = true, wifiDevice: String = "en0",
          spareApps: [String: String] = [
             // Our own (team BULCQM9J2V) apps are only safe here because spareVerified additionally
-            // requires a ROOT-OWNED bundle for self-team apps — demonlock, wtalk, blockrem,
-            // foreman-uplink, and multistreamviewer all install to /Applications root:wheel, so you
+            // requires a ROOT-OWNED bundle for self-team apps — demonlock, wtalk,
+            // remote-agent-connector, msv2 and stayup all install to /Applications root:wheel, so you
             // can't swap them for a browser without sudo, and a sibling app you re-sign with your own
             // Team ID (in ~/Applications) fails the owner check. wtalk is additionally a FROZEN binary
             // (PyInstaller bootloader, not a `python` CLI) so it can't be redirected to run arbitrary
@@ -59,9 +59,17 @@ struct Settings: Codable {
             // entries below need no owner check — you can't re-sign as their teams.
             "com.demonlock":                        "BULCQM9J2V",   // the enforcer itself (root-owned install)
             "com.wtalk.daemon":                     "BULCQM9J2V",   // wtalk dictation (frozen, root-owned install)
-            "com.blockrem":                         "BULCQM9J2V",   // blockrem break-blocker (root-owned install)
             "com.minh.remote-agent-connector":      "BULCQM9J2V",   // Remote Agent Connector (foreman-uplink successor; .regular dock app, root-owned install)
-            "com.minh.multistreamviewer":           "BULCQM9J2V",   // MultiStreamViewer
+            "com.minh.msv2":                        "BULCQM9J2V",   // msv2 desktop-group ⌘⇥ switcher (root-owned install)
+            "com.minh.stayup":                      "BULCQM9J2V",   // stayup lid-closed-awake toggle (root-owned install)
+            // Paseo: SERVICE ONLY, deliberately. The desktop UI (sh.paseo.desktop, .regular)
+            // is NOT listed — it dies with everything else on lockout, which is the point.
+            // The helper bundle is .accessory (LSUIElement), and the launchd job
+            // sh.paseo.daemon runs one as the headless daemon; without this entry it gets
+            // killed and KeepAlive restart-loops it against the next tick, so remote
+            // clients lose the agent host. Sparing the helper does NOT keep the UI alive:
+            // the UI's own helper children exit when their parent main process is killed.
+            "sh.paseo.desktop.helper":              "99ZMJMKU9Y",   // headless daemon only
             "com.lwouis.alt-tab-macos":             "QXD7GW8FHY",   // AltTab
             "com.raycast.macos":                    "SY64MV22J9",   // Raycast (menubar launcher)
             "cc.ffitch.shottr":                     "2Y683PRQWN",   // Shottr (screenshot tool)
@@ -97,7 +105,20 @@ struct Settings: Codable {
         enforcedUser         = (try? c.decode(String.self, forKey: .enforcedUser)) ?? d.enforcedUser
         wifiKeepOn           = (try? c.decode(Bool.self,   forKey: .wifiKeepOn)) ?? d.wifiKeepOn
         wifiDevice           = (try? c.decode(String.self, forKey: .wifiDevice)) ?? d.wifiDevice
-        spareApps            = (try? c.decode([String: String].self, forKey: .spareApps)) ?? d.spareApps
+        // spareApps MERGES over the compiled defaults instead of replacing them. A
+        // hand-edit (or an installer patching in one app) previously had to restate the
+        // ENTIRE list or it silently un-spared everything it omitted — a footgun that
+        // only shows up during a lockout. Now settings.json is additive:
+        //   "com.foo": "TEAMID"   → add, or re-pin an existing entry to another team
+        //   "com.foo": ""         → drop a compiled default
+        // Reloaded every feed, so edits take effect within a tick — no reinstall.
+        var merged = d.spareApps
+        if let override = try? c.decode([String: String].self, forKey: .spareApps) {
+            for (bid, team) in override {
+                if team.isEmpty { merged.removeValue(forKey: bid) } else { merged[bid] = team }
+            }
+        }
+        spareApps = merged
     }
 
     static func load() -> Settings {

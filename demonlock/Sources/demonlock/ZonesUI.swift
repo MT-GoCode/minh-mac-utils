@@ -182,10 +182,41 @@ final class ZonesController: NSObject, NSApplicationDelegate, MKMapViewDelegate,
             return
         }
         current.append(newZone)
-        if saveWithAdmin(current) {
-            nameField.stringValue = ""; cancelDraw(); reload(); instr.stringValue = "✓ added \"\(name)\""
-        } else {
-            instr.stringValue = "Add cancelled — needs admin."
+        switch askSaveMode(name) {
+        case .immediate:
+            if saveWithAdmin(current) {
+                nameField.stringValue = ""; cancelDraw(); reload(); instr.stringValue = "✓ added \"\(name)\""
+            } else {
+                instr.stringValue = "Add cancelled — needs admin."
+            }
+        case .delayed:
+            if saveWithDelay(current) {
+                nameField.stringValue = ""; cancelDraw()
+                instr.stringValue = "⏳ queued \"\(name)\" — lands in 36h (no admin). `demonlock status` to watch · `demonlock delayzones --abort` to cancel."
+            } else {
+                instr.stringValue = "Couldn't queue the change (is demonlock installed?)."
+            }
+        case .cancel:
+            instr.stringValue = "Save cancelled."
+        }
+    }
+
+    private enum SaveMode { case immediate, delayed, cancel }
+
+    /// Adding a zone LOOSENS the policy, so it's gated: do it NOW with admin, or queue it for 36h
+    /// (no admin — the daemon installs it after the delay, the same commitment-device idea as the
+    /// release valve / `delaysetpolicy`).
+    private func askSaveMode(_ name: String) -> SaveMode {
+        let a = NSAlert()
+        a.messageText = "Add zone “\(name)”?"
+        a.informativeText = "Adding a zone loosens the policy.\n\n• Save now — needs admin (you'll be asked to authenticate).\n• Save in 36h — no admin; the change lands automatically after 36 hours."
+        a.addButton(withTitle: "Save now (admin)")
+        a.addButton(withTitle: "Save in 36h")
+        a.addButton(withTitle: "Cancel")
+        switch a.runModal() {
+        case .alertFirstButtonReturn:  return .immediate
+        case .alertSecondButtonReturn: return .delayed
+        default:                       return .cancel
         }
     }
 
@@ -208,6 +239,15 @@ final class ZonesController: NSObject, NSApplicationDelegate, MKMapViewDelegate,
         let script = "do shell script \"mkdir -p '\(Paths.supportDir)' && cp '\(tmp)' '\(Paths.zonesFile)' && chown root:wheel '\(Paths.zonesFile)' && chmod 644 '\(Paths.zonesFile)'\" with administrator privileges"
         let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript"); p.arguments = ["-e", script]
         do { try p.run(); p.waitUntilExit(); return p.terminationStatus == 0 } catch { return false }
+    }
+
+    /// Queue the new zones set as a DELAYED change (no admin): write the full zones.json to the
+    /// user-owned inbox marker; the daemon validates + installs it after 36h. Same encoding as
+    /// `saveWithAdmin` so what lands is byte-identical to an immediate save.
+    private func saveWithDelay(_ zs: [Zone]) -> Bool {
+        let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? enc.encode(zs), let json = String(data: data, encoding: .utf8) else { return false }
+        return (try? json.write(toFile: Paths.dzRequestMarker, atomically: true, encoding: .utf8)) != nil
     }
 
     /// Deleting tightens the policy → safe; passwordless via the `_zonedel` sudoers grant.

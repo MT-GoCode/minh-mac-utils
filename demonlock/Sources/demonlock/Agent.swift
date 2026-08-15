@@ -19,6 +19,10 @@ final class AgentApp: NSObject, NSApplicationDelegate {
     private var permButton: NSButton!
     private var lastPhase = ""
     private var lastRVPhase = ""
+    private var dpApplied: [String: Double] = [:]   // kind → last-seen lastAppliedEpoch (drives apply alerts)
+    private var dpSeeded = false                     // skip alerts on the first refresh (seed the baseline)
+    private var dsnApplied: Double = 0               // last-seen midnight-snooze lastAppliedEpoch
+    private var dsnSeeded = false
 
     func applicationDidFinishLaunching(_ note: Notification) {
         activity = ProcessInfo.processInfo.beginActivity(
@@ -60,6 +64,46 @@ final class AgentApp: NSObject, NSApplicationDelegate {
         } else if phase != "granted" && lastRVPhase == "granted" {
             notify("Release valve closed", "Admin access has been revoked.")
         }
+    }
+
+    /// Alert (dialog — breaks Focus/DnD, like the release valve) when a queued delayed change lands.
+    /// Keyed on the persisted `lastAppliedEpoch`, so a daemon restart or the agent's faster poll can't
+    /// double-fire; the first refresh only seeds the baseline.
+    private func handleDelayedApplied(_ items: [(String, DelayedStatus?)]) {
+        for (label, d) in items {
+            let ep = d?.lastAppliedEpoch ?? 0
+            if dpSeeded, ep > (dpApplied[label] ?? 0) {
+                notify("Delayed \(label) applied", "Your queued \(label) change is now live.")
+            }
+            dpApplied[label] = ep
+        }
+        dpSeeded = true
+    }
+
+    /// A queued delayed change's panel section (only shown while one is pending).
+    private func delayedText(_ label: String, _ d: DelayedStatus?) -> String {
+        guard let d, d.pending else { return "" }
+        let left = d.applyAtEpoch.map { max(0, Int($0 - nowEpoch())) } ?? 0
+        var out = "\n\nDELAYED \(label.uppercased())\nQUEUED — lands in \(left/3600)h\(left%3600/60)m"
+        if let p = d.payloadPreview { out += "\n  \(p)" }
+        return out
+    }
+
+    /// Alert when a pending midnight-snooze request kicks in (its snooze lands). Same seed-first,
+    /// epoch-keyed logic as `handleDelayedApplied`.
+    private func handleMidnightSnooze(_ s: DelayedSnoozeStatus?) {
+        let ep = s?.lastAppliedEpoch ?? 0
+        if dsnSeeded, ep > dsnApplied {
+            notify("Midnight snooze active", "Demonlock is standing down until 12:05 AM, then re-arms.")
+        }
+        dsnApplied = ep; dsnSeeded = true
+    }
+
+    /// Panel section for a pending midnight-snooze request.
+    private func midnightSnoozeText(_ s: DelayedSnoozeStatus?) -> String {
+        guard let s, s.pending, let a = s.applyAtEpoch else { return "" }
+        let left = max(0, Int(a - nowEpoch()))
+        return "\n\nMIDNIGHT SNOOZE\nrequested — stands down until 12:05 AM in \(left/3600)h\(left%3600/60)m"
     }
 
     /// The RELEASE VALVE section shown in the panel (phase + delay/duration + the window-policy tree).
@@ -190,7 +234,11 @@ final class AgentApp: NSObject, NSApplicationDelegate {
         let policy = "POLICY\n" + (s.tree?.asText() ?? "(no policy / no evaluation)")
         let locMap = s.health.locationTrail.isEmpty ? "" : "\n\nLOCATION\n" + s.health.locationTrail.joined(separator: "\n")
         treeView.string = policy + locMap + releaseValveText(s.releaseValve)
+            + delayedText("policy", s.delayedPolicy) + delayedText("zones", s.delayedZones)
+            + midnightSnoozeText(s.delayedSnooze)
         handleReleaseValve(s.releaseValve)
+        handleDelayedApplied([("policy", s.delayedPolicy), ("zones", s.delayedZones)])
+        handleMidnightSnooze(s.delayedSnooze)
         let h = s.health
         healthLabel.stringValue = s.sshAddr ?? ""          // SSH-in hint (sshd/tmux survive a lockout → disarm)
         permButton.isHidden = !h.needsPermAsk

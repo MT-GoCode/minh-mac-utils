@@ -46,6 +46,9 @@ struct StateSnapshot: Codable {
     var sshAddr: String?         // "minh@192.168.1.42 · mac.local" — shown so you can SSH in to disarm
     var health: Health
     var releaseValve: RVStatus?  // the delay-gated admin-grant valve (nil ⇒ never configured)
+    var delayedPolicy: DelayedStatus? = nil   // a queued `delaysetpolicy` change (nil ⇒ none ever queued)
+    var delayedZones: DelayedStatus? = nil    // a queued zones-map change (nil ⇒ none ever queued)
+    var delayedSnooze: DelayedSnoozeStatus? = nil   // a pending `igotshitdueatmidnight` request
 }
 
 // MARK: - Feed payload (agent → root over the trusted socket)

@@ -173,7 +173,10 @@ Wi‑Fi check pins BSSIDs.
 ## Commands & settings
 
 User (no sudo): `status` · `zones` (`view-zones`/`edit-zones` alias it) · `scan` · `perm-ask` ·
-`help`. Sudo: `setpolicy` · `arm` · `disarm` · `snoozetonight` (stands down until the next
+`release-valve --request` · `delaysetpolicy "<expr>"` (queue a policy; lands in 36h — `--status`/
+`--abort`) · `delayzones --status`/`--abort` (view/cancel a zones change queued from the map) ·
+`igotshitdueatmidnight` (in 1.5h, stand down until 12:05 AM tonight, then re-arm — `--status`/
+`--abort`) · `help`. Sudo: `setpolicy` · `arm` · `disarm` · `snoozetonight` (stands down until the next
 `snoozeHHMM`, default 05:00, then auto-clears; `arm` clears an active snooze) · `snooze "<spec>"`
 (flexible stand-down: `"for <duration>"` in d/h/m/s, or `"until <[day]HHMM>"`, e.g. `snooze "for 90m"`
 / `snooze "until 0730"`; **capped at 18 hours**). `snooze` **implies armed and RE-ARMS automatically**
@@ -279,6 +282,49 @@ demonlock release-valve abort         # cancel a pending request / close a live 
   keep `IN_POLICY` in your window policy if you don't want to be locked out during the grant.
 - **Notifications** fire on grant and revoke (approve the notification prompt on first agent launch);
   `demonlock status` and the panel show the phase, delay/duration remaining, and the window-eval tree.
+
+## Delayed changes (`delaysetpolicy` + the map's "Save in 36h")
+
+Where the release valve hands back **admin on a delay**, delayed changes hand back the **policy and
+zones themselves on a delay** — no sudo, no admin, ever. The gate is purely the **36h wait**: queue a
+loosening now, and only calm-you-a-day-and-a-half-later actually gets it. Same trust split as the
+valve (root-owned pending state; a user-owned inbox marker; the **daemon stamps the request time**, so
+the delay can't be backdated), and the change is **re-validated at apply time** (a zone it referenced
+could be gone) — fail-closed if it no longer parses.
+
+```bash
+demonlock delaysetpolicy '(LOCATED_IN_ANY(["office"])) AND TIME_IS_ANY([MTWRF0700-2000])'
+                                  # queue a NEW allow-policy; lands in 36h (no sudo now OR then)
+demonlock delaysetpolicy --status # what's queued + when it lands
+demonlock delaysetpolicy --abort  # cancel it
+```
+
+Zones ride the **same engine**: in the map (`demonlock zones`), adding a zone loosens the policy, so
+on save you're asked **"Save now (admin)"** vs **"Save in 36h"**. *Now* is the existing admin-prompt
+path (unchanged); *36h* queues the full new `zones.json` and the daemon installs it after the wait.
+View/cancel a queued zones change with `demonlock delayzones --status` / `--abort`.
+
+- **Applies regardless of arm / snooze / who's logged in** — it's a scheduled config change, run at
+  the very top of the enforcer tick (before any early return), so this tick's own evaluation already
+  sees the freshly-written `policy.txt` / `zones.json`.
+- **Re-queueing resets the 36h** (stricter, never shorter). An **alert dialog** (breaks Focus/DnD,
+  like the valve) fires when a change lands; `demonlock status` and the panel show what's pending.
+- Immediate `sudo demonlock setpolicy` and admin zone-saves are untouched — this only *adds* a
+  no-sudo, delayed path alongside them.
+
+### `igotshitdueatmidnight` — a delayed snooze until 12:05 AM
+
+A no-sudo snooze on the same delay model: `demonlock igotshitdueatmidnight` requests it, and **1.5h
+later** the daemon stands enforcement down until **12:05 AM tonight**, then re-arms (like
+`snoozetonight`, just delayed + no sudo). The 1.5h wait is the whole friction — you eat the lockout
+until it's up (ask at 8:30 PM, get locked out at 9:00, relief lands at 10:00), and it kicks in **even
+mid-lockout** (the snooze is written at the top of the tick, so that same tick clears the countdown).
+
+- The **12:05 AM target is frozen at request time**, so asking within 1.5h of midnight fails **closed**
+  — by apply time the target has passed and you get *no* snooze, rather than rolling to the next
+  midnight and handing out a ~24h stand-down (the CLI warns you when you're inside that window).
+- `--status` / `--abort` (before it kicks in; once the snooze is live, cancel it with
+  `sudo demonlock arm`). Shows in `demonlock status` + the panel; an alert fires when it activates.
 
 ## Code signing
 

@@ -35,6 +35,18 @@ echo ">> binaries"
 install -o root -g wheel -m 0755 "$SRC/bin/nextdns-lockdown"  "$BIN/nextdns-lockdown"
 install -o root -g wheel -m 0700 "$SRC/bin/nextdns-lockdownd" "$BIN/nextdns-lockdownd"
 
+# Passwordless grant for `arm` ONLY — arming TIGHTENS enforcement (safe without admin; survives you
+# dropping admin). disarm loosens and is deliberately NOT granted, so it stays admin-gated.
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+    echo ">> passwordless grant: $SUDO_USER may 'nextdns-lockdown arm' without admin"
+    SUDOERS=/etc/sudoers.d/nextdns-lockdown
+    printf '%s ALL=(root) NOPASSWD: /usr/local/bin/nextdns-lockdown arm\n' "$SUDO_USER" > "$SUDOERS"
+    chown root:wheel "$SUDOERS"; chmod 440 "$SUDOERS"
+    visudo -cf "$SUDOERS" >/dev/null 2>&1 || { echo "   ⚠️  sudoers entry invalid — removing"; rm -f "$SUDOERS"; }
+else
+    echo ">> (no SUDO_USER — skipping the passwordless 'arm' grant; run \`sudo nextdns-lockdown arm\` manually)"
+fi
+
 echo ">> validating pf ruleset (parse only, no load)"
 if ! pfctl -n -f "$ETC/nextdns-lockdown.conf"; then
     echo "!! ruleset failed validation — aborting, nothing was enabled." >&2

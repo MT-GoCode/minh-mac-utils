@@ -26,6 +26,21 @@ enum Paths {
     static let rvRequestMarker = rvInboxDir + "/request"
     static let rvAbortMarker   = rvInboxDir + "/abort"
 
+    // Delayed changes: a non-sudo user queues a new policy / zones set that lands after a fixed delay.
+    // Root-owned pending state; the request/abort markers live in the same user-owned inbox as the
+    // release valve (the request marker's CONTENTS are the payload; the daemon stamps the real time).
+    static let delayedPolicyFile   = supportDir + "/delayed-policy.json"     // {pending, lastAppliedAt}
+    static let dspRequestMarker    = rvInboxDir + "/delaysetpolicy"          // CONTENTS = the new policy text
+    static let dspAbortMarker      = rvInboxDir + "/delaysetpolicy-abort"
+    static let delayedZonesFile    = supportDir + "/delayed-zones.json"      // {pending, lastAppliedAt}
+    static let dzRequestMarker     = rvInboxDir + "/delayzones"              // CONTENTS = the new zones.json
+    static let dzAbortMarker       = rvInboxDir + "/delayzones-abort"
+
+    // "I got shit due at midnight": a no-sudo request that, after 1.5h, snoozes until 12:05 AM tonight.
+    static let delayedSnoozeFile   = supportDir + "/delayed-snooze.json"     // {requestedAt, applyAt, lastAppliedAt}
+    static let dsnRequestMarker    = rvInboxDir + "/igotshitdueatmidnight"
+    static let dsnAbortMarker      = rvInboxDir + "/igotshitdueatmidnight-abort"
+
     static let socketPath      = "/var/run/demonlock.sock"
 
     static let appPath         = "/Applications/Demonlock.app"
