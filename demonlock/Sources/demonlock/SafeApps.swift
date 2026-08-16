@@ -141,13 +141,14 @@ enum SafeApps {
             }
         }
 
-        // Apply any pending registration that's due.
-        var applied = false
+        // Apply any pending registration that's due. Save on ANY removal (applied OR rejected-at-landing),
+        // so a due-but-invalid entry is dropped rather than re-firing every tick forever (matches siblings).
+        var changed = false
         for (name, p) in reg.pending where now >= p.applyAt {
-            if rejectReason(p.app, settings: Settings.load()) == nil { applyAdd(p.app); applied = true }
-            reg.pending.removeValue(forKey: name)
+            if rejectReason(p.app, settings: Settings.load()) == nil { applyAdd(p.app) }
+            reg.pending.removeValue(forKey: name); changed = true
         }
-        if applied { reg.save() }
+        if changed { reg.save() }
 
         return Status(pending: reg.pending.values
             .sorted { $0.app.name < $1.app.name }
@@ -161,6 +162,16 @@ enum SafeApps {
             s.safeAppsUser.append(app)
             s.safeAppsRemoved.removeAll { $0 == app.bid }
         }
+    }
+
+    /// Drop any queued delayed registration for this bid — so an IMMEDIATE register isn't silently
+    /// reverted when a stale delayed entry for the same app lands later. Immediate CLI path only (the
+    /// tick removes entries as it applies them, so it must not double-touch the registry here).
+    static func clearPending(bid: String) {
+        var reg = Registry.load()
+        let before = reg.pending.count
+        reg.pending = reg.pending.filter { $0.value.app.bid != bid }
+        if reg.pending.count != before { reg.save() }
     }
 
     /// Remove by NAME: drop a user entry, or tombstone a compiled default (never com.demonlock).

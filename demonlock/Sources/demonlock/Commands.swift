@@ -407,6 +407,7 @@ private func snoozePresetAdd(_ args: [String], immediate: Bool) {
     if immediate {
         requireRoot("snooze-preset add")
         SnoozePresets.applyAdd(p)
+        SnoozePresets.clearPendingAdd(name: name)   // an immediate add cancels any pending delayed one
         print("✓ added preset '\(name)' (\(dur), invoke-delay \(TimeSpec.fmtLeft(invokeDelay))).")
     } else {
         guard let data = try? JSONEncoder().encode(p), let json = String(data: data, encoding: .utf8) else { fail("✗ couldn't encode the preset") }
@@ -513,6 +514,7 @@ private func safeAppsRegister(_ args: [String], immediate: Bool) {
     if immediate {
         requireRoot("safe-apps register")
         SafeApps.applyAdd(app)
+        SafeApps.clearPending(bid: bid)   // an immediate register cancels any pending delayed one for this bid
         print("✓ registered '\(name)' (\(bid)) — spared now. Regime \(app.rootOwned ? "A (root-owned; team not checked)" : "B (Developer-ID \(tid))").")
     } else {
         guard let data = try? JSONEncoder().encode(app), let json = String(data: data, encoding: .utf8) else { fail("✗ couldn't encode the entry") }

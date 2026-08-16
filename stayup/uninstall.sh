@@ -26,11 +26,13 @@ import json, sys
 path = sys.argv[1]
 try: d = json.load(open(path))
 except Exception: sys.exit(0)
-sp = d.get("spareApps")
-if isinstance(sp, dict) and sp.pop("com.minh.stayup", None) is not None:
-    d["spareApps"] = sp
-    json.dump(d, open(path, "w"), indent=2)
-    print("  removed com.minh.stayup from spare list")
+lst = d.get("safeAppsUser")
+if isinstance(lst, list):
+    new = [a for a in lst if a.get("bid") != "com.minh.stayup"]
+    if len(new) != len(lst):
+        d["safeAppsUser"] = new
+        json.dump(d, open(path, "w"), indent=2, sort_keys=True)
+        print("  removed com.minh.stayup from spare list")
 PY
 fi
 

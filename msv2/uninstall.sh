@@ -12,7 +12,7 @@ pkill -x msv2 2>/dev/null && sleep 1 || true
 
 echo "▸ removing bundle + CLI symlink"
 rm -rf /Applications/msv2.app "$USER_HOME/Applications/msv2.app"
-rm -f "$USER_HOME/.local/bin/msv2"
+rm -f /usr/local/bin/msv2
 
 echo "▸ clearing permissions + preferences"
 tccutil reset Accessibility com.minh.msv2 2>/dev/null || true
@@ -29,11 +29,13 @@ try:
     d = json.load(open(path))
 except Exception:
     sys.exit(0)
-sp = d.get("spareApps")
-if isinstance(sp, dict) and sp.pop("com.minh.msv2", None) is not None:
-    d["spareApps"] = sp
-    json.dump(d, open(path, "w"), indent=2)
-    print("  removed com.minh.msv2 from spare list")
+lst = d.get("safeAppsUser")
+if isinstance(lst, list):
+    new = [a for a in lst if a.get("bid") != "com.minh.msv2"]
+    if len(new) != len(lst):
+        d["safeAppsUser"] = new
+        json.dump(d, open(path, "w"), indent=2, sort_keys=True)
+        print("  removed com.minh.msv2 from spare list")
 PY
 fi
 

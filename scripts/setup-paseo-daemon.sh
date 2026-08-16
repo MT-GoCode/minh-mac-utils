@@ -89,8 +89,8 @@ cat > "$LA/sh.paseo.refresh.plist" <<EOF
 EOF
 
 for label in sh.paseo.daemon sh.paseo.refresh; do
-  launchctl bootout "gui/$U/$label" 2>/dev/null || true
-  launchctl bootstrap "gui/$U" "$LA/$label.plist"
+  launchctl bootout "gui/$U/$label" 2>/dev/null || true; sleep 1
+  launchctl bootstrap "gui/$U" "$LA/$label.plist" 2>/dev/null || launchctl kickstart -k "gui/$U/$label" 2>/dev/null || true
 done
 
 echo "==> waiting for daemon"

@@ -53,6 +53,9 @@ enum Lockbox {
                let e = try? JSONDecoder().decode(LockboxEntry.self, from: data), rejectReason(e.name, delaySec: e.delaySec) == nil {
                 entries.removeAll { $0.name == e.name }
                 entries.append(e); LockboxStore.save(entries)
+                // Re-adding a secret resets any in-flight/open unlock for that name — else the NEW secret
+                // inherits the OLD one's unlock window and is instantly copyable.
+                st.pending.removeValue(forKey: e.name); st.unlockedUntil.removeValue(forKey: e.name); st.save()
             }
             // unlock (no sudo): start the per-entry delay if the entry exists and isn't already unlocked.
             if let data = MarkerIO.consume(Paths.lbUnlockMarker, enforcedUID: euid) {

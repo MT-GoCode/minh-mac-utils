@@ -139,6 +139,13 @@ enum SnoozePresets {
         }
     }
 
+    /// Drop a queued delayed-add for this name, so an IMMEDIATE add isn't reverted when it later lands.
+    /// Immediate CLI path only (the tick removes entries as it applies them).
+    static func clearPendingAdd(name: String) {
+        var st = SPState.load()
+        if st.adds.removeValue(forKey: name) != nil { st.save() }
+    }
+
     static func applyRemove(name: String) {
         Settings.mutate { s in
             if s.snoozePresetsUser.contains(where: { $0.name == name }) {

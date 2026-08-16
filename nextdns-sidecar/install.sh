@@ -115,8 +115,8 @@ echo "   ruleset OK"
 # --- launchd daemon (does pf enforcement + delayed applies + markers) ----
 echo ">> launchd daemon"
 install -o root -g wheel -m 644 "$SRC/launchd/${LABEL}.plist" "$PLIST"
-launchctl bootout system/"$LABEL" 2>/dev/null || true
-launchctl bootstrap system "$PLIST"
+launchctl bootout system/"$LABEL" 2>/dev/null || true; sleep 1
+launchctl bootstrap system "$PLIST" 2>/dev/null || launchctl kickstart -k system/"$LABEL" 2>/dev/null || true
 
 # --- profiles: build the hardened resolver + provide no-browser-doh ------------
 # macOS can't install a hand-authored profile silently — you approve them in System Settings, and
