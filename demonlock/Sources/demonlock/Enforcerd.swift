@@ -28,6 +28,7 @@ final class Enforcer {
     private var dsnStatus: DelayedSnoozeStatus?  // last-computed midnight-snooze request status
     private var safeAppsStatus: SafeApps.Status? // last-computed safe-apps pending registrations
     private var snoozePresetsStatus: SnoozePresets.Status?  // in-flight invocation + pending adds
+    private var lockboxStatus: Lockbox.Status?   // password-lockbox lock state
 
     // The one location truth (persisted root-owned; survives restarts — login "just works").
     private var held: HeldFix? = HeldFixStore.read()
@@ -75,6 +76,7 @@ final class Enforcer {
                                        delaySec: Bounds.clamp(settings.safeAppsDelaySec, Bounds.safeAppsDelay))
         snoozePresetsStatus = SnoozePresets.tick(now: now.timeIntervalSince1970, enforcedUID: euid,
                                                  addDelaySec: Bounds.clamp(settings.snoozePresetAddDelaySec, Bounds.snoozePresetAddDelay))
+        lockboxStatus = Lockbox.tick(now: now.timeIntervalSince1970, enforcedUID: euid)
         // Midnight-snooze request: same top-of-tick placement so an applied snooze is picked up by the
         // snooze check below THIS tick (stands the user down / clears the countdown immediately).
         dsnStatus = DelayedSnooze.tick(now: now.timeIntervalSince1970)
@@ -409,7 +411,8 @@ final class Enforcer {
             delayedZones: dpZonesStatus,
             delayedSnooze: dsnStatus,
             safeApps: safeAppsStatus,
-            snoozePresets: snoozePresetsStatus))
+            snoozePresets: snoozePresetsStatus,
+            lockbox: lockboxStatus))
     }
 
     /// Resolve a uid to its login name (for `sudome --give/--take-from-user`). nil if unknown.

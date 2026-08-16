@@ -51,6 +51,7 @@ struct StateSnapshot: Codable {
     var delayedSnooze: DelayedSnoozeStatus? = nil   // a pending `igotshitdueatmidnight` request
     var safeApps: SafeApps.Status? = nil            // pending delayed safe-app registrations
     var snoozePresets: SnoozePresets.Status? = nil  // in-flight invocation + pending delayed-adds
+    var lockbox: Lockbox.Status? = nil              // password-lockbox lock state (names only, no secrets)
 }
 
 // MARK: - Feed payload (agent → root over the trusted socket)

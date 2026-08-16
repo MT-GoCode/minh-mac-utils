@@ -57,6 +57,16 @@ enum Paths {
     static let spAddAbort      = rvInboxDir + "/snoozepreset-add-abort"     // contents = name or "--all"
     static let spRemoveMarker  = rvInboxDir + "/snoozepreset-remove"        // contents = name (immediate)
 
+    // password-lockbox: secrets live in a SEPARATE 0600 root-only file (never settings.json, which is
+    // 644). Lock state is published for `show` (names + lock state only, never secrets).
+    static let lockboxFile      = supportDir + "/lockbox.json"          // 0600 root: [{name, secret, delaySec}]
+    static let lockboxStateFile = supportDir + "/lockbox-state.json"    // pending unlocks + unlockedUntil
+    static let lbUnlockMarker   = rvInboxDir + "/lockbox-unlock"        // contents = name
+    static let lbAbortMarker    = rvInboxDir + "/lockbox-abort"         // contents = name
+    static let lbCopyMarker     = rvInboxDir + "/lockbox-copy"          // contents = name
+    static let lbAddMarker      = rvInboxDir + "/lockbox-add"           // contents = {name,secret,delaySec} JSON
+    static let lbOutboxFile     = rvInboxDir + "/lockbox-out"           // daemon→CLI one-shot secret (0600 user-owned)
+
     static let socketPath      = "/var/run/demonlock.sock"
 
     static let appPath         = "/Applications/Demonlock.app"

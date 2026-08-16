@@ -87,6 +87,11 @@ func runStatus() {
         }
         if !sp.pendingAdds.isEmpty { print("  snooze-preset : \(sp.pendingAdds.count) pending add(s) — `demonlock snooze-preset show`") }
     }
+    if let lb = s.lockbox {
+        let unlocked = lb.entries.filter(\.unlocked).count
+        let unlocking = lb.entries.filter { $0.unlockAtEpoch != nil }.count
+        if unlocked > 0 || unlocking > 0 { print("  lockbox       : \(unlocked) unlocked, \(unlocking) unlocking — `demonlock password-lockbox show`") }
+    }
 }
 
 /// A queued delayed-change line in `status` (only shown when something is pending).
@@ -246,6 +251,101 @@ func runDisarm() {
     requireRoot("disarm")
     do { try ArmStore.set(false) } catch { fail("✗ couldn't disarm: \(error)") }
     print("✓ DISARMED — everything keeps running and the countdown still shows, but nothing gets killed.")
+}
+
+// MARK: - password-lockbox
+
+private let lockboxUsage = """
+usage:
+  demonlock password-lockbox show               # names, unlock-delay, locked/unlocked, time-left
+  demonlock password-lockbox unlock <name>      # after the entry's delay it becomes copyable (no sudo)
+  demonlock password-lockbox abort <name>       # cancel a pending unlock / relock now
+  demonlock password-lockbox copy <name>        # if unlocked: copy to clipboard (concealed) + relock
+  demonlock password-lockbox add --name <n> --delay "<dur>"        # then paste the secret twice (no sudo)
+  (this holds arbitrary secrets — NOT the admin password; admin is only via the release valve)
+"""
+
+func runLockbox(_ args: [String]) {
+    let sub = args.first ?? "show"
+    let rest = Array(args.dropFirst())
+    switch sub {
+    case "show", "list", "status", "--status": lockboxShow()
+    case "unlock": lockboxMark(Paths.lbUnlockMarker, rest.first, "unlock")
+    case "abort":  lockboxMark(Paths.lbAbortMarker, rest.first, "abort")
+    case "copy":   lockboxCopy(rest.first)
+    case "add":    lockboxAdd(rest)
+    case "help", "--help", "-h": print(lockboxUsage)
+    default: fail("✗ unknown subcommand '\(sub)'\n" + lockboxUsage)
+    }
+}
+
+private func lockboxShow() {
+    let rows = (StateStore.read()?.lockbox?.entries ?? []).map { e -> [String] in
+        let status = e.unlocked ? "UNLOCKED" : (e.unlockAtEpoch.map { "unlocking in \(TimeSpec.fmtLeft($0 - nowEpoch()))" } ?? "locked")
+        return [e.name, TimeSpec.fmtLeft(e.delaySec), status]
+    }
+    print(Table.section("PASSWORD LOCKBOX", ["name", "unlock-delay", "status"], rows))
+}
+
+private func lockboxMark(_ path: String, _ name: String?, _ verb: String) {
+    guard let name, !name.isEmpty else { fail("✗ usage: demonlock password-lockbox \(verb) <name>") }
+    dropDelayMarker(path, payload: name)
+    print("✓ \(verb) '\(name)' sent.")
+}
+
+private func lockboxCopy(_ name: String?) {
+    guard let name, !name.isEmpty else { fail("✗ usage: demonlock password-lockbox copy <name>") }
+    let entries = StateStore.read()?.lockbox?.entries ?? []
+    guard let e = entries.first(where: { $0.name == name }) else { fail("✗ no secret '\(name)'.") }
+    guard e.unlocked else { fail("✗ '\(name)' is locked — `unlock \(name)` first, then copy after its delay.") }
+    try? FileManager.default.removeItem(atPath: Paths.lbOutboxFile)
+    dropDelayMarker(Paths.lbCopyMarker, payload: name)
+    var secret: String?
+    for _ in 0..<40 {   // poll the daemon's one-shot outbox (~2s)
+        if let d = try? Data(contentsOf: URL(fileURLWithPath: Paths.lbOutboxFile)), !d.isEmpty { secret = String(data: d, encoding: .utf8); break }
+        usleep(50_000)
+    }
+    try? FileManager.default.removeItem(atPath: Paths.lbOutboxFile)
+    guard let sec = secret else { fail("✗ couldn't retrieve '\(name)' — is the daemon running?") }
+    #if canImport(AppKit)
+    Lockbox.copyToConcealedPasteboard(sec)
+    #endif
+    print("✓ '\(name)' copied to the clipboard (concealed) and relocked. Paste it, then clear your clipboard.")
+}
+
+private func lockboxAdd(_ args: [String]) {
+    guard let name = flagValue(args, "--name"), let delay = flagValue(args, "--delay") else {
+        fail("✗ need --name <n> --delay \"<dur>\"\n" + lockboxUsage)
+    }
+    guard let delaySec = TimeSpec.parseDuration(delay) else { fail("✗ bad --delay — e.g. \"1h\".") }
+    if let why = Lockbox.rejectReason(name, delaySec: delaySec) { fail("✗ \(why)") }
+    let s1 = readSecret("Secret: "), s2 = readSecret("Again : ")
+    guard !s1.isEmpty else { fail("✗ empty secret.") }
+    guard s1 == s2 else { fail("✗ the two entries didn't match.") }
+    let entry = LockboxEntry(name: name, secret: s1, delaySec: delaySec)
+    if geteuid() == 0 {
+        var all = LockboxStore.load(); all.removeAll { $0.name == name }; all.append(entry); LockboxStore.save(all)
+        print("✓ added '\(name)' (unlock delay \(TimeSpec.fmtLeft(delaySec))).")
+    } else {
+        guard let data = try? JSONEncoder().encode(entry), let json = String(data: data, encoding: .utf8) else { fail("✗ couldn't encode") }
+        dropDelayMarker(Paths.lbAddMarker, payload: json)
+        print("✓ '\(name)' queued — added on the next tick (no sudo).")
+    }
+}
+
+/// Read a line from the controlling terminal with echo OFF (for secrets).
+private func readSecret(_ prompt: String) -> String {
+    let fd = open("/dev/tty", O_RDWR)
+    guard fd >= 0 else { return "" }
+    defer { close(fd) }
+    var old = termios(); tcgetattr(fd, &old)
+    var raw = old; raw.c_lflag &= ~tcflag_t(ECHO); tcsetattr(fd, TCSAFLUSH, &raw)
+    _ = prompt.withCString { write(fd, $0, strlen($0)) }
+    var out = "", ch: UInt8 = 0
+    while read(fd, &ch, 1) == 1 { if ch == 0x0A || ch == 0x0D { break }; out.append(Character(UnicodeScalar(ch))) }
+    tcsetattr(fd, TCSAFLUSH, &old)
+    _ = "\n".withCString { write(fd, $0, 1) }
+    return out
 }
 
 // MARK: - snooze-presets
