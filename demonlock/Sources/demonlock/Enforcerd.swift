@@ -179,7 +179,10 @@ final class Enforcer {
             nextAgentKick = nil
         } else if armed, now.timeIntervalSince(lastAgentSeen) >= settings.agentGraceSeconds,
                   now >= (nextAgentKick ?? .distantPast) {
-            log("agent silent \(Int(now.timeIntervalSince(lastAgentSeen)))s → kickstart -k gui/\(consoleUID)/\(Paths.agentLabel)")
+            log("agent silent \(Int(now.timeIntervalSince(lastAgentSeen)))s → re-bootstrap+kickstart gui/\(consoleUID)/\(Paths.agentLabel)")
+            // bootstrap FIRST so a `launchctl bootout` (which KeepAlive won't undo) is reversed — this
+            // subsumes the old settingslock guard daemon; then kickstart to force a fresh start.
+            Proc.run("/bin/launchctl", ["bootstrap", "gui/\(consoleUID)", Paths.agentPlist])
             Proc.run("/bin/launchctl", ["kickstart", "-k", "gui/\(consoleUID)/\(Paths.agentLabel)"])
             nextAgentKick = now.addingTimeInterval(settings.agentKickSeconds)
         }

@@ -748,6 +748,10 @@ func runPermAsk() {
     }
     print("Opening System Settings ▸ Privacy & Security ▸ Location Services — turn ON \"Demonlock\".")
     Proc.run("/usr/bin/open", ["x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices"])
+    print("")
+    print("The settings-guard also needs ACCESSIBILITY (to slam FileVault / Device Management panes).")
+    print("Opening Privacy & Security ▸ Accessibility — turn ON \"Demonlock\" there too.")
+    Proc.run("/usr/bin/open", ["x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"])
 }
 
 // MARK: - help

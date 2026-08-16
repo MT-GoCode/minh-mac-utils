@@ -61,6 +61,11 @@ struct Settings: Codable {
     var wifiKeepOn: Bool               // keep the Wi-Fi radio on at check time (location needs it)
     var wifiDevice: String             // BSD Wi-Fi device, e.g. en0
     var snoozeHHMM: String             // snoozetonight target time of day (HHMM) — legacy, snooze-presets supersede
+    // settings-guard (folded-in settingslock): slam System Settings shut on a guarded pane. Active
+    // while armed (NOT suppressed by snooze). Titles are what the System Settings window title becomes
+    // on each pane — tune with `demonlock settings-guard dump`.
+    var guardSettingsPanes: Bool       // enable the pane guard
+    var guardedSettingsTitles: [String]// window-title triggers (FileVault key, profile removal, …)
 
     // ── configurable commitment delays (seconds) — clamped by Bounds at every use ───────────────
     var policyDelaySec: Double         // delay-set-policy landing delay
@@ -86,6 +91,8 @@ struct Settings: Codable {
          feedFreshSeconds: Double = 5, agentGraceSeconds: Double = 25, agentKickSeconds: Double = 30,
          nuclearRelockSeconds: Double = 15, heldPersistSeconds: Double = 30,
          enforcedUser: String = "", wifiKeepOn: Bool = true, wifiDevice: String = "en0", snoozeHHMM: String = "0500",
+         guardSettingsPanes: Bool = true,
+         guardedSettingsTitles: [String] = ["FileVault", "Device Management", "Profiles"],
          policyDelaySec: Double = 36 * 3600, zonesDelaySec: Double = 36 * 3600,
          gatePolicyDelaySec: Double = 36 * 3600, safeAppsDelaySec: Double = 24 * 3600,
          snoozePresetAddDelaySec: Double = 48 * 3600,
@@ -101,6 +108,7 @@ struct Settings: Codable {
         self.heldPersistSeconds = heldPersistSeconds
         self.enforcedUser = enforcedUser; self.wifiKeepOn = wifiKeepOn; self.wifiDevice = wifiDevice
         self.snoozeHHMM = snoozeHHMM
+        self.guardSettingsPanes = guardSettingsPanes; self.guardedSettingsTitles = guardedSettingsTitles
         self.policyDelaySec = policyDelaySec; self.zonesDelaySec = zonesDelaySec
         self.gatePolicyDelaySec = gatePolicyDelaySec; self.safeAppsDelaySec = safeAppsDelaySec
         self.snoozePresetAddDelaySec = snoozePresetAddDelaySec
@@ -131,6 +139,8 @@ struct Settings: Codable {
         wifiKeepOn           = (try? c.decode(Bool.self,   forKey: .wifiKeepOn)) ?? d.wifiKeepOn
         wifiDevice           = (try? c.decode(String.self, forKey: .wifiDevice)) ?? d.wifiDevice
         snoozeHHMM           = (try? c.decode(String.self, forKey: .snoozeHHMM)) ?? d.snoozeHHMM
+        guardSettingsPanes   = (try? c.decode(Bool.self, forKey: .guardSettingsPanes)) ?? d.guardSettingsPanes
+        guardedSettingsTitles = (try? c.decode([String].self, forKey: .guardedSettingsTitles)) ?? d.guardedSettingsTitles
         policyDelaySec       = dbl(.policyDelaySec, d.policyDelaySec)
         zonesDelaySec        = dbl(.zonesDelaySec, d.zonesDelaySec)
         gatePolicyDelaySec   = dbl(.gatePolicyDelaySec, d.gatePolicyDelaySec)

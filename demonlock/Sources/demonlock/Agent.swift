@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import ApplicationServices
 
 /// The logged-in GUI agent: runs the sensor feed (location + BSSID) to the root enforcer and
 /// shows the status/countdown panel (phase, reason, red/green policy tree, Disarm). Closing the
@@ -19,6 +20,7 @@ final class AgentApp: NSObject, NSApplicationDelegate {
     private var permButton: NSButton!
     private var lastPhase = ""
     private var lastRVPhase = ""
+    private var cachedSettings = Settings.load()   // refreshed each UI tick; read by the fast pane-guard
     private var dpApplied: [String: Double] = [:]   // kind → last-seen lastAppliedEpoch (drives apply alerts)
     private var dpSeeded = false                     // skip alerts on the first refresh (seed the baseline)
 
@@ -31,6 +33,11 @@ final class AgentApp: NSObject, NSApplicationDelegate {
         buildMenubar()
         buildWindow()
         Timer.scheduledTimer(withTimeInterval: Settings.load().agentRefreshSeconds, repeats: true) { [weak self] _ in self?.refresh() }
+        // settings-guard (folded settingslock): a 100ms Accessibility poll that slams a guarded System
+        // Settings pane (FileVault key / Device Management / Profiles) shut before you can act on it.
+        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            SettingsGuard.enforce(self?.cachedSettings ?? Settings.load())
+        }
         refresh()
     }
 
@@ -180,6 +187,7 @@ final class AgentApp: NSObject, NSApplicationDelegate {
     // MARK: refresh
 
     private func refresh() {
+        cachedSettings = Settings.load()   // keep the fast pane-guard's config current
         guard let s = StateStore.read() else {
             statusItem.button?.title = "🌑"
             paint(.darkGray, "ENFORCER OFF", "The root enforcer isn't reporting yet.")
@@ -288,6 +296,12 @@ func runAgent() {
     // accessory app; a foreground app is far more likely to get live scans. We do NOT activate/steal
     // focus. Killing/quitting it just fails the enforcer closed (feed goes stale), so it stays secure.
     app.setActivationPolicy(.regular)
+    // settings-guard needs an Accessibility TCC grant to inspect System Settings' UI. Pop the one-time
+    // prompt on launch if enabled and not yet trusted (harmless if already granted).
+    if Settings.load().guardSettingsPanes, !AXIsProcessTrusted() {
+        let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(opts)
+    }
     let delegate = AgentApp()
     app.delegate = delegate
     app.run()

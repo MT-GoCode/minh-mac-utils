@@ -30,6 +30,11 @@ case "disarm":                             runDisarm()
 case "safe-apps", "safeapps":              runSafeApps(Array(argv.dropFirst()))
 case "snooze-preset", "snooze-presets":    runSnoozePreset(Array(argv.dropFirst()))
 case "password-lockbox", "lockbox":        runLockbox(Array(argv.dropFirst()))
+case "settings-guard":
+    switch argv.dropFirst().first {
+    case "dump": SettingsGuard.dump()
+    default:     SettingsGuard.status()
+    }
 
 // internal
 case "_policytest":                        runPolicyTest()
