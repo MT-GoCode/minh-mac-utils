@@ -17,6 +17,8 @@ final class Enforcer {
     private var settings = Settings.load()
 
     private var sessionUID: uid_t?          // console session tracking (standby + countdown reset)
+    private var lastEnforcedUID: uid_t?     // last successfully-resolved enforced uid — keep enforcing it if a
+                                            // later settings read can't resolve the name (fail-closed, not standby)
     private var countdownDeadline: Date?    // set on entering a block; nil while allowed
     private var nextNuclear: Date?          // rate-limit for the nuclear (agent-dead) WindowServer kill
     private var nextAgentKick: Date?        // rate-limit for force-restarting a wedged-but-alive agent
@@ -30,18 +32,8 @@ final class Enforcer {
     private var lastHeldPersist = Date.distantPast   // throttle for heartbeat-persisting confirmedUntil
     private lazy var bonjourName: String? = localBonjourName()   // stable .local SSH target (cached)
 
-    private static let feedFreshSeconds = 5.0        // no packet within this ⇒ agent considered dead
-    private static let nuclearRelockSeconds = 15.0   // WS-kill cadence when the agent is dead: long enough for
-                                                     // KeepAlive to relaunch the agent + report (~10s), short
-                                                     // enough that kill-looping the agent doesn't buy free GUI
-    private static let heldPersistSeconds = 30.0     // re-persist a confirmed fix at least this often, so an
-                                                     // enforcer restart reads a still-LIVE confirmedUntil (not a
-                                                     // stale one written only on the last material location change)
-    private static let agentKickSeconds = 30.0       // force-restart a wedged-but-alive agent at most this often
-    private static let agentGraceSeconds = 25.0      // startup/recovery grace: an agent silent for LESS than this
-                                                     // is "starting up / brief blip" — neither kickstart nor the
-                                                     // nuclear WS-kill fire (so a normal login/boot/wake gap
-                                                     // never nukes your GUI; only a genuinely-gone agent does)
+    // Liveness/recovery tunables now live in Settings (feedFreshSeconds, nuclearRelockSeconds,
+    // heldPersistSeconds, agentKickSeconds, agentGraceSeconds) — see Settings.swift for their meaning.
 
     func run() {
         if geteuid() != 0 { log("WARNING: not running as root — the GUI lockout (kill) will fail") }
@@ -57,7 +49,14 @@ final class Enforcer {
 
     private func tick() -> Double {
         let now = Date()
-        settings = Settings.load()
+        // Reload settings, but a CORRUPT file must NOT drop us to empty defaults (enforcedUser="" →
+        // standby → silently stop enforcing). Absent = fresh install (defaults fine); corrupt = keep
+        // last-known, fail-closed. [review L1]
+        switch Settings.loadResult() {
+        case .parsed(let s): settings = s
+        case .absent: settings = Settings()
+        case .corrupt: log("settings.json unparseable — keeping last-known settings (fail-closed)")
+        }
         let poll = settings.pollSeconds
         let cdpoll = settings.countdownPollSeconds
         let armed = ArmStore.isArmed()
@@ -76,7 +75,15 @@ final class Enforcer {
             publish(phase: "standby", verdict: nil, reason: "no user logged in", now: now, armed: armed)
             return poll
         }
-        guard let target = settings.enforcedUID(), consoleUID == target else {
+        if let e = settings.enforcedUID() { lastEnforcedUID = e }
+        // Keep enforcing the last-known uid if the name transiently fails to resolve (fail-closed, not
+        // standby). nil only when nothing was ever configured (fresh install) → standby is correct. [L1]
+        guard let target = settings.enforcedUID() ?? lastEnforcedUID else {
+            resetSession(consoleUID)
+            publish(phase: "standby", verdict: nil, reason: "no enforced user configured", now: now, armed: armed)
+            return poll
+        }
+        guard consoleUID == target else {
             resetSession(consoleUID)
             let who = settings.enforcedUser.isEmpty ? "(unset)" : settings.enforcedUser
             publish(phase: "standby", verdict: nil, reason: "console user isn't the enforced user \(who)", now: now, armed: armed)
@@ -106,7 +113,7 @@ final class Enforcer {
         // dead) is NOT processed — so it can't confirm the held fix; confirmedUntil just coasts → lock.
         let nowSec = now.timeIntervalSince1970
         let feed = server.latest()
-        let agentLive = feed.map { now.timeIntervalSince($0.at) < Self.feedFreshSeconds } ?? false
+        let agentLive = feed.map { now.timeIntervalSince($0.at) < settings.feedFreshSeconds } ?? false
         var bssids: Set<String>?
         var stableScan: Set<String>?
         var scanAgeSec: Double?
@@ -124,7 +131,7 @@ final class Enforcer {
             if let b = p.bssids, !b.isEmpty, let st = p.scanTs {
                 let scanAge = nowSec - st
                 // Backstop only — the agent already prunes to scanWindowSeconds; allow delivery slack.
-                if scanAge >= 0 && scanAge < settings.scanWindowSeconds + 10 {
+                if scanAge >= 0 && scanAge < settings.scanWindowSeconds + settings.scanSlackSeconds {
                     scanAgeSec = scanAge
                     bssids = Set(b.map { $0.lowercased() })        // policy input (FOUND_IN_NEARBY_BSSID)
                     stable = bssids!.filter(isStableBSSID)         // liveness anchor signal
@@ -140,7 +147,7 @@ final class Enforcer {
             // heldPersistSeconds while merely confirming — otherwise the in-memory confirmedUntil bumps
             // never reach disk, and an enforcer restart would read a stale (expired) timer and falsely
             // lock you while you sat still. The heartbeat keeps the on-disk timer within ~30s of live.
-            if let h = held, j.persist || (j.confirmed && now.timeIntervalSince(lastHeldPersist) >= Self.heldPersistSeconds) {
+            if let h = held, j.persist || (j.confirmed && now.timeIntervalSince(lastHeldPersist) >= settings.heldPersistSeconds) {
                 HeldFixStore.write(h); lastHeldPersist = now
             }
         }
@@ -152,11 +159,11 @@ final class Enforcer {
         if agentLive {
             lastAgentSeen = now
             nextAgentKick = nil
-        } else if armed, now.timeIntervalSince(lastAgentSeen) >= Self.agentGraceSeconds,
+        } else if armed, now.timeIntervalSince(lastAgentSeen) >= settings.agentGraceSeconds,
                   now >= (nextAgentKick ?? .distantPast) {
             log("agent silent \(Int(now.timeIntervalSince(lastAgentSeen)))s → kickstart -k gui/\(consoleUID)/\(Paths.agentLabel)")
             Proc.run("/bin/launchctl", ["kickstart", "-k", "gui/\(consoleUID)/\(Paths.agentLabel)"])
-            nextAgentKick = now.addingTimeInterval(Self.agentKickSeconds)
+            nextAgentKick = now.addingTimeInterval(settings.agentKickSeconds)
         }
 
         // The location truth: a LIVE held fix, or nil (unknown → fail-closed).
@@ -236,13 +243,13 @@ final class Enforcer {
         if agentLive {
             for pid in guiPids where pid > 1 { kill(pid, SIGKILL) }
             nextNuclear = nil
-        } else if now.timeIntervalSince(lastAgentSeen) >= Self.agentGraceSeconds,
+        } else if now.timeIntervalSince(lastAgentSeen) >= settings.agentGraceSeconds,
                   nextNuclear == nil || now >= nextNuclear! {
             // Only nuke once the agent has been gone PAST the startup grace — a normal login/boot/wake gap
             // (held fix coasts, agent re-confirms in ~5s) must never trigger the GUI-wide kill.
             log("LOCKED + agent gone \(Int(now.timeIntervalSince(lastAgentSeen)))s → killall -9 WindowServer")
             Proc.run("/usr/bin/killall", ["-9", "WindowServer"])
-            nextNuclear = now.addingTimeInterval(Self.nuclearRelockSeconds)
+            nextNuclear = now.addingTimeInterval(settings.nuclearRelockSeconds)
         }
     }
 
@@ -444,7 +451,7 @@ func judgeLocation(held: HeldFix?, payload p: FeedPayload, stable: Set<String>?,
             let anchor = (stable ?? []).sorted()       // FROZEN snapshot; never grown afterward
             // Persist only on a MATERIAL change (~25m or anchor change) — a moving vehicle must not write
             // heldfix.json every fix, and confirmedUntil bumps alone (every tick at home) must not either.
-            if held == nil || abs(lat - held!.lat) > 2.5e-4 || abs(lon - held!.lon) > 2.5e-4 || anchor != held!.anchor {
+            if held == nil || abs(lat - held!.lat) > settings.materialChangeDeg || abs(lon - held!.lon) > settings.materialChangeDeg || anchor != held!.anchor {
                 persist = true
             }
             held = HeldFix(lat: lat, lon: lon, fixTs: ts, acc: p.acc!, anchor: anchor, confirmedUntil: now + settings.graceSeconds)

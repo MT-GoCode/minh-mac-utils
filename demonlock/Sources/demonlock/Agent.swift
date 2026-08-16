@@ -32,7 +32,7 @@ final class AgentApp: NSObject, NSApplicationDelegate {
         feeder.start()
         buildMenubar()
         buildWindow()
-        Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.refresh() }
+        Timer.scheduledTimer(withTimeInterval: Settings.load().agentRefreshSeconds, repeats: true) { [weak self] _ in self?.refresh() }
         refresh()
     }
 

@@ -1,75 +1,102 @@
 import Foundation
 
-/// Tunables, persisted as root-owned settings.json. Every field has a default and is
-/// decoded leniently (a missing key falls back to its default) so the file can evolve.
+/// BAKED bounds — compiled into the binary, never read from any file. These are the FLOORS/CEILINGS
+/// of the no-sudo commitment delays: they are the whole point of the design, so they must not be
+/// editable through the same silent channel (a root settings.json edit) the delays are meant to
+/// resist. A root user CAN still change the per-slot delay VALUE (via `set-delay`), but every use
+/// clamps that value into these ranges, so neither a stale file nor a settings edit can push a no-sudo
+/// delay below its floor. If you want to change a floor, you must recompile — which is not silent.
+enum Bounds {
+    static let policyDelay          = 12.0 * 3600 ... 168.0 * 3600   // delay-set-policy
+    static let zonesDelay           = 12.0 * 3600 ... 168.0 * 3600   // delayed zone add/delete
+    static let gatePolicyDelay      = 12.0 * 3600 ... 168.0 * 3600   // release-valve delay-set-gate-policy
+    static let safeAppsDelay        =  8.0 * 3600 ... 168.0 * 3600   // safe-apps delayed-register
+    static let snoozePresetAddDelay = 24.0 * 3600 ... 168.0 * 3600   // snooze-preset delayed-add
+    static let snoozePresetInvokeDelay = 1.0 * 3600 ... 168.0 * 3600 // a preset's invoke delay
+    static let snoozeDurationMax    = 18.0 * 3600                    // any snooze / preset duration ceiling
+    static let rvRequestDelayMin    = 30.0 * 60                      // release-valve request delay floor
+    static let rvMaxRequestDurationCeil = 4.0 * 3600                 // ceiling on the configurable grant duration
+    static let rvExtendMax          = 1.0 * 3600                     // i-still-need-sudo: ≤ this per call
+    static let lockboxUnlockDelayMin = 1.0 * 3600                    // password-lockbox per-entry unlock delay floor
+    static let lockboxAutoRelock    = 15.0 * 60                      // auto-relock an unlocked, never-copied secret
+
+    static func clamp(_ v: Double, _ r: ClosedRange<Double>) -> Double { Swift.min(Swift.max(v, r.lowerBound), r.upperBound) }
+}
+
+/// Tunables, persisted as root-owned settings.json. Every field has a default and is decoded leniently
+/// (a missing key falls back to its default) so the file can evolve. Root-WRITABLE only (mode 644): the
+/// user agent + status CLI must READ it (kill list, sensor config), so it can't be 600.
 struct Settings: Codable {
+    // ── enforcement cadence ────────────────────────────────────────────────────────────────────
     var pollSeconds: Double            // steady enforcer tick (first check immediate)
     var countdownPollSeconds: Double   // faster re-eval while a countdown is active
     var countdownSeconds: Double       // THE buffer: the one visible countdown before lockout, for EVERY block
                                        // (out of policy, can't determine, agent reconnecting on wake). Re-
                                        // evaluated each tick — cancels the instant you're provably in policy.
-    var snoozeHHMM: String             // snoozetonight target time of day (HHMM)
-    var graceSeconds: Double           // location-confidence coast: the held fix stays LIVE this long after the
-                                       // last CONFIRMATION (a new fix, or the anchor still overlapping the live
-                                       // scan). Anything that doesn't confirm — Wi-Fi off, anchor mismatch,
-                                       // agent dead, agent starting, just-woke — lets it run out → STALE →
-                                       // fail-closed. One timer for every "no signal" case. See MODEL.md.
-    var maxAccuracyMeters: Double      // a fix fuzzier than this is not adopted. Macs are Wi-Fi-only
-                                       // (±60–100m stationary urban, but a few hundred m on a moving
-                                       // vehicle / in sparse-AP stretches — e.g. Caltrain), so keep it
-                                       // GENEROUS: accuracy only matters vs zone size, and big zones (a
-                                       // whole metro) tolerate fuzzy fixes while small zones sit in dense
-                                       // Wi-Fi and get good accuracy anyway. Lower it only if you rely on
-                                       // tight zones in sparse areas. (Still rejects km-scale garbage.)
-    var scanSeconds: Double            // full scanForNetworks cadence (CoreWLAN floor ~4s). The agent ALSO
-                                       // samples the associated-AP BSSID every ~2s between full scans, so the
-                                       // live band is always current; this is just the all-bands sweep rate.
-    var scanWindowSeconds: Double      // rolling-log window: the agent reports the UNION of every BSSID seen in
-                                       // the last this-many seconds (ages out, NOT cleared on Wi-Fi off). An
-                                       // EMPTY window = positive signal-loss (the associated-AP read would give
-                                       // ≥1 BSSID if joined), so it stops confirming the fix → grace → lock.
+    var agentRefreshSeconds: Double    // agent UI/status refresh timer
+
+    // ── location model ─────────────────────────────────────────────────────────────────────────
+    var graceSeconds: Double           // location-confidence coast after the last CONFIRMATION (new fix, or
+                                       // anchor overlap). Anything that doesn't confirm lets it run out →
+                                       // STALE → fail-closed. One timer for every "no signal" case (MODEL.md).
+    var maxAccuracyMeters: Double      // a fix fuzzier than this is not adopted (generous — Macs are Wi-Fi-only).
+    var scanSeconds: Double            // full scanForNetworks cadence (CoreWLAN floor ~4s).
+    var scanWindowSeconds: Double      // rolling-log window: agent reports the UNION of BSSIDs seen in the last
+                                       // this-many seconds. Empty window = positive signal-loss → stops confirming.
+    var scanSlackSeconds: Double       // delivery-slack backstop on scan freshness (agent already prunes).
+    var materialChangeDeg: Double      // held-fix persist threshold (~°lat/lon) — a moving vehicle must not
+                                       // rewrite heldfix.json every fix, nor a bare confirmedUntil bump.
+
+    // ── liveness / recovery watchdog ───────────────────────────────────────────────────────────
+    var feedFreshSeconds: Double       // no agent packet within this ⇒ agent considered dead
+    var agentGraceSeconds: Double      // startup/recovery grace: an agent silent for LESS than this is
+                                       // "starting/blip" — no kickstart, no nuclear kill (never nuke a normal login).
+    var agentKickSeconds: Double       // force-restart a wedged-but-alive agent at most this often
+    var nuclearRelockSeconds: Double   // WindowServer-kill cadence when the agent is dead (long enough for
+                                       // KeepAlive to relaunch + report; short enough not to buy free GUI)
+    var heldPersistSeconds: Double     // re-persist a confirmed fix at least this often (reboot reads a live timer)
+
+    // ── identity / radio ───────────────────────────────────────────────────────────────────────
     var enforcedUser: String           // username OR numeric uid this policy applies to
     var wifiKeepOn: Bool               // keep the Wi-Fi radio on at check time (location needs it)
     var wifiDevice: String             // BSD Wi-Fi device, e.g. en0
-    var spareApps: [String: String]    // bundleID → expected TEAM ID. An app is spared from the lockout
-                                       // kill ONLY if it's listed here AND its live code signature satisfies
-                                       // "anchor apple generic + that Team ID + that identifier" — so a
-                                       // distraction that merely spoofs a whitelisted bundle id in its
-                                       // Info.plist is still killed. Team ID (not cdhash) so the spare
-                                       // survives app auto-updates. The LOCKED kill covers EVERY .regular app
-                                       // PLUS non-Apple .accessory (menubar) apps; Apple's own com.apple.*
-                                       // menubar items are spared automatically; pure daemons (no GUI app) are
-                                       // never in the kill-list. Reloaded each feed (edit settings.json live).
-                                       // NOTE: spares only the per-app kill; the agent-dead NUCLEAR
-                                       // `killall -9 WindowServer` takes ALL GUI regardless.
+    var snoozeHHMM: String             // snoozetonight target time of day (HHMM) — legacy, snooze-presets supersede
+
+    // ── configurable commitment delays (seconds) — clamped by Bounds at every use ───────────────
+    var policyDelaySec: Double         // delay-set-policy landing delay
+    var zonesDelaySec: Double          // delayed zone add/delete landing delay
+    var gatePolicyDelaySec: Double     // release-valve delay-set-gate-policy landing delay
+    var safeAppsDelaySec: Double       // safe-apps delayed-register landing delay
+    var snoozePresetAddDelaySec: Double// snooze-preset delayed-add landing delay
+
+    var spareApps: [String: String]    // bundleID → expected TEAM ID (legacy schema; safe-apps rework replaces
+                                       // this with a richer table). An app is spared from the lockout kill ONLY
+                                       // if listed here AND its live code signature satisfies the regime for its
+                                       // ownership. Reloaded each feed. NOTE: spares only the per-app kill; the
+                                       // agent-dead NUCLEAR `killall -9 WindowServer` takes ALL GUI regardless.
 
     init(pollSeconds: Double = 1.0, countdownPollSeconds: Double = 0.5, countdownSeconds: Double = 10,
-         snoozeHHMM: String = "0500", graceSeconds: Double = 90,
-         maxAccuracyMeters: Double = 400, scanSeconds: Double = 6, scanWindowSeconds: Double = 30,
-         enforcedUser: String = "", wifiKeepOn: Bool = true, wifiDevice: String = "en0",
+         agentRefreshSeconds: Double = 0.25,
+         graceSeconds: Double = 90, maxAccuracyMeters: Double = 400, scanSeconds: Double = 6,
+         scanWindowSeconds: Double = 30, scanSlackSeconds: Double = 10, materialChangeDeg: Double = 2.5e-4,
+         feedFreshSeconds: Double = 5, agentGraceSeconds: Double = 25, agentKickSeconds: Double = 30,
+         nuclearRelockSeconds: Double = 15, heldPersistSeconds: Double = 30,
+         enforcedUser: String = "", wifiKeepOn: Bool = true, wifiDevice: String = "en0", snoozeHHMM: String = "0500",
+         policyDelaySec: Double = 36 * 3600, zonesDelaySec: Double = 36 * 3600,
+         gatePolicyDelaySec: Double = 36 * 3600, safeAppsDelaySec: Double = 24 * 3600,
+         snoozePresetAddDelaySec: Double = 48 * 3600,
          spareApps: [String: String] = [
-            // Our own (team BULCQM9J2V) apps are only safe here because spareVerified additionally
-            // requires a ROOT-OWNED bundle for self-team apps — demonlock, wtalk,
-            // remote-agent-connector, msv2 and stayup all install to /Applications root:wheel, so you
-            // can't swap them for a browser without sudo, and a sibling app you re-sign with your own
-            // Team ID (in ~/Applications) fails the owner check. wtalk is additionally a FROZEN binary
-            // (PyInstaller bootloader, not a `python` CLI) so it can't be redirected to run arbitrary
-            // code — a plain Python .app could be. A self-team entry not actually root-owned installed
-            // just never spares (owner check fails), it doesn't get any looser exception. Third-party
-            // entries below need no owner check — you can't re-sign as their teams.
-            "com.demonlock":                        "BULCQM9J2V",   // the enforcer itself (root-owned install)
+            // Our own (team BULCQM9J2V) apps are safe here ONLY because the spare check requires a
+            // ROOT-OWNED bundle for own-team apps (they install to /Applications root:wheel) — a sibling
+            // you re-sign with your own Team ID in ~/Applications is NOT spared (it must go through root
+            // ownership, no Developer-ID fallback). Third-party entries below need no owner check — you
+            // can't re-sign as their teams.
+            "com.demonlock":                        "BULCQM9J2V",   // the enforcer itself (root-owned install) — UNREMOVABLE
             "com.wtalk.daemon":                     "BULCQM9J2V",   // wtalk dictation (frozen, root-owned install)
-            "com.minh.remote-agent-connector":      "BULCQM9J2V",   // Remote Agent Connector (foreman-uplink successor; .regular dock app, root-owned install)
+            "com.minh.remote-agent-connector":      "BULCQM9J2V",   // Remote Agent Connector (root-owned install)
             "com.minh.msv2":                        "BULCQM9J2V",   // msv2 desktop-group ⌘⇥ switcher (root-owned install)
             "com.minh.stayup":                      "BULCQM9J2V",   // stayup lid-closed-awake toggle (root-owned install)
-            // Paseo: SERVICE ONLY, deliberately. The desktop UI (sh.paseo.desktop, .regular)
-            // is NOT listed — it dies with everything else on lockout, which is the point.
-            // The helper bundle is .accessory (LSUIElement), and the launchd job
-            // sh.paseo.daemon runs one as the headless daemon; without this entry it gets
-            // killed and KeepAlive restart-loops it against the next tick, so remote
-            // clients lose the agent host. Sparing the helper does NOT keep the UI alive:
-            // the UI's own helper children exit when their parent main process is killed.
-            "sh.paseo.desktop.helper":              "99ZMJMKU9Y",   // headless daemon only
+            "sh.paseo.desktop.helper":              "99ZMJMKU9Y",   // Paseo headless daemon ONLY (the .regular UI dies on lockout, by design)
             "com.lwouis.alt-tab-macos":             "QXD7GW8FHY",   // AltTab
             "com.raycast.macos":                    "SY64MV22J9",   // Raycast (menubar launcher)
             "cc.ffitch.shottr":                     "2Y683PRQWN",   // Shottr (screenshot tool)
@@ -79,39 +106,53 @@ struct Settings: Codable {
             "org.pqrs.Karabiner-Core-Service":      "G43BCU2T37",   // Karabiner-Elements (several processes)
             "org.pqrs.Karabiner-Menu":              "G43BCU2T37",
             "org.pqrs.Karabiner-NotificationWindow":"G43BCU2T37",
-         ]) {  // persistent menubar utilities to keep alive through a lockout, each PINNED to its signer's
-               // Team ID (a spoofed bundle id from another signer is still killed). Add your own as
-               // "bundle.id": "TEAMID" (get the team via `codesign -dv --verbose=4 /path/App.app`).
+         ]) {
         self.pollSeconds = pollSeconds; self.countdownPollSeconds = countdownPollSeconds
-        self.countdownSeconds = countdownSeconds; self.snoozeHHMM = snoozeHHMM
-        self.graceSeconds = graceSeconds
-        self.maxAccuracyMeters = maxAccuracyMeters; self.scanSeconds = scanSeconds
-        self.scanWindowSeconds = scanWindowSeconds; self.enforcedUser = enforcedUser
-        self.wifiKeepOn = wifiKeepOn; self.wifiDevice = wifiDevice
+        self.countdownSeconds = countdownSeconds; self.agentRefreshSeconds = agentRefreshSeconds
+        self.graceSeconds = graceSeconds; self.maxAccuracyMeters = maxAccuracyMeters
+        self.scanSeconds = scanSeconds; self.scanWindowSeconds = scanWindowSeconds
+        self.scanSlackSeconds = scanSlackSeconds; self.materialChangeDeg = materialChangeDeg
+        self.feedFreshSeconds = feedFreshSeconds; self.agentGraceSeconds = agentGraceSeconds
+        self.agentKickSeconds = agentKickSeconds; self.nuclearRelockSeconds = nuclearRelockSeconds
+        self.heldPersistSeconds = heldPersistSeconds
+        self.enforcedUser = enforcedUser; self.wifiKeepOn = wifiKeepOn; self.wifiDevice = wifiDevice
+        self.snoozeHHMM = snoozeHHMM
+        self.policyDelaySec = policyDelaySec; self.zonesDelaySec = zonesDelaySec
+        self.gatePolicyDelaySec = gatePolicyDelaySec; self.safeAppsDelaySec = safeAppsDelaySec
+        self.snoozePresetAddDelaySec = snoozePresetAddDelaySec
         self.spareApps = spareApps
     }
 
     init(from decoder: Decoder) throws {
         let d = Settings()
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        pollSeconds          = (try? c.decode(Double.self, forKey: .pollSeconds)) ?? d.pollSeconds
-        countdownPollSeconds = (try? c.decode(Double.self, forKey: .countdownPollSeconds)) ?? d.countdownPollSeconds
-        countdownSeconds     = (try? c.decode(Double.self, forKey: .countdownSeconds)) ?? d.countdownSeconds
-        snoozeHHMM           = (try? c.decode(String.self, forKey: .snoozeHHMM)) ?? d.snoozeHHMM
-        graceSeconds         = (try? c.decode(Double.self, forKey: .graceSeconds)) ?? d.graceSeconds
-        maxAccuracyMeters    = (try? c.decode(Double.self, forKey: .maxAccuracyMeters)) ?? d.maxAccuracyMeters
-        scanSeconds          = (try? c.decode(Double.self, forKey: .scanSeconds)) ?? d.scanSeconds
-        scanWindowSeconds    = (try? c.decode(Double.self, forKey: .scanWindowSeconds)) ?? d.scanWindowSeconds
+        func dbl(_ k: CodingKeys, _ fb: Double) -> Double { (try? c.decode(Double.self, forKey: k)) ?? fb }
+        pollSeconds          = dbl(.pollSeconds, d.pollSeconds)
+        countdownPollSeconds = dbl(.countdownPollSeconds, d.countdownPollSeconds)
+        countdownSeconds     = dbl(.countdownSeconds, d.countdownSeconds)
+        agentRefreshSeconds  = dbl(.agentRefreshSeconds, d.agentRefreshSeconds)
+        graceSeconds         = dbl(.graceSeconds, d.graceSeconds)
+        maxAccuracyMeters    = dbl(.maxAccuracyMeters, d.maxAccuracyMeters)
+        scanSeconds          = dbl(.scanSeconds, d.scanSeconds)
+        scanWindowSeconds    = dbl(.scanWindowSeconds, d.scanWindowSeconds)
+        scanSlackSeconds     = dbl(.scanSlackSeconds, d.scanSlackSeconds)
+        materialChangeDeg    = dbl(.materialChangeDeg, d.materialChangeDeg)
+        feedFreshSeconds     = dbl(.feedFreshSeconds, d.feedFreshSeconds)
+        agentGraceSeconds    = dbl(.agentGraceSeconds, d.agentGraceSeconds)
+        agentKickSeconds     = dbl(.agentKickSeconds, d.agentKickSeconds)
+        nuclearRelockSeconds = dbl(.nuclearRelockSeconds, d.nuclearRelockSeconds)
+        heldPersistSeconds   = dbl(.heldPersistSeconds, d.heldPersistSeconds)
         enforcedUser         = (try? c.decode(String.self, forKey: .enforcedUser)) ?? d.enforcedUser
         wifiKeepOn           = (try? c.decode(Bool.self,   forKey: .wifiKeepOn)) ?? d.wifiKeepOn
         wifiDevice           = (try? c.decode(String.self, forKey: .wifiDevice)) ?? d.wifiDevice
-        // spareApps MERGES over the compiled defaults instead of replacing them. A
-        // hand-edit (or an installer patching in one app) previously had to restate the
-        // ENTIRE list or it silently un-spared everything it omitted — a footgun that
-        // only shows up during a lockout. Now settings.json is additive:
-        //   "com.foo": "TEAMID"   → add, or re-pin an existing entry to another team
-        //   "com.foo": ""         → drop a compiled default
-        // Reloaded every feed, so edits take effect within a tick — no reinstall.
+        snoozeHHMM           = (try? c.decode(String.self, forKey: .snoozeHHMM)) ?? d.snoozeHHMM
+        policyDelaySec       = dbl(.policyDelaySec, d.policyDelaySec)
+        zonesDelaySec        = dbl(.zonesDelaySec, d.zonesDelaySec)
+        gatePolicyDelaySec   = dbl(.gatePolicyDelaySec, d.gatePolicyDelaySec)
+        safeAppsDelaySec     = dbl(.safeAppsDelaySec, d.safeAppsDelaySec)
+        snoozePresetAddDelaySec = dbl(.snoozePresetAddDelaySec, d.snoozePresetAddDelaySec)
+        // spareApps MERGES over the compiled defaults (additive): "bid":"TEAM" adds/re-pins,
+        // "bid":"" drops a compiled default. Reloaded every feed, so edits take effect within a tick.
         var merged = d.spareApps
         if let override = try? c.decode([String: String].self, forKey: .spareApps) {
             for (bid, team) in override {
@@ -121,10 +162,23 @@ struct Settings: Codable {
         spareApps = merged
     }
 
+    /// Result of loading settings.json — distinguishes ABSENT (fresh install → defaults are fine) from
+    /// CORRUPT (present but unparseable → the enforcer must NOT fall to empty defaults, which would set
+    /// enforcedUser="" → standby → silently stop enforcing; keep last-known instead). [review L1]
+    enum LoadResult { case parsed(Settings), absent, corrupt }
+
+    static func loadResult() -> LoadResult {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: Paths.settingsFile)) else { return .absent }
+        guard let s = try? JSONDecoder().decode(Settings.self, from: data) else { return .corrupt }
+        return .parsed(s)
+    }
+
+    /// Lenient load for non-enforcing callers (CLI/agent display): defaults on absent OR corrupt (a
+    /// stale display never stops enforcement, so fail-open here is harmless). The enforcer uses
+    /// loadResult() so a corrupt file can't disable it.
     static func load() -> Settings {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: Paths.settingsFile)),
-              let s = try? JSONDecoder().decode(Settings.self, from: data) else { return Settings() }
-        return s
+        if case .parsed(let s) = loadResult() { return s }
+        return Settings()
     }
 
     func save(to path: String = Paths.settingsFile) throws {

@@ -169,7 +169,7 @@ private func applySnooze(until target: Date) {
 
 // MARK: - snooze (sudo)
 
-private let snoozeMaxHours = 18.0
+private let snoozeMaxHours = Bounds.snoozeDurationMax / 3600   // baked ceiling (Settings.swift)
 
 /// Stand down enforcement until a target time, like `snoozetonight` but flexible: `for <duration>`
 /// (d/h/m/s) or `until <[day]HHMM>`. Capped at 18 hours. Reuses `nextHHMM` (shared with
