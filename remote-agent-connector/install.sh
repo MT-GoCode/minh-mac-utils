@@ -6,6 +6,7 @@ set -euo pipefail
 
 [ "$(id -u)" -eq 0 ] || { echo "run with sudo:  sudo ./install.sh"; exit 1; }
 : "${SUDO_USER:?must be run via sudo (need SUDO_USER for the build keychain)}"
+[ "$SUDO_USER" != root ] || { echo "don't run from a root shell (SUDO_USER=root) — run as your normal user via sudo."; exit 1; }
 USER_NAME="$SUDO_USER"
 USER_HOME="$(eval echo "~$USER_NAME")"
 HERE="$(cd "$(dirname "$0")" && pwd)"

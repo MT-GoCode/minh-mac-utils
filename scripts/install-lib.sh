@@ -6,6 +6,9 @@
 dl_require_root() {   # each app's install.sh calls this after sourcing, before declaring its manifest
   [ "$(id -u)" -eq 0 ] || { echo "run with sudo: sudo ${BASH_SOURCE[1]:-$0}"; exit 1; }
   : "${SUDO_USER:?must run via sudo (need SUDO_USER)}"
+  # Refuse a ROOT shell: SUDO_USER=root would deploy for the wrong user and (for demonlock) enforce
+  # the wrong console user. Run as your normal user via sudo, not from `sudo -s` / a root prompt.
+  [ "$SUDO_USER" != root ] || { echo "✗ don't run from a root shell (SUDO_USER=root). Exit it, then run 'sudo ./<app>/install.sh' as your normal user."; exit 1; }
 }
 
 dl_user()      { echo "${SUDO_USER:?must run via sudo}"; }

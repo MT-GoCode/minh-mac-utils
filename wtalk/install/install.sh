@@ -7,6 +7,7 @@ set -euo pipefail
 
 [ "$(id -u)" -eq 0 ] || { echo "run with sudo:  sudo ./install/install.sh"; exit 1; }
 : "${SUDO_USER:?must be run via sudo (need SUDO_USER for the build keychain + user data)}"
+[ "$SUDO_USER" != root ] || { echo "don't run from a root shell (SUDO_USER=root) — run as your normal user via sudo."; exit 1; }
 USER_NAME="$SUDO_USER"
 USER_UID="$(id -u "$USER_NAME")"
 USER_HOME="$(/usr/bin/dscl . -read "/Users/$USER_NAME" NFSHomeDirectory | awk '{print $2}')"

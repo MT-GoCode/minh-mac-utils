@@ -5,6 +5,10 @@ set -euo pipefail
 
 [ "$(id -u)" -eq 0 ] || { echo "run with sudo:  sudo ./install/install.sh"; exit 1; }
 : "${SUDO_USER:?must be run via sudo (need SUDO_USER for the build keychain)}"
+# Refuse a ROOT shell: SUDO_USER=root would seed enforcedUser=root (→ permanent STANDBY, never
+# enforces your console user) AND, since root's keychain has no Dev ID cert, silently deploy the
+# committed dist bundle instead of building the current source. Run as YOUR user via sudo.
+[ "$SUDO_USER" != root ] || { echo "✗ don't run this from a root shell (SUDO_USER=root). Exit it, then: sudo ./demonlock/install.sh"; exit 1; }
 USER_NAME="$SUDO_USER"
 USER_UID="$(id -u "$USER_NAME")"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
