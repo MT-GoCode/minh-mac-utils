@@ -104,4 +104,18 @@ if [ "$APP_WAS_RUNNING" = 1 ]; then
   echo "==> reopening Paseo app (as client)"
   open -a "$HOME/Applications/Paseo.app" 2>/dev/null || open -a Paseo || true
 fi
+
+# Register the paseo DAEMON as a demonlock spare so a lockout can't kill it (the paseo desktop GUI stays
+# blocklisted — demonlock still kills that). demonlock ships no base list, so we register here. Needs
+# root (this script runs as you), so sudo may prompt — that's fine.
+echo "==> registering paseo daemon as a demonlock spare (needs root — may prompt)"
+DL=/Applications/Demonlock.app/Contents/MacOS/demonlock
+if [ -x "$DL" ]; then
+  sudo "$DL" safe-apps register --name paseo-daemon --bid sh.paseo.desktop.helper --tid 99ZMJMKU9Y --no-root-ownership \
+    || echo "    ⚠️  register failed — run manually: sudo demonlock safe-apps register --name paseo-daemon --bid sh.paseo.desktop.helper --tid 99ZMJMKU9Y --no-root-ownership"
+else
+  echo "    (demonlock not installed yet — after installing it, run:"
+  echo "     sudo demonlock safe-apps register --name paseo-daemon --bid sh.paseo.desktop.helper --tid 99ZMJMKU9Y --no-root-ownership)"
+fi
+
 echo "==> done: daemon owned by launchd (sh.paseo.daemon), nightly refresh at 4:30"

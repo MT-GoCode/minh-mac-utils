@@ -171,4 +171,9 @@ echo "    sudo demonlock setpolicy '...' # set the allow-policy"
 echo "    demonlock status               # verify it evaluates"
 echo "    sudo demonlock arm             # turn enforcement on"
 echo
+echo
+echo "Spares: demonlock spares ONLY itself by default — your own apps register from their own"
+echo "installers. For third-party utils (karabiner / alttab / raycast / …) run once:"
+echo "    sudo ./demonlock/register-recommended-spares.sh"
+echo
 echo "If the agent isn't authorized for Location yet, run:  demonlock perm-ask"

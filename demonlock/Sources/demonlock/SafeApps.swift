@@ -18,24 +18,13 @@ struct SafeApp: Codable, Equatable {
 enum SafeApps {
     static let ownTeam = SensorFeeder.ownTeamID
 
-    /// Compiled defaults. Own apps (root-owned installs) are rootOwned=true; third-party menubar
-    /// utilities are rootOwned=false (Developer-ID Regime B). com.demonlock is UNREMOVABLE.
+    /// Compiled default = demonlock ITSELF only. It must spare its own bundle (removing it kills the
+    /// agent on lockout → nuclear WindowServer loop), so that one stays baked and unremovable. EVERY
+    /// other spare — your own apps AND third-party utils — is registered dynamically at install time
+    /// (each installer runs `demonlock safe-apps register …`; the no-installer third-party set via
+    /// demonlock/register-recommended-spares.sh). So demonlock carries no knowledge of other apps.
     static let defaults: [SafeApp] = [
-        SafeApp(name: "demonlock",              bid: "com.demonlock",                     tid: ownTeam,       rootOwned: true),
-        SafeApp(name: "wtalk",                  bid: "com.wtalk.daemon",                  tid: ownTeam,       rootOwned: true),
-        SafeApp(name: "remote-agent-connector", bid: "com.minh.remote-agent-connector",   tid: ownTeam,       rootOwned: true),
-        SafeApp(name: "msv2",                   bid: "com.minh.msv2",                     tid: ownTeam,       rootOwned: true),
-        SafeApp(name: "stayup",                 bid: "com.minh.stayup",                   tid: ownTeam,       rootOwned: true),
-        SafeApp(name: "paseo-daemon",           bid: "sh.paseo.desktop.helper",           tid: "99ZMJMKU9Y", rootOwned: false),
-        SafeApp(name: "alttab",                 bid: "com.lwouis.alt-tab-macos",          tid: "QXD7GW8FHY", rootOwned: false),
-        SafeApp(name: "raycast",                bid: "com.raycast.macos",                 tid: "SY64MV22J9", rootOwned: false),
-        SafeApp(name: "shottr",                 bid: "cc.ffitch.shottr",                  tid: "2Y683PRQWN", rootOwned: false),
-        SafeApp(name: "amphetamine",            bid: "com.if.Amphetamine",                tid: "U5SR49N3PT", rootOwned: false),
-        SafeApp(name: "betterdisplay",          bid: "pro.betterdisplay.BetterDisplay",   tid: "299YSU96J7", rootOwned: false),
-        SafeApp(name: "scroll-reverser",        bid: "com.pilotmoon.scroll-reverser",     tid: "6W6K75YWQ9", rootOwned: false),
-        SafeApp(name: "karabiner-core",         bid: "org.pqrs.Karabiner-Core-Service",   tid: "G43BCU2T37", rootOwned: false),
-        SafeApp(name: "karabiner-menu",         bid: "org.pqrs.Karabiner-Menu",           tid: "G43BCU2T37", rootOwned: false),
-        SafeApp(name: "karabiner-notify",       bid: "org.pqrs.Karabiner-NotificationWindow", tid: "G43BCU2T37", rootOwned: false),
+        SafeApp(name: "demonlock", bid: "com.demonlock", tid: ownTeam, rootOwned: true),
     ]
 
     /// Never removable — losing this spare is self-defeating.

@@ -124,6 +124,16 @@ sudo -u "$USER_NAME" launchctl bootstrap "gui/$USER_UID" "$PLIST" 2>/dev/null \
 
 echo
 
+echo "▸ registering wtalk as a demonlock spare (demonlock ships no base list)"
+DL=/Applications/Demonlock.app/Contents/MacOS/demonlock
+if [ -x "$DL" ]; then
+    "$DL" safe-apps register --name wtalk --bid com.wtalk.daemon --tid BULCQM9J2V \
+      || echo "  ⚠️  register failed — spare it manually: sudo demonlock safe-apps register --name wtalk --bid com.wtalk.daemon --tid BULCQM9J2V"
+else
+    echo "  ⚠️  demonlock not installed yet — after installing it, run:"
+    echo "       sudo demonlock safe-apps register --name wtalk --bid com.wtalk.daemon --tid BULCQM9J2V"
+fi
+
 echo "▸ verifying demonlock will spare it"
 bash "$HERE/../verify-spare.sh" /Applications/wtalk.app com.wtalk.daemon
 echo "✓ installed $DEST  (root:wheel, sealed — demonlock can now safely spare it)"

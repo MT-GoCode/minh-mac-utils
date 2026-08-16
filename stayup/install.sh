@@ -1,6 +1,7 @@
 #!/bin/bash
-# stayup — lid-closed-awake toggle. Root-owned GUI app (demonlock compiled-default spare) + a
-# passwordless pmset grant. Self-contained: declares its manifest, calls the shared install-lib.
+# stayup — lid-closed-awake toggle. Root-owned GUI app that registers itself as a demonlock spare at
+# install (demonlock ships no base list) + a passwordless pmset grant. Self-contained: declares its
+# manifest, calls the shared install-lib.
 set -uo pipefail
 APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$APP_DIR/../scripts/install-lib.sh"
@@ -12,7 +13,7 @@ BUNDLE=stayup.app
 BUNDLE_ID=com.minh.stayup
 TEAM_ID=BULCQM9J2V
 CLI=stayup
-SPARED=no            # compiled-in default spare
+SPARED=yes           # register with demonlock at install (root-owned Regime A) — demonlock ships no base list
 provide_bundle() { dl_swift_bundle stayup.app; }
 post_install() {
   dl_write_sudoers stayup \
