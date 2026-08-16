@@ -10,15 +10,26 @@ enum PeerTrust {
     private static let SOL_LOCAL: Int32 = 0
     private static let LOCAL_PEERTOKEN: Int32 = 0x006
 
-    static func isTrusted(_ conn: Int32, requirement: SecRequirement?) -> Bool {
-        guard let requirement else { return false }
+    /// Fetch the connected peer's kernel audit token (unforgeable, not PID). nil on any error.
+    static func peerToken(_ conn: Int32) -> audit_token_t? {
         var token = audit_token_t()
         var len = socklen_t(MemoryLayout<audit_token_t>.size)
         let ok = withUnsafeMutablePointer(to: &token) {
             getsockopt(conn, SOL_LOCAL, LOCAL_PEERTOKEN, $0, &len)
         }
-        guard ok == 0, len == socklen_t(MemoryLayout<audit_token_t>.size) else { return false }
+        guard ok == 0, len == socklen_t(MemoryLayout<audit_token_t>.size) else { return nil }
+        return token
+    }
 
+    /// The peer's effective uid, straight from the audit token (XNU layout: val[1] = euid).
+    static func euid(of token: audit_token_t) -> uid_t {
+        withUnsafeBytes(of: token.val) { $0.load(fromByteOffset: MemoryLayout<UInt32>.size, as: UInt32.self) }
+    }
+
+    /// Is the peer the *exact same signed binary* as us (cdhash), by its audit token? Hardened runtime
+    /// blocks same-user code injection; the audit token (not PID) closes any TOCTOU window.
+    static func isTrusted(token: audit_token_t, requirement: SecRequirement?) -> Bool {
+        guard let requirement else { return false }
         let tokenData = withUnsafeBytes(of: token) { Data($0) } as CFData
         let attrs = [kSecGuestAttributeAudit as String: tokenData] as CFDictionary
         var guest: SecCode?
@@ -97,9 +108,23 @@ final class SecureFeedServer {
         while true {
             let conn = accept(fd, nil, nil)
             if conn < 0 { continue }
-            guard PeerTrust.isTrusted(conn, requirement: requirement) else { close(conn); continue }
+            // Trust the peer only if (1) it's our exact signed binary (cdhash) AND (2) it runs as the
+            // ENFORCED user. The euid pin closes the second-GUI-session bypass: a Guest/other account's
+            // agent has the same cdhash but a different euid, so its packets — which carry the WRONG
+            // session's guiPids — are refused. [review H1 / finding A]
+            guard let token = PeerTrust.peerToken(conn),
+                  PeerTrust.isTrusted(token: token, requirement: requirement),
+                  peerUIDAllowed(PeerTrust.euid(of: token))
+            else { close(conn); continue }
             Thread.detachNewThread { [weak self] in self?.handle(conn) }
         }
+    }
+
+    /// Accept a feed only from the enforced user (or from anyone pre-config, when there's nothing to
+    /// enforce yet — cdhash still gates it to our binary).
+    private func peerUIDAllowed(_ euid: uid_t) -> Bool {
+        guard let enforced = Settings.load().enforcedUID() else { return true }
+        return euid == enforced
     }
 
     private func handle(_ conn: Int32) {

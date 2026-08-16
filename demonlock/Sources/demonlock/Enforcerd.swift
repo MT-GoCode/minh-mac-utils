@@ -212,7 +212,7 @@ final class Enforcer {
             if countdownDeadline == nil { countdownDeadline = now.addingTimeInterval(settings.countdownSeconds) }
             let elapsed = countdownDeadline.map { now >= $0 } ?? false
             if elapsed, armed {
-                lockOut(agentLive: agentLive, guiPids: guiKillList, now: now)
+                lockOut(agentLive: agentLive, guiPids: guiKillList, enforcedUID: target, now: now)
             } else {
                 nextNuclear = nil          // still warning; not locked yet
             }
@@ -242,9 +242,12 @@ final class Enforcer {
     /// uncatchable, so the GUI actually tears down to the login window; sshd/tmux survive), rate-limited so
     /// the agent gets a window to relaunch and report. (Plain `killall` = SIGTERM, which WindowServer
     /// survives — that was the "logged every 15s, nothing happened" bug.)
-    private func lockOut(agentLive: Bool, guiPids: [Int32], now: Date) {
+    private func lockOut(agentLive: Bool, guiPids: [Int32], enforcedUID: uid_t, now: Date) {
         if agentLive {
-            for pid in guiPids where pid > 1 { kill(pid, SIGKILL) }
+            // Defense in depth: only SIGKILL pids actually OWNED by the enforced user, so a forged or
+            // foreign guiPids list filters to nothing rather than killing the wrong session's processes
+            // (the agent-supplied list is no longer taken on faith). [review H1]
+            for pid in guiPids where pid > 1 && procUID(pid) == enforcedUID { kill(pid, SIGKILL) }
             nextNuclear = nil
         } else if now.timeIntervalSince(lastAgentSeen) >= settings.agentGraceSeconds,
                   nextNuclear == nil || now >= nextNuclear! {
@@ -259,6 +262,16 @@ final class Enforcer {
     // MARK: helpers
 
     private func clearCountdown() { countdownDeadline = nil; nextNuclear = nil }
+
+    /// Effective uid of a running pid via sysctl (KERN_PROC_PID). nil if the process is gone — so a
+    /// racing exit can't be mistaken for "owned by the enforced user".
+    private func procUID(_ pid: Int32) -> uid_t? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return nil }
+        return info.kp_eproc.e_ucred.cr_uid
+    }
 
     private func resetSession(_ uid: uid_t?) {
         // New console session: reset the countdown. Drop the previous session's last feed packet so a

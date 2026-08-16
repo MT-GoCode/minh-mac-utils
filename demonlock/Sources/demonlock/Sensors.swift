@@ -278,9 +278,19 @@ final class SensorFeeder: NSObject, CLLocationManagerDelegate {
 
     /// The bundle is owned by root and not group/other-writable — i.e. unmodifiable without sudo.
     private static func rootOwnedBundle(_ url: URL?) -> Bool {
-        guard let path = url?.standardizedFileURL.path else { return false }
-        var st = stat()
-        guard stat(path, &st) == 0 else { return false }
-        return st.st_uid == 0 && (st.st_mode & (S_IWGRP | S_IWOTH)) == 0
+        guard let bundleURL = url?.standardizedFileURL else { return false }
+        func rootOwnedNotGroupOtherWritable(_ p: String) -> Bool {
+            var st = stat()
+            guard stat(p, &st) == 0 else { return false }
+            return st.st_uid == 0 && (st.st_mode & (S_IWGRP | S_IWOTH)) == 0
+        }
+        // Check the bundle root AND its main executable. Regime A accepts ANY signer, so filesystem
+        // ownership is the ONLY barrier — and the executable is what actually runs, so a user-writable
+        // inner path under a root-owned .app must not be able to pass by swapping the Mach-O and
+        // ad-hoc-re-signing it. [review M6]
+        guard rootOwnedNotGroupOtherWritable(bundleURL.path) else { return false }
+        let exe = Bundle(url: bundleURL)?.executableURL?.resolvingSymlinksInPath().path
+            ?? bundleURL.appendingPathComponent("Contents/MacOS").path
+        return rootOwnedNotGroupOtherWritable(exe)
     }
 }
