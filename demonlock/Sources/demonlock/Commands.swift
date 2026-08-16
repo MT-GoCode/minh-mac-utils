@@ -150,7 +150,7 @@ func runSetPolicy(_ policy: String) {
 
 func runSnoozeTonight() {
     requireRoot("snoozetonight")
-    applySnooze(until: nextHHMM(Settings.load().snoozeHHMM))
+    applySnooze(until: TimeSpec.nextHHMM(Settings.load().snoozeHHMM))
 }
 
 /// Write the snooze target, ensure ARMED (so the daemon re-arms itself at expiry — no sudo needed
@@ -165,20 +165,6 @@ private func applySnooze(until target: Date) {
     }
     let f = DateFormatter(); f.dateFormat = "EEE yyyy-MM-dd HH:mm"
     print("✓ snoozed — stands down until \(f.string(from: target)), then RE-ARMS automatically.\(armedNote)")
-}
-
-/// Next occurrence of an HHMM time-of-day.
-func nextHHMM(_ hhmm: String) -> Date {
-    let digits = hhmm.filter(\.isNumber)
-    let v = Int(digits) ?? 500
-    let h = v / 100, m = v % 100
-    let cal = Calendar.current
-    let now = Date()
-    var comps = cal.dateComponents([.year, .month, .day], from: now)
-    comps.hour = h; comps.minute = m; comps.second = 0
-    var target = cal.date(from: comps) ?? now
-    if target <= now { target = cal.date(byAdding: .day, value: 1, to: target) ?? target }
-    return target
 }
 
 // MARK: - snooze (sudo)
@@ -198,93 +184,13 @@ func runSnooze(_ spec: String) {
              "  (capped at \(Int(snoozeMaxHours)) hours)")
     }
     let target: Date
-    do { target = try parseSnoozeTarget(s) } catch { fail("✗ \(error)") }
+    do { target = try TimeSpec.parseTarget(s) } catch { fail("✗ \(error)") }
     let now = Date()
     guard target > now else { fail("✗ that time is already past — nothing to snooze.") }
     guard target <= now.addingTimeInterval(snoozeMaxHours * 3600) else {
         fail("✗ snooze is capped at \(Int(snoozeMaxHours)) hours — that target is further out. Pick a sooner time.")
     }
     applySnooze(until: target)
-}
-
-private struct SnoozeError: Error, CustomStringConvertible {
-    let message: String
-    var description: String { message }
-}
-
-/// Resolve a snooze spec (`for <duration>` | `until <[day]HHMM>`) to an absolute future Date.
-private func parseSnoozeTarget(_ s: String) throws -> Date {
-    let lower = s.lowercased()
-    if lower.hasPrefix("for") {
-        guard let secs = parseSnoozeDuration(String(s.dropFirst(3))), secs > 0 else {
-            throw SnoozeError(message: "bad duration after 'for' — use e.g. \"for 90m\", \"for 2h\", \"for 1h30m\"")
-        }
-        return Date().addingTimeInterval(secs)
-    }
-    if lower.hasPrefix("until") {
-        var rest = String(s.dropFirst(5)).trimmingCharacters(in: .whitespaces).uppercased()
-        var weekday: Int? = nil
-        if let first = rest.first, let wd = snoozeWeekday(first), rest.count == 5 {
-            weekday = wd; rest = String(rest.dropFirst())
-        }
-        guard rest.count == 4, rest.allSatisfy(\.isNumber), let v = Int(rest), v <= 2359, v % 100 < 60 else {
-            throw SnoozeError(message: "bad time after 'until' — use \"until HHMM\" or \"until <day>HHMM\" like \"until U0730\"")
-        }
-        if let wd = weekday {
-            // Fail CLOSED: if the calendar can't resolve the day/time, error out (no snooze written)
-            // rather than silently standing enforcement down for a fallback minute.
-            guard let d = nextWeekdayHHMM(weekday: wd, hhmm: v) else {
-                throw SnoozeError(message: "couldn't resolve \"until\" to a calendar date — try a plain \"until HHMM\"")
-            }
-            return d
-        }
-        return nextHHMM(String(format: "%04d", v))   // reuse snoozetonight's helper
-    }
-    throw SnoozeError(message: "expected \"for <duration>\" or \"until <[day]HHMM>\" — e.g. \"for 45m\" or \"until 0730\"")
-}
-
-/// Sum of number+unit tokens (d/h/m/s), whitespace-insensitive: "1h30m" → 5400, "90m" → 5400.
-/// nil on a unit with no number, a trailing bare number, or junk.
-private func parseSnoozeDuration(_ raw: String) -> Double? {
-    let s = raw.lowercased().filter { !$0.isWhitespace }
-    guard !s.isEmpty else { return nil }
-    var total = 0.0, num = "", sawUnit = false
-    for ch in s {
-        if ch.isNumber { num.append(ch); continue }
-        guard let n = Double(num) else { return nil }
-        switch ch {
-        case "d": total += n * 86400
-        case "h": total += n * 3600
-        case "m": total += n * 60
-        case "s": total += n
-        default: return nil
-        }
-        num = ""; sawUnit = true
-    }
-    guard num.isEmpty, sawUnit else { return nil }
-    return total
-}
-
-/// Day letter → Calendar weekday (1=Sun…7=Sat). M T W R F S U, R=Thu, U=Sun (same as the policy lang).
-private func snoozeWeekday(_ c: Character) -> Int? {
-    switch Character(c.uppercased()) {
-    case "U": return 1; case "M": return 2; case "T": return 3; case "W": return 4
-    case "R": return 5; case "F": return 6; case "S": return 7; default: return nil
-    }
-}
-
-/// Next strictly-future occurrence of a weekday + HHMM, or nil if the calendar can't resolve it
-/// (so the caller fails closed rather than snoozing for a bogus fallback).
-private func nextWeekdayHHMM(weekday: Int, hhmm: Int) -> Date? {
-    let cal = Calendar.current, now = Date()
-    for off in 0...8 {
-        guard let base = cal.date(byAdding: .day, value: off, to: now) else { continue }
-        var c = cal.dateComponents([.year, .month, .day], from: base)
-        c.hour = hhmm / 100; c.minute = hhmm % 100; c.second = 0
-        guard let cand = cal.date(from: c), cand > now, cal.component(.weekday, from: cand) == weekday else { continue }
-        return cand
-    }
-    return nil
 }
 
 // MARK: - arm / disarm (sudo)
@@ -367,11 +273,11 @@ private func rvSet(_ winPol: String?, _ delay: String?, _ dur: String?) {
         cfg.windowPolicy = s
     }
     if let d = delay {
-        guard let secs = parseSnoozeDuration(d), secs >= 0 else { fail("✗ bad --set-request-delay — use e.g. \"12h\", \"90m\", \"1h30m\"") }
+        guard let secs = TimeSpec.parseDuration(d), secs >= 0 else { fail("✗ bad --set-request-delay — use e.g. \"12h\", \"90m\", \"1h30m\"") }
         cfg.delaySec = secs
     }
     if let d = dur {
-        guard let secs = parseSnoozeDuration(d), secs > 0 else { fail("✗ bad --set-request-duration — use e.g. \"1h\", \"30m\"") }
+        guard let secs = TimeSpec.parseDuration(d), secs > 0 else { fail("✗ bad --set-request-duration — use e.g. \"1h\", \"30m\"") }
         cfg.durationSec = secs
     }
     do { try cfg.save() } catch { fail("✗ couldn't write release-valve config: \(error)") }
@@ -472,7 +378,7 @@ func runIGotShitDueAtMidnight(_ args: [String]) {
     print("✓ requested — in \(mins)m demonlock stands down until 12:05 AM tonight, then re-arms automatically.")
     print("  It kicks in even mid-lockout. Watch: `demonlock status`  ·  cancel: `demonlock igotshitdueatmidnight --abort`")
     // Fail-closed edge: if 12:05 AM is under 1.5h away, by apply time it'll have passed → no snooze.
-    if nextHHMM(DelayedSnooze.targetHHMM).timeIntervalSinceNow < DelayedSnooze.delaySec {
+    if TimeSpec.nextHHMM(DelayedSnooze.targetHHMM).timeIntervalSinceNow < DelayedSnooze.delaySec {
         print("  ⚠️  but 12:05 AM is under \(mins)m away — by the time the delay is up midnight will have")
         print("      passed, so you'll get NO snooze. This only helps if you ask earlier in the evening.")
     }

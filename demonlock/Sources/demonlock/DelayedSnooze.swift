@@ -61,7 +61,7 @@ enum DelayedSnooze {
                 // and by apply time the target is already past → no snooze, rather than rolling to the
                 // NEXT midnight and handing out a ~24h stand-down.
                 st.requestedAt = now; st.applyAt = now + delaySec
-                st.targetAt = nextHHMM(targetHHMM).timeIntervalSince1970
+                st.targetAt = TimeSpec.nextHHMM(targetHHMM).timeIntervalSince1970
                 st.save()
                 log("igotshitdueatmidnight: request accepted (snooze in \(Int(delaySec/60))m, until 12:05 AM)")
             }
