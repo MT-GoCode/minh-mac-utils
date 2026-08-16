@@ -5,13 +5,19 @@ location, the time of day, and nearby Wi‑Fi access points; when you're **out o
 a 10‑second countdown and then **force-closes your GUI apps** (`sshd`/`tmux` survive, so you can SSH
 in to disarm). Replaces `location-locker` + `nightlock` with one signed Swift binary. Installs **disarmed**.
 
+demonlock also **absorbs two former standalone tools**: **settings-guard** (the old `settingslock` —
+slams System Settings shut on the FileVault / Device-Management / Profiles panes; needs an
+Accessibility grant) and the **internal admin grant/revoke** (the old `sudome`, now done directly by
+the root daemon — no setuid binary, no held password). Getting sudo back is the delay-gated
+**admin release valve**.
+
 ```bash
 sudo ./install.sh                 # build (or deploy prebuilt) → sign → install → load. DISARMED.
 demonlock scan                    # walk the floor, capture AP hardware addresses (no sudo)
-demonlock zones                   # draw/name zones on a map (optional; add=admin, delete=free)
+demonlock zones                   # draw/name zones on a map (add/delete = admin now, or queue 36h)
 sudo demonlock setpolicy '...'    # set the allow-condition
 demonlock status                  # see exactly how it evaluates right now
-sudo demonlock arm                # enforcement on
+sudo demonlock arm                # enforcement on (also drops admin + closes the release valve)
 ```
 
 ## Architecture
@@ -62,13 +68,18 @@ policy. **BSSID** (AP hardware MAC) is used over the SSID name because names are
 |---|---|
 | `main.swift` | subcommand dispatch + grouped help |
 | `Paths.swift` | every path / launchd label / bundle id (single source of truth) |
-| `Settings.swift` · `State.swift` · `Zones.swift` | settings.json, the published `StateSnapshot`/`FeedPayload`/`EvalNode` types + small root files, zone model (circle/polygon, ray-cast) |
-| `Policy.swift` | tokenizer → parser → three-valued evaluator → validator (`_policytest` = unit tests) |
-| `Feed.swift` | cdhash-authenticated socket server (root) + sender (agent) |
-| `Sensors.swift` · `Wifi.swift` | agent CoreLocation + CoreWLAN BSSID feed; root-side Wi‑Fi keep-on |
-| `Enforcerd.swift` | the root daemon: poll loop, state machine, lockout (force-kill GUI) |
-| `Agent.swift` · `ZonesUI.swift` | status/countdown panel + menubar; the `zones` map program |
-| `Commands.swift` | `status`/`setpolicy`/`arm`/`disarm`/`snoozetonight`/`perm-ask`/`_zonedel` |
+| `Settings.swift` · `State.swift` · `Zones.swift` | settings.json (v2: baked `Bounds`, per-slot delays, `safeApps`/`snoozePresets`), the published `StateSnapshot`/`FeedPayload`/`EvalNode` types + small root files, zone model (circle/polygon, ray-cast) |
+| `Policy.swift` · `PolicyTest.swift` | tokenizer → parser → three-valued evaluator → validator; `_policytest` unit tests |
+| `Feed.swift` | cdhash-authenticated socket server (root, euid-pinned) + sender (agent) |
+| `Sensors.swift` · `Wifi.swift` | agent CoreLocation + CoreWLAN BSSID feed + GUI kill-target enumeration; root-side Wi‑Fi keep-on |
+| `Enforcerd.swift` | the root daemon: poll loop, state machine, lockout (force-kill GUI), drives every subsystem tick |
+| `Agent.swift` · `ZonesUI.swift` | status/countdown panel + menubar (also runs settings-guard); the `zones` map program |
+| `Commands.swift` | the CLI: `status`/`setpolicy`/`arm`/`disarm`/`nosudo`/`snooze`/`perm-ask`/`test-lockout` + the subsystem parsers |
+| `Admin.swift` | internalized admin (sudo) grant/revoke via `dseditgroup` — replaces the retired `sudome` |
+| `SettingsGuard.swift` | the folded-in `settingslock` — kills System Settings on a guarded pane (Accessibility) |
+| `ReleaseValve.swift` | the delay-gated admin release valve (config + lifecycle + tick) |
+| `SafeApps.swift` · `SnoozePresets.swift` · `Lockbox.swift` | the request→delay→apply subsystems: spare list, named snooze shortcuts, password lockbox |
+| `DelayedChange.swift` · `MarkerIO.swift` · `TimeSpec.swift` · `Tables.swift` | delayed policy/zones/gate-policy engine; hardened marker read (O_NOFOLLOW + owner-check + unlink-verify); duration/target parsing; table renderer |
 | `install/` | `build.sh` (codesign), `install.sh`, `uninstall.sh`, `Info.plist`, two `.plist`s |
 | `dist/Demonlock.app` | prebuilt, signed bundle so a toolchain-less Mac installs by copy |
 
@@ -83,11 +94,22 @@ policy. **BSSID** (AP hardware MAC) is used over the SSID name because names are
    ad-hoc. (Ad-hoc build is the last resort: toolchain but no cert and no `dist/`.) Strips
    quarantine either way.
 2. Copies app → `/Applications`, a CLI wrapper → `/usr/local/bin/demonlock`.
-3. Seeds `/Library/Application Support/Demonlock/` defaults *only if absent* (`enforcedUser`=
-   `$SUDO_USER`, `wifiDevice` auto-detected; `armed=0` ⇒ **installs disarmed**).
-4. Installs both plists; writes `/etc/sudoers.d/demonlock` granting passwordless `_zonedel` only.
-5. `bootstrap`s `enforcerd` into `system` and `agent` into `gui/$SUDO_UID`; runs `perm-ask` (the
-   Location grant — one click, once per machine).
+3. Seeds `/Library/Application Support/Demonlock/` — `enforcedUser`=`$SUDO_USER` + `wifiDevice`
+   auto-detected; `armed=0` ⇒ **installs disarmed**. A reinstall **merges** those two per-machine
+   keys into any existing `settings.json` (it never overwrites your registered safe-apps, snooze
+   presets, or tuned delays). Creates the **user-owned `rv/` inbox** so the no-sudo request commands
+   can drop markers without sudo.
+4. Installs both plists; writes `/etc/sudoers.d/demonlock` granting passwordless **`arm`** and
+   **`nosudo`** only (both TIGHTEN — safe without admin, survive you dropping it). The grants target
+   the go-w, root-owned **bundle binary** (`/Applications/Demonlock.app/Contents/MacOS/demonlock`),
+   NOT the `/usr/local/bin` wrapper, and the installer **asserts `/usr/local[/bin]` is root-owned**
+   and aborts otherwise (else a wrapper-path grant could be arbitrary root). The old free `_zonedel`
+   grant is **gone** (zone delete isn't monotone → now admin-or-delayed). Also removes any retired
+   setuid `sudome` binary + `/usr/local/etc/sudome`.
+5. Points the agent log at `~/Library/Logs/demonlock-agent.log` (not world-writable `/tmp`),
+   `bootstrap`s `enforcerd` into `system` and `agent` into `gui/$SUDO_UID`, verifies `com.demonlock`
+   is in the spare list, and runs `perm-ask` (opens the **Location** *and* **Accessibility** panes —
+   one click each, once per machine).
 
 ## Post-install layout & permissions
 
@@ -97,11 +119,14 @@ policy. **BSSID** (AP hardware MAC) is used over the SSID name because names are
 | `/usr/local/bin/demonlock` | root:wheel | 755 | CLI wrapper → app binary |
 | `/Library/LaunchDaemons/com.demonlock.enforcerd.plist` | root:wheel | 644 | root daemon (RunAtLoad+KeepAlive) |
 | `/Library/LaunchAgents/com.demonlock.agent.plist` | root:wheel | 644 | GUI agent (RunAtLoad+KeepAlive) |
-| `…/Demonlock/policy.txt` `zones.json` `settings.json` `armed` `snooze` `state.json` | root:wheel | 644 | config + state — world-readable so `status` works, **root-only writable = the lock** |
+| `…/Demonlock/policy.txt` `zones.json` `settings.json` `armed` `snooze` `state.json` `heldfix.json` | root:wheel | 644 | config + state — world-readable so `status` works, **root-only writable = the lock** |
+| `…/Demonlock/` subsystem state: `releasevalve.json` `rv-state.json` `delayed-{policy,zones,gatepolicy}.json` `safe-apps-pending.json` `snooze-presets.json` `lockbox-state.json` | root:wheel | 644 | request→delay→apply pending state for each subsystem (never secrets) |
+| `…/Demonlock/lockbox.json` | root:wheel | **600** | the password-lockbox secret vault — root-only, never group/other-readable |
+| `…/Demonlock/rv/` | **you** | 755 | the **user-owned inbox**: no-sudo request/abort markers (the daemon stamps the real request time itself, so the delay can't be backdated) |
 | `…/Demonlock/logs/enforcerd.log` | root:wheel | 644 | daemon log |
-| `/etc/sudoers.d/demonlock` | root:wheel | 440 | passwordless `demonlock _zonedel *` only (delete tightens) |
-| `/var/run/demonlock.sock` | root | 0666 | sensor feed — identity *verified by cdhash*, not access-gated |
-| `~/Library/Logs/AllConditionalLocker/agent.log` (or `/tmp/demonlock-agent.log`) | you | 644 | agent log |
+| `/etc/sudoers.d/demonlock` | root:wheel | 440 | passwordless **`arm`** + **`nosudo`** only (both tighten), targeting the bundle binary |
+| `/var/run/demonlock.sock` | root | 0666 | sensor feed — identity *verified by cdhash* + peer euid pinned to the enforced uid, not access-gated |
+| `~/Library/Logs/demonlock-agent.log` | you | 644 | agent log (moved off world-writable `/tmp`) |
 
 (`/Library/Application Support/Demonlock/` is `755 root:wheel`.)
 
@@ -159,9 +184,11 @@ reload needed.
   three-valued logic means a still-decidable clause (e.g. an allowed time window, or another zone)
   keeps you allowed. Disarmed = same evaluation, countdown shows, but the lockout is a no-op (title
   reads `(DISARMED)`).
-- **Zone changes are asymmetric by privilege.** Adding a zone *loosens* policy → the map UI
-  escalates the write via the admin prompt. Deleting *tightens* → passwordless via the narrow
-  `_zonedel` sudoers grant (survives you removing your admin rights).
+- **Zone changes go through the admin-or-delayed path — both directions.** Adding a zone *loosens*
+  policy, so the map UI asks **"Save now (admin)"** vs **"Save in 36h"**. Deleting *looks* like it
+  tightens, but a zone referenced under `NOT` actually loosens on delete, so zone delete is **not
+  monotone** — the old free `_zonedel` sudoers grant is **removed**, and a dangling zone reference now
+  evaluates to `.unknown` (fail-closed) rather than false. Delete is therefore admin-or-delayed too.
 - **Signing.** Developer ID + secure timestamp ⇒ runs on any Mac and stays valid after the cert
   expires; ad-hoc fallback is fully sufficient for the cdhash-trust + hardened-runtime model.
 
@@ -172,159 +199,245 @@ Wi‑Fi check pins BSSIDs.
 
 ## Commands & settings
 
-User (no sudo): `status` · `zones` (`view-zones`/`edit-zones` alias it) · `scan` · `perm-ask` ·
-`release-valve --request` · `delaysetpolicy "<expr>"` (queue a policy; lands in 36h — `--status`/
-`--abort`) · `delayzones --status`/`--abort` (view/cancel a zones change queued from the map) ·
-`igotshitdueatmidnight` (in 1.5h, stand down until 12:05 AM tonight, then re-arm — `--status`/
-`--abort`) · `help`. Sudo: `setpolicy` · `arm` · `disarm` · `snoozetonight` (stands down until the next
-`snoozeHHMM`, default 05:00, then auto-clears; `arm` clears an active snooze) · `snooze "<spec>"`
-(flexible stand-down: `"for <duration>"` in d/h/m/s, or `"until <[day]HHMM>"`, e.g. `snooze "for 90m"`
-/ `snooze "until 0730"`; **capped at 18 hours**). `snooze` **implies armed and RE-ARMS automatically**
-at expiry (no sudo needed then) — so the escape-then-resume flow is just `snooze`, not disarm/arm.
-`arm` = enforce now (cancels a snooze); `disarm` = off indefinitely. Settings live in
-`settings.json` (`pollSeconds`, `countdownSeconds`, `snoozeHHMM`, `graceSeconds`, `maxAccuracyMeters`,
-`scanSeconds`, `scanWindowSeconds`, `enforcedUser` [username **or** uid — the lockout target],
-`wifiKeepOn`, `wifiDevice`, `spareApps`). There is deliberately **no fix-age knob** and no
-startup-grace knob — a held fix is valid while it keeps being confirmed, never judged by raw age.
-See `MODEL.md`.
+**User (no sudo):** `status` · `zones` (`view-zones`/`edit-zones` alias it; `zones list` prints
+names) · `scan` · `perm-ask` · `arm` (tightens — passwordless via sudoers; also drops admin + closes
+the release valve) · `nosudo` (drop admin now) · `test-lockout` (see below) · `settings-guard` (+
+`dump`) · `admin-release-valve …` · `safe-apps …` · `snooze-preset …` · `password-lockbox …` ·
+`delay-set-policy "<expr>"` (queue a policy; lands after the delay — `--status`/`--abort`;
+`delaysetpolicy` still aliases it) · `delayzones --status`/`--abort` (view/cancel a zones change
+queued from the map) · `help`.
 
-**Sparing an app from the lockout kill** (`spareApps`): the LOCKED action SIGKILLs **every
-`.regular` (Dock) app — including Apple ones like Safari — plus every non-Apple `.accessory`
-(menubar) app**, so a distraction repackaged as `LSUIElement` can't dodge the lockout. A `.accessory`
-app not in `spareApps` is spared **only if its live signature is genuinely Apple-signed** (`anchor
-apple` — which a Developer-ID cert can't satisfy), so Control Center / Spotlight / Siri survive but
-an `LSUIElement` distraction stamped `com.apple.…` (or with no bundle id) is killed — the bundle-id
-string is never trusted, the signature is verified. This agent is spared by PID. Pure daemons
-(betterat, nextdns*) have no GUI app and are never in the kill-list. Everything else dies unless it's
-a **verified** entry in `spareApps`.
+**Sudo:** `setpolicy` · `disarm` · `snooze "<spec>"` (flexible stand-down: `"for <duration>"` in
+d/h/m/s, or `"until <[day]HHMM>"`, e.g. `snooze "for 90m"` / `snooze "until 0730"`; **capped at 18h**;
+implies armed and **RE-ARMS automatically** at expiry — so escape-then-resume is just `snooze`) · plus
+the immediate/config variants of the subsystems (`safe-apps register`, `snooze-preset add`,
+`password-lockbox add`, `admin-release-valve set-*`, `… i-still-need-sudo`).
 
-`spareApps` is `bundle-ID → Team ID`, but an app is spared by **one of two regimes**, picked by
-whether its bundle is **root-owned** (`spareVerified` in `Sensors.swift`):
+`arm` = enforce now (cancels a snooze); `disarm` = off indefinitely. `snoozetonight` and
+`igotshitdueatmidnight` are **gone** — `snooze-preset` supersedes both (see below).
 
-- **Root-owned bundle** (our own apps — demonlock/wtalk/blockrem/foreman-uplink/multistreamviewer
-  install to `/Applications` `root:wheel`): spared if it has an **intact signature with the matching identifier — ANY signing
-  identity**. No Team ID, no Apple anchor required (`team` is unused here). This means your own apps
-  **keep working even if you lose your Developer ID** and fall back to self-signed/ad-hoc. It's safe
-  because the adversary has no sudo, so they can't create or modify a root-owned bundle in the first
-  place.
-- **Not root-owned** (a third-party app, e.g. AltTab/Raycast in `/Applications`): spared only if its
-  live signature is **Apple-rooted with the vendor's Team ID** (`anchor apple generic` + that bundle
-  id + that Team ID). That's the **vendor's** team — independent of your signing identity — so a
-  distraction that merely spoofs a whitelisted bundle id from another signer is still killed, and
-  Team (not cdhash) survives the vendor's auto-updates.
+Settings live in root-owned `settings.json` (v2 — **644, root-writable-only = the lock**; the agent
+must read it, so it can't be 600). Knobs: sensing/timing (`pollSeconds`, `countdownPollSeconds`,
+`countdownSeconds`, `graceSeconds`, `maxAccuracyMeters`, `scanSeconds`, `scanWindowSeconds`,
+`agentRefreshSeconds`, and the internal `feedFreshSeconds`/`agentGraceSeconds`/`agentKickSeconds`/
+`nuclearRelockSeconds`/`heldPersistSeconds`); identity (`enforcedUser` [username **or** uid — the
+lockout target], `wifiKeepOn`, `wifiDevice`); settings-guard (`guardSettingsPanes`,
+`guardedSettingsTitles`); the per-subsystem delays (`policyDelaySec`, `zonesDelaySec`,
+`gatePolicyDelaySec`, `safeAppsDelaySec`, `snoozePresetAddDelaySec`); and the subsystem tables
+(`safeAppsUser`/`safeAppsRemoved`, `snoozePresetsUser`/`snoozePresetsRemoved`). `snoozeHHMM` remains
+only as a legacy field. There is deliberately **no fix-age knob** and no startup-grace knob — a held
+fix is valid while it keeps being confirmed, never judged by raw age. See `MODEL.md`.
 
-Default whitelist: demonlock + wtalk + blockrem + foreman-uplink + multistreamviewer (all ours,
-root-owned installs in `/Applications`; wtalk is additionally a PyInstaller-frozen/sealed binary so
-it can't be redirected to run other code), plus the third-party AltTab (`com.lwouis.alt-tab-macos`), Raycast
-(`com.raycast.macos`), Shottr (`cc.ffitch.shottr`), Amphetamine (`com.if.Amphetamine`), Scroll
-Reverser (`com.pilotmoon.scroll-reverser`), BetterDisplay (`pro.betterdisplay.BetterDisplay`), and
-Karabiner (`org.pqrs.Karabiner-*`). Both daemon and agent reload settings.json **live** (every tick /
-feed), so add your own with no reinstall:
+**Baked bounds (the commitment device).** Only the **floors/ceilings of the no-sudo request paths**
+are compiled into the binary (a `Bounds` enum), not read from any file — a root `settings.json` edit
+is silent, a recompile is not. They **clamp at request and apply time**, so a stale or hand-edited
+settings file can't shorten a no-sudo delay: safe-apps register `8h–168h`, snooze-preset add
+`24h–168h`, snooze-preset invoke `≥1h`, snooze duration `≤18h`, policy / zones / gate-policy delay
+`12h–168h`, release-valve request delay `≥30m`, max grant duration `≤4h`, `i-still-need-sudo` `≤1h`
+per call, lockbox unlock delay `≥1h`.
 
-```sh
-sudo vi "/Library/Application Support/Demonlock/settings.json"   # "spareApps": {"com.demonlock":"BULCQM9J2V","their.bundle":"TEAMID"}
-codesign -dv --verbose=4 /Applications/AltTab.app 2>&1 | grep -E 'Identifier|TeamIdentifier'   # bundle id + Team ID
+## settings-guard (the folded-in `settingslock`)
+
+Slams **System Settings** shut the instant it renders a **guarded pane** — the FileVault recovery-key
+pane (so you can't read your own key) and Device Management / Profiles (so you can't yank the NextDNS
+DoH profile or an MDM profile that enforces discipline). The window **title** becomes the pane name
+exactly, so a cheap title check every 100 ms catches it long before "Show"/Remove can be clicked, then
+`SIGKILL`s System Settings. It runs **inside demonlock's agent** (a GUI process), so it needs an
+**Accessibility** grant (`demonlock perm-ask` opens the pane), and it's **active only while armed**.
+
+```bash
+demonlock settings-guard        # status: enabled?, the trigger strings, Accessibility granted?
+demonlock settings-guard dump   # print every window title on the current Settings pane, to confirm
+                                #   the exact trigger string for a pane on this macOS version
 ```
 
-Keep `com.demonlock` in the list. The agent is already spared by PID regardless. Note: a spare only
-dodges the per-app kill — the agent-dead nuclear `killall -9 WindowServer` still takes down all GUI.
+## Admin (sudo) model — internalized, no `sudome`
+
+The retired setuid `sudome` binary is **gone**. Because the enforcer is already root, demonlock
+grants/revokes admin **itself** (`Admin.swift`): grant = `dseditgroup -a … admin`, revoke =
+`dseditgroup -d` + drop any stale per-user `sudoers.d` override + wipe cached sudo timestamps
+(`/var/db/sudo/ts/*`) so a revoke bites immediately, not after sudo's 5-minute window. There is **no
+password anywhere**. Every grant path (the release valve) and every revoke path (valve expiry/abort,
+`arm`, `nosudo`) routes through here, so revocation is uniform and idempotent.
+
+**Honest limit (by design, out of the threat model):** admin obtained during a grant is not truly
+*contained* — a login shell open during the grant keeps `admin` in its cached supplementary groups
+after `dseditgroup -d`, and a determined user could plant residue a revoke won't clean. That's
+inherent to handing out real root. **The REQUEST DELAY is the commitment gate; the auto-revoke is
+anti-accident** (stop sudo lingering by mistake), not a containment boundary.
+
+## safe-apps (replaces the old `spareApps` map)
+
+The LOCKED action SIGKILLs **every `.regular` (Dock) app — including Apple ones like Safari — plus
+every non-Apple `.accessory` (menubar) app**, so a distraction repackaged as `LSUIElement` can't dodge
+the lockout. A `.accessory` app not on the list is spared **only if its live signature is genuinely
+Apple-signed** (`anchor apple`), so Control Center / Spotlight / Siri survive but an `LSUIElement`
+distraction stamped `com.apple.…` is killed — the bundle-id string is never trusted, the signature is
+verified. The agent is spared by PID; pure daemons (betterat, nextdns-sidecar) have no `.regular` GUI
+app and are never in the kill-list. Everything else dies unless it's a **verified** safe-app.
+
+Each safe-app is `{name, bid, tid, rootOwned}`, and is spared by **one of two regimes** (`spareVerified`
+in `Sensors.swift`):
+
+- **`rootOwned: true` → Regime A** (our own apps, root-owned installs in `/Applications`): spared if it
+  has an **intact signature matching the identifier — ANY signing identity**. No Team ID / Apple anchor
+  required, so your own apps **keep working even if you lose your Developer ID**. Safe because the
+  adversary has no sudo, so can't create or modify a root-owned bundle (the check now also stats the
+  inner `Contents/MacOS/<exec>`, not just the top `.app`).
+- **`rootOwned: false` → Regime B** (third-party, e.g. Raycast): spared only if **Apple-rooted with the
+  vendor's Team ID** (`anchor apple generic` + that bid + that Team OU). **Refused for our own team** —
+  an own-team app *must* be root-owned (we hold the `BULCQM9J2V` key, so a Regime-B fallthrough would
+  let a browser renamed `com.demonlock` be spared).
+
+**Baked blocklist (`register` refuses):** every browser bundle id (Chrome/Safari/Firefox/Edge/Brave/
+Arc/Opera/Vivaldi/Yandex, incl. beta/dev channels) and `sh.paseo.desktop` — sparing any of them would
+defeat the whole point. (The Paseo daemon helper `sh.paseo.desktop.helper` is a separate compiled
+default spare, untouched by the blocklist.) `com.demonlock` is **unremovable** (losing it → the agent
+dies on lockout → nuclear WindowServer loop).
+
+Defaults: our own `demonlock`, `wtalk` (`com.wtalk.daemon`), `remote-agent-connector`, `msv2`,
+`stayup` (Regime A), plus third-party `paseo-daemon`, `alttab`, `raycast`, `shottr`, `amphetamine`,
+`betterdisplay`, `scroll-reverser`, `karabiner-*` (Regime B).
+
+```bash
+demonlock safe-apps show                                    # the effective list + pending registrations
+sudo demonlock safe-apps register --name foo --bid com.x.Foo --tid TEAMID10   # immediate
+demonlock safe-apps delayed-register --name foo --bid com.x.Foo --tid TEAMID10   # no sudo; lands after the delay
+demonlock safe-apps delayed-register abort <name> | --all
+demonlock safe-apps remove <name>                           # no sudo, IMMEDIATE (removing tightens)
+sudo demonlock safe-apps set-delay "24h"                    # delayed-register delay (baked 8h–168h)
+```
+
+Add `--no-root-ownership` to register a third-party app under Regime B (own-team apps can't use it).
+`demonlock safe-apps show` is the single source of truth for the effective list — `verify-spare.sh`
+queries it rather than grepping `settings.json`.
 
 ### To whitelist a new app of yours
 
-Being in `spareApps` is **not** "anything you signed" — it's an explicit per-bundle-id list, AND the
-running app must verify (above). A brand-new app you build + sign with your own team is **killed**
-unless you do BOTH:
+A brand-new own app is **killed** unless you do BOTH: install it **root-owned** in `/Applications`
+(sudo — a `~/Applications` copy is user-owned ⇒ fails the owner check), and register it root-owned
+(`sudo demonlock safe-apps register --name … --bid … --tid …`, or the installer's tail helper does it
+for you). A self-made `com.demonlock` impostor you can write to is user-owned ⇒ killed; the genuine
+one is root-owned and tamper-evident (editing it breaks the signature ⇒ also killed).
 
-1. Install it **root-owned** in `/Applications` (so the adversary — you, without sudo — can't create
-   or modify it). A copy you can write to (e.g. `~/Applications`) is user-owned ⇒ fails the
-   root-owned check ⇒ killed even if its bundle id is on the list.
-2. Add its bundle id to the list — live, no rebuild:
+## test-lockout
 
-```sh
-sudo vi "/Library/Application Support/Demonlock/settings.json"
-#   "spareApps": { "com.demonlock":"BULCQM9J2V", …, "com.minh.newthing":"BULCQM9J2V" }
-```
-
-demonlock re-reads that file every ~1 second. Skip either step → it gets killed on lockout.
-
-**Why a self-made `com.demonlock` fake doesn't work:** even though `com.demonlock` is on the list and
-you can sign it with your own team, the running impostor would live somewhere you can write
-(`~/…`/`~/Applications`) = **user-owned** ⇒ it fails the root-owned check ⇒ killed. The only
-`com.demonlock` that's spared is the genuine one installed `root:wheel` in `/Applications` (which took
-sudo to put there). And you can't tamper the real one in place — it's root-owned, and editing it
-breaks the signature ⇒ also killed.
-
-## Release valve
-
-A **self-serve, delay-gated admin grant** — get sudo back on *your* terms without holding a password
-day-to-day. You configure it once (sudo), then `--request` (no sudo); the daemon grants admin only
-after a delay and only inside a window you defined, for a fixed duration, then revokes it.
+Prove the per-app kill works without arming and waiting to fall out of policy:
 
 ```bash
-# configure (sudo; any subset per call):
-sudo demonlock release-valve --set-window-policy "IN_POLICY AND TIME_IS_ANY([*1000-1100])"
-sudo demonlock release-valve --set-request-delay "12h"      # wait after --request before eligible
-sudo demonlock release-valve --set-request-duration "1h"    # how long the grant lasts
-# use (no sudo, once all three are set):
-demonlock release-valve --request     # granted after the delay, at the next window, for the duration
-demonlock release-valve abort         # cancel a pending request / close a live grant now
+demonlock test-lockout        # DRY RUN — lists exactly the apps a real lockout would SIGKILL
+demonlock test-lockout --go   # actually close them now
 ```
 
-- **`IN_POLICY`** is a new policy primitive, valid **only** in the window policy: it's the main
-  policy's current verdict, so you can gate grants on being in-policy (plus any time/location clause).
-- **Delay can't be gamed:** `--request` just drops a marker in a **user-owned** inbox
-  (`…/Demonlock/rv/`); the **root daemon stamps the request time with its own clock**, so you can't
-  backdate to skip the delay or request right before a window.
-- **No timers** — config + lifecycle live on disk (root-owned; the inbox is yours), driven by the
-  enforcer tick: each tick evaluates the main policy → feeds `IN_POLICY` → evaluates the window
-  policy → advances `delay → window → granted → expire`, calling `sudome --give-to-user` /
-  `--take-from-user` (idempotent). It grants **admin only** — it does not stand demonlock down, so
-  keep `IN_POLICY` in your window policy if you don't want to be locked out during the grant.
-- **Notifications** fire on grant and revoke (approve the notification prompt on first agent launch);
-  `demonlock status` and the panel show the phase, delay/duration remaining, and the window-eval tree.
+Spared apps, Apple menubar items, and `sshd`/`tmux` survive; a test **never** does the nuclear
+`killall -9 WindowServer`.
 
-## Delayed changes (`delaysetpolicy` + the map's "Save in 36h")
+## admin-release-valve (the delay-gated admin grant)
+
+Get sudo back on *your* terms. Configure it once (sudo), then `request` (no sudo); the daemon stamps
+the request time itself, waits out the delay, and — the first tick the **gate policy** is provably
+true — grants admin for your requested duration, then revokes. **The request delay is the real gate**
+(you can't backdate it — the marker lands in the user-owned `rv/` inbox but the *root daemon* clocks
+it); the auto-revoke after the duration is anti-accident, not containment (see the admin model above).
+Old aliases `release-valve` / `rv` still route here.
+
+```bash
+# configure (sudo; each sets one field):
+sudo demonlock admin-release-valve set-gate-policy "IN_POLICY AND TIME_IS_ANY([*1000-1100])"
+sudo demonlock admin-release-valve set-delay "12h"                 # wait after request before eligible (≥30m)
+sudo demonlock admin-release-valve set-max-request-duration "1h"   # ceiling on a request's grant length (≤4h)
+# use (no sudo, once all three are set):
+demonlock admin-release-valve request "1h"    # ask for ≤1h of admin; granted after the delay, at the next open gate
+demonlock admin-release-valve status          # phase / countdown / gate-eval tree
+demonlock admin-release-valve abort           # cancel a pending request OR close a live grant now
+# extend a LIVE grant (SUDO — you only hold admin during a grant, so this can EXTEND but never bootstrap):
+sudo demonlock admin-release-valve i-still-need-sudo "for 45m"     # ≤1h more per call, in-window only
+```
+
+- **`IN_POLICY`** is a policy primitive valid **only** in the gate policy — the main policy's current
+  verdict, so you can gate grants on being in-policy (plus any time/location clause). The valve grants
+  **admin only**; it does not stand demonlock down, so keep `IN_POLICY` in your gate policy if you
+  don't want to be locked out during the grant.
+- **`request` is idempotent while pending** — a repeat only updates the duration, never resets the
+  frozen eligibility (can't shorten *or* re-extend the delay). Once granted, extend via
+  `i-still-need-sudo` (sudo, in-window) or `abort` and re-request.
+- **`arm` and `nosudo` close the valve** (abort a pending request + revoke a live grant inline), so a
+  request can't hand out sudo minutes after you armed and `status` never lies.
+- **delay-set-gate-policy** changes the gate policy itself on a delay (no sudo):
+  `demonlock admin-release-valve delay-set-gate-policy "<expr>"` (+ `status`/`abort`;
+  `sudo … delay-set-gate-policy set-delay "<dur>"`, baked 12h–168h).
+- Notifications fire on grant and revoke; `demonlock status` and the panel show the phase,
+  delay/duration remaining, and the gate-eval tree.
+
+## snooze-presets (replaces `snoozetonight` + `igotshitdueatmidnight`)
+
+Named snooze shortcuts, each `{name, spec, invokeDelay}` where `spec` is a `"for <dur>"` /
+`"until <[day]HHMM>"` target and `invokeDelay` is how long **after** you invoke it before the snooze
+lands (the commitment device). A snooze **stands down THEN re-arms**; `"until"` targets are **frozen
+at invoke time** (keeps the midnight fail-closed lesson) and every stand-down is **capped at 18h**.
+
+Two defaults reproduce the retired commands: **`tonight`** (`until 0500`, 1h invoke delay ≈
+`snoozetonight`) and **`midnight`** (`until 0005`, 1.5h ≈ `igotshitdueatmidnight`).
+
+```bash
+demonlock snooze-preset show                     # presets + pending delayed-adds
+demonlock snooze-preset invoke tonight           # stand down after the invoke-delay, then re-arm (no sudo)
+demonlock snooze-preset abort                     # cancel the in-flight invocation (ONE globally)
+demonlock snooze-preset remove <name>            # no sudo, IMMEDIATE (removing tightens)
+demonlock snooze-preset delayed-add --name crunch --duration "for 4h" --delay "24h"   # lands after the add-delay
+demonlock snooze-preset delayed-add abort <name> | --all
+sudo demonlock snooze-preset add --name crunch --duration "for 4h" --delay "1h"       # immediate
+sudo demonlock snooze-preset set-delay "48h"     # the delayed-add delay (baked 24h–168h)
+```
+
+Only **one invocation is in flight at a time**. `sudo demonlock snooze "<spec>"` remains the immediate
+root escape hatch alongside the presets.
+
+## password-lockbox (a delay-gated secret store — NOT a privilege path)
+
+A general password manager for arbitrary secrets. It does **not** hold the admin password (admin is
+only via the release valve; there's no password anywhere). Secrets live in a **separate 0600 root-only
+file** (never `settings.json`, which is 644); only lock *state* (names, locked/unlocked, time-left) is
+published for `show`.
+
+```bash
+demonlock password-lockbox show                              # names, unlock-delay, locked/unlocked
+demonlock password-lockbox unlock <name>                     # no sudo; copyable after the entry's delay
+demonlock password-lockbox abort <name>                      # cancel a pending unlock / relock now
+demonlock password-lockbox copy <name>                       # if unlocked: copy (concealed) + relock immediately
+demonlock password-lockbox add --name <n> --delay "1h"       # then paste the secret twice (no sudo; sudo add = direct)
+```
+
+`copy` puts the secret on the clipboard as a **concealed pasteboard type**
+(`org.nspasteboard.ConcealedType`) so a spared clipboard manager (Raycast keeps history) doesn't retain
+it. An unlocked entry **auto-relocks 15 min** later if never copied; per-entry unlock delay floor is 1h.
+
+## Delayed changes (`delay-set-policy` + the map's "Save in 36h")
 
 Where the release valve hands back **admin on a delay**, delayed changes hand back the **policy and
-zones themselves on a delay** — no sudo, no admin, ever. The gate is purely the **36h wait**: queue a
-loosening now, and only calm-you-a-day-and-a-half-later actually gets it. Same trust split as the
-valve (root-owned pending state; a user-owned inbox marker; the **daemon stamps the request time**, so
-the delay can't be backdated), and the change is **re-validated at apply time** (a zone it referenced
-could be gone) — fail-closed if it no longer parses.
+zones themselves on a delay** — no sudo, no admin, ever. The gate is purely the **wait** (default 36h,
+baked 12h–168h): queue a loosening now, and only calmer-you-later actually gets it. Same trust split as
+the valve (root-owned pending state; a user-owned inbox marker; the **daemon stamps the request time**),
+and the change is **re-validated at apply time** (a referenced zone could be gone) — fail-closed if it
+no longer parses.
 
 ```bash
-demonlock delaysetpolicy '(LOCATED_IN_ANY(["office"])) AND TIME_IS_ANY([MTWRF0700-2000])'
-                                  # queue a NEW allow-policy; lands in 36h (no sudo now OR then)
-demonlock delaysetpolicy --status # what's queued + when it lands
-demonlock delaysetpolicy --abort  # cancel it
+demonlock delay-set-policy '(LOCATED_IN_ANY(["office"])) AND TIME_IS_ANY([MTWRF0700-2000])'
+                                    # queue a NEW allow-policy; lands after the delay (no sudo now OR then)
+demonlock delay-set-policy --status # what's queued + when it lands   (delaysetpolicy still aliases it)
+demonlock delay-set-policy --abort  # cancel it
 ```
 
-Zones ride the **same engine**: in the map (`demonlock zones`), adding a zone loosens the policy, so
-on save you're asked **"Save now (admin)"** vs **"Save in 36h"**. *Now* is the existing admin-prompt
-path (unchanged); *36h* queues the full new `zones.json` and the daemon installs it after the wait.
-View/cancel a queued zones change with `demonlock delayzones --status` / `--abort`.
+Zones ride the **same engine**: in the map (`demonlock zones`), a save asks **"Save now (admin)"** vs
+**"Save in 36h"**; *36h* queues the change and the daemon installs it after the wait. View/cancel with
+`demonlock delayzones --status` / `--abort`.
 
-- **Applies regardless of arm / snooze / who's logged in** — it's a scheduled config change, run at
-  the very top of the enforcer tick (before any early return), so this tick's own evaluation already
-  sees the freshly-written `policy.txt` / `zones.json`.
-- **Re-queueing resets the 36h** (stricter, never shorter). An **alert dialog** (breaks Focus/DnD,
-  like the valve) fires when a change lands; `demonlock status` and the panel show what's pending.
+- **Applies regardless of arm / snooze / who's logged in** — run at the very top of the enforcer tick,
+  so this tick's own evaluation already sees the freshly-written `policy.txt` / `zones.json`.
+- **Re-queueing resets the delay** (stricter, never shorter). An **alert dialog** (breaks Focus/DnD)
+  fires when a change lands; `demonlock status` and the panel show what's pending.
 - Immediate `sudo demonlock setpolicy` and admin zone-saves are untouched — this only *adds* a
   no-sudo, delayed path alongside them.
-
-### `igotshitdueatmidnight` — a delayed snooze until 12:05 AM
-
-A no-sudo snooze on the same delay model: `demonlock igotshitdueatmidnight` requests it, and **1.5h
-later** the daemon stands enforcement down until **12:05 AM tonight**, then re-arms (like
-`snoozetonight`, just delayed + no sudo). The 1.5h wait is the whole friction — you eat the lockout
-until it's up (ask at 8:30 PM, get locked out at 9:00, relief lands at 10:00), and it kicks in **even
-mid-lockout** (the snooze is written at the top of the tick, so that same tick clears the countdown).
-
-- The **12:05 AM target is frozen at request time**, so asking within 1.5h of midnight fails **closed**
-  — by apply time the target has passed and you get *no* snooze, rather than rolling to the next
-  midnight and handing out a ~24h stand-down (the CLI warns you when you're inside that window).
-- `--status` / `--abort` (before it kicks in; once the snooze is live, cancel it with
-  `sudo demonlock arm`). Shows in `demonlock status` + the panel; an alert fires when it activates.
 
 ## Code signing
 

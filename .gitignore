@@ -27,10 +27,6 @@ demonlock/Demonlock.app/
 
 #  no secrets, lets a toolchain-less Mac install by copy. Rebuilt when you have Xcode.)
 
-# ---------- settingslock (Swift) ----------
-settingslock/.build/
-settingslock/dist/
-
 # ---------- wtalk (Python) ----------
 wtalk/.venv/
 wtalk/wtalk.app/
@@ -43,12 +39,13 @@ wtalk/wtalk.onefile-build/
 # secrets/data now live in ~/.wtalk, never the repo; the old repo .env is retired
 wtalk/.env
 
-# ---------- betterat / sudome / nextdns-discipline / nextdns-lockdown ----------
-# Pure source (bash; or C compiled to a temp dir at install) — nothing to ignore.
-# Runtime state + credentials live OUTSIDE the repo:
+# ---------- nextdns-sidecar (Swift; merges the retired nextdns-discipline + nextdns-lockdown) ----------
+nextdns-sidecar/.build/
+
+# ---------- betterat (bash) ----------
+# Pure source — nothing to ignore. Runtime state + credentials live OUTSIDE the repo:
 #   ~/.local/share/betterat/betterat.db
-#   /usr/local/etc/sudome/Allpassword
-#   /usr/local/etc/nextdns-discipline/credentials
+#   /usr/local/etc/nextdns-sidecar/credentials  (NextDNS Profile ID + API key)
 
 # personal scratch (zone names) — never commit
 demonlock/yourpolicies.txt

@@ -26,6 +26,12 @@ step. A single self-contained script.
 agent. It also adds `~/.local/bin` to your `PATH` (in `~/.zshrc`) if it isn't
 already, so `betterat` is callable on a fresh shell.
 
+> **`betterat install` is the real installer.** The repo also carries a
+> `betterat/install.sh` (the shared-lib manifest the other tools use), but it only
+> stages the script system-wide in `/usr/local/bin` root-owned — it does **not** set
+> up your per-user launchd agent or database. betterat is a no-sudo, runs-as-you tool,
+> so use `./betterat install`; jobs won't fire until you do.
+
 ## Schedule
 
 ```bash
