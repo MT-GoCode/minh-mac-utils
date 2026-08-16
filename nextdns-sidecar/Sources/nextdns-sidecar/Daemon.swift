@@ -75,7 +75,7 @@ final class Daemon {
         // block (immediate tighten, no sudo): call the API now. A consumed marker isn't retried across
         // ticks, but callRetry already retries transient failures 4× within the call.
         if let data = MarkerIO.consume(Paths.mBlock, enforcedUID: euid) {
-            let doms = parseDomains(data).filter(validDomain)
+            let doms = dedupCap(data)
             if !doms.isEmpty, let api = NextDNSAPI.load() {
                 for d in doms {
                     let r = api.block(d)
@@ -100,18 +100,32 @@ final class Daemon {
         // can't be backdated. Dedupe by domain keeps the original landing time.
         if let data = MarkerIO.consume(Paths.mDelayAdd, enforcedUID: euid) {
             var reg = Registry.load(); var added = 0
-            for d in parseDomains(data).filter(validDomain) where reg.pending[d] == nil {
+            for d in dedupCap(data) where reg.pending[d] == nil && reg.pending.count < Daemon.maxPending {
                 reg.pending[d] = Pending(requestedAt: now, applyAt: now + delay); added += 1
             }
             if added > 0 { reg.save(); logLine("delay-add queued \(added) domain(s) — land in \(Int(delay / 3600))h") }
         }
     }
 
+    static let maxDomainsPerTick = 256   // per-tick synchronous-API cap (block + delayed-apply)
+    static let maxPending = 4096          // ceiling on the delayed-add registry size
+
+    /// Dedup + cap the domains from a marker so a giant/crafted marker can't wedge the single-threaded
+    /// tick on synchronous curl (a no-sudo DoS). Order-preserving.
+    private func dedupCap(_ data: Data) -> [String] {
+        var seen = Set<String>(); var out: [String] = []
+        for d in parseDomains(data).filter(validDomain) where seen.insert(d).inserted {
+            out.append(d); if out.count >= Daemon.maxDomainsPerTick { break }
+        }
+        return out
+    }
+
     /// Apply delayed allows whose time has come. A failed API call keeps the entry to retry next tick
-    /// (fail-closed on loosening: a domain stays blocked until the allow actually sticks).
+    /// (fail-closed on loosening: a domain stays blocked until the allow actually sticks). Capped per tick
+    /// so a huge queue can't wedge enforcement; the remainder applies on following ticks.
     private func applyDueAdds(now: Double) {
         var reg = Registry.load()
-        let due = reg.pending.filter { now >= $0.value.applyAt }
+        let due = reg.pending.filter { now >= $0.value.applyAt }.prefix(Daemon.maxDomainsPerTick)
         guard !due.isEmpty else { return }
         guard let api = NextDNSAPI.load() else { logLine("delayed adds due but credentials unavailable — retrying"); return }
         for (d, _) in due {

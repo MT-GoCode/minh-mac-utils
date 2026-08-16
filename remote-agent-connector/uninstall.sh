@@ -8,7 +8,7 @@ set -euo pipefail
 sudo -u "$SUDO_USER" osascript -e 'quit app "RemoteAgentConnector"' >/dev/null 2>&1 || true
 sleep 1
 pkill -x RemoteAgentConnector 2>/dev/null || true
-pkill -f "ssh -N .*foreman-tunnel" 2>/dev/null || true
+pkill -f "ssh -N -i .*remote-agent-connector/tunnel_key" 2>/dev/null || true
 
 rm -rf /Applications/RemoteAgentConnector.app
 rm -f /usr/local/bin/remote-agent-connector /usr/local/bin/rac

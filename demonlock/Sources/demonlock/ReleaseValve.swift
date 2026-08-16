@@ -123,7 +123,12 @@ enum ReleaseValve {
                 st = ReleaseValveState(); ReleaseValveState.write(st)
             }
         } else if !st.isIdle {
-            if nowSec >= (st.eligibleAt ?? .infinity), windowTri == .t, let u = username {
+            // Re-read rv-state immediately before granting: `arm`/`nosudo` (hardReset, a separate process)
+            // may have CLOSED the valve since we loaded `st` at the top of the tick. Without this re-check
+            // the grant could land after a reset → admin held while armed (violates M2: arm closes the
+            // valve). Narrows the lock-free window to microseconds; a full flock would close it entirely.
+            if nowSec >= (st.eligibleAt ?? .infinity), windowTri == .t, let u = username,
+               !ReleaseValveState.load().isIdle {
                 _ = Admin.grant(u)
                 st.grantedAt = nowSec
                 st.grantExpiresAt = nowSec + (st.requestedDurationSec ?? 0)

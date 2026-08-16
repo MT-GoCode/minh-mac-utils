@@ -18,7 +18,11 @@ enum MarkerIO {
     /// fires twice. Empty (zero-byte) markers return empty Data (non-nil) — that's how flag-only
     /// markers (abort) signal presence.
     static func consume(_ path: String, enforcedUID: uid_t) -> Data? {
-        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        // O_NONBLOCK is load-bearing: a no-sudo user can `mkfifo` a marker path, and a FIFO is NOT a
+        // symlink so O_NOFOLLOW doesn't catch it — a plain O_RDONLY open would BLOCK the single-threaded
+        // daemon forever (permanent enforcement DoS). O_NONBLOCK returns immediately; the S_IFREG fstat
+        // below then rejects the FIFO. Harmless for regular files (always read-ready).
+        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         if fd < 0 { return nil }                        // absent, or a symlink (O_NOFOLLOW → ELOOP)
         defer { close(fd) }
 
@@ -55,7 +59,8 @@ enum MarkerIO {
     @discardableResult
     private static func unlinkHardened(_ path: String) -> Bool {
         if unlink(path) == 0 { return true }
-        _ = chflags(path, 0)                             // clear uchg/nodump etc. (root); best-effort
+        _ = lchflags(path, 0)                            // lchflags (NOT chflags): never follow a symlink
+                                                         // swapped in after the failed unlink; clears uchg
         if unlink(path) == 0 { return true }
         var st = stat()
         return lstat(path, &st) != 0                     // already gone == success

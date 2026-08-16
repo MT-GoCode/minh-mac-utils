@@ -47,8 +47,11 @@ TARGET_HOME="$(eval echo "~$TARGET_USER")"
 echo ">> enforced user: $TARGET_USER (uid $TARGET_UID)"
 
 # --- build ---------------------------------------------------------------
-echo ">> building (swift build -c release)"
-swift build -c release --package-path "$SRC"
+# Build as the invoking user, NOT root: `swift build` compiles+evaluates Package.swift (and any build
+# plugins), so building as root on a user-writable checkout would let a no-sudo user get root code-exec
+# by tampering with Package.swift. Every sibling installer builds via `sudo -u $USER` for this reason.
+echo ">> building as $TARGET_USER (swift build -c release)"
+sudo -u "$TARGET_USER" swift build -c release --package-path "$SRC"
 BINARY="$SRC/.build/release/nextdns-sidecar"
 [ -x "$BINARY" ] || { echo "error: build did not produce $BINARY" >&2; exit 1; }
 

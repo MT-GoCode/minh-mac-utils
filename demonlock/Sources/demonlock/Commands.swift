@@ -315,9 +315,20 @@ private func lockboxAdd(_ args: [String]) {
         var all = LockboxStore.load(); all.removeAll { $0.name == name }; all.append(entry); LockboxStore.save(all)
         print("✓ added '\(name)' (unlock delay \(TimeSpec.fmtLeft(delaySec))).")
     } else {
-        guard let data = try? JSONEncoder().encode(entry), let json = String(data: data, encoding: .utf8) else { fail("✗ couldn't encode") }
-        dropDelayMarker(Paths.lbAddMarker, payload: json)
-        chmod(Paths.lbAddMarker, 0o600)   // the marker holds the plaintext secret — not group/other-readable [review]
+        guard let data = try? JSONEncoder().encode(entry) else { fail("✗ couldn't encode") }
+        // The marker holds the plaintext secret: create it 0600 from the START (temp+O_EXCL+rename), not
+        // write-then-chmod, so there's no umask-0644 window in which another local user could read it.
+        let tmp = Paths.lbAddMarker + ".tmp.\(getpid())"
+        let fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { fail("✗ couldn't create the marker (is the inbox present?)") }
+        let ok = data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Bool in
+            guard var base = raw.baseAddress else { return true }
+            var left = raw.count
+            while left > 0 { let n = write(fd, base, left); if n <= 0 { return false }; base = base.advanced(by: n); left -= n }
+            return true
+        }
+        close(fd)
+        guard ok, rename(tmp, Paths.lbAddMarker) == 0 else { unlink(tmp); fail("✗ couldn't place the marker") }
         print("✓ '\(name)' queued — added on the next tick (no sudo).")
     }
 }

@@ -32,11 +32,18 @@ enum Lockbox {
     struct Status: Codable { var entries: [EntryView] = [] }
     struct EntryView: Codable { var name: String; var delaySec: Double; var unlocked: Bool; var unlockAtEpoch: Double? }
 
-    static func rejectReason(_ name: String, delaySec: Double) -> String? {
+    static let maxSecretBytes = 4096
+    static let maxEntries = 64
+
+    static func rejectReason(_ name: String, delaySec: Double, secretLen: Int = 0, entryCount: Int = 0, nameExists: Bool = true) -> String? {
         guard (1...24).contains(name.count), name.allSatisfy({ ($0.isLowercase && $0.isLetter) || $0.isNumber || $0 == "-" }) else {
             return "name must be 1–24 chars of [a-z0-9-]"
         }
         if delaySec < Bounds.lockboxUnlockDelayMin { return "unlock delay must be ≥ \(Int(Bounds.lockboxUnlockDelayMin/3600))h" }
+        // Caps stop a no-sudo user bloating the root-owned lockbox.json (O(n²) rewrites, undeletable
+        // growth). secretLen/entryCount default to skip-checks so the CLI early-check still works.
+        if secretLen > maxSecretBytes { return "secret too large (max \(maxSecretBytes) bytes)" }
+        if !nameExists && entryCount >= maxEntries { return "too many lockbox entries (max \(maxEntries)) — remove one first" }
         return nil
     }
 
@@ -50,7 +57,9 @@ enum Lockbox {
         if let euid = enforcedUID {
             // add (no sudo): the secret transits the user-owned inbox marker (acceptable — self-binding).
             if let data = MarkerIO.consume(Paths.lbAddMarker, enforcedUID: euid),
-               let e = try? JSONDecoder().decode(LockboxEntry.self, from: data), rejectReason(e.name, delaySec: e.delaySec) == nil {
+               let e = try? JSONDecoder().decode(LockboxEntry.self, from: data),
+               rejectReason(e.name, delaySec: e.delaySec, secretLen: e.secret.utf8.count,
+                            entryCount: entries.count, nameExists: entries.contains(where: { $0.name == e.name })) == nil {
                 entries.removeAll { $0.name == e.name }
                 entries.append(e); LockboxStore.save(entries)
                 // Re-adding a secret resets any in-flight/open unlock for that name — else the NEW secret

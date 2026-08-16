@@ -181,10 +181,22 @@ struct Settings: Codable {
     /// CLI register/remove/set-delay), so a lock-free load→change→save races and drops updates. Every
     /// such mutation must go through here. [review — concurrent writers]
     static func mutate(_ change: (inout Settings) -> Void) {
+        // Hard-fail if we can't take the lock (e.g. disk full) — never do an UNLOCKED read-modify-write,
+        // which re-introduces the lost-update race the lock exists to prevent.
         let fd = open(Paths.settingsFile + ".lock", O_CREAT | O_RDWR, 0o600)
-        if fd >= 0 { flock(fd, LOCK_EX) }
-        defer { if fd >= 0 { flock(fd, LOCK_UN); close(fd) } }
-        var s = load()
+        guard fd >= 0 else { logStderr("settings mutate: cannot open lock — refusing to write unlocked"); return }
+        flock(fd, LOCK_EX)
+        defer { flock(fd, LOCK_UN); close(fd) }
+        // Use loadResult (not lenient load): a CORRUPT file must NOT be silently rewritten to defaults
+        // (that drops enforcedUser → standby, and every tuned delay). Preserve it for repair instead.
+        var s: Settings
+        switch loadResult() {
+        case .parsed(let cur): s = cur
+        case .absent:          s = Settings()   // first write — nothing to preserve
+        case .corrupt:
+            logStderr("settings mutate: settings.json is corrupt — refusing to overwrite with defaults")
+            return
+        }
         change(&s)
         try? s.save()
     }

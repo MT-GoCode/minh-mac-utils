@@ -147,6 +147,11 @@ final class RelayServer {
                     headers[k] = v
                 }
                 let contentLength = Int(headers["content-length"] ?? "0") ?? 0
+                // Reject an oversized/negative body BEFORE buffering it, and AUTHENTICATE on the headers
+                // BEFORE draining the body — otherwise any local process can declare a huge Content-Length
+                // and OOM the relay (the token check in route() only ran AFTER the whole body was buffered).
+                if contentLength < 0 || contentLength > 8_000_000 { self.respond(conn, 413, "Payload Too Large"); return }
+                guard headers["authorization"] == "Bearer \(self.token)" else { self.respond(conn, 401, "unauthorized"); return }
                 let bodyStart = headerEnd.upperBound
                 if buffer.count - bodyStart < contentLength { receiveMore(); return }
                 let body = Data(buffer[bodyStart..<(bodyStart + contentLength)])

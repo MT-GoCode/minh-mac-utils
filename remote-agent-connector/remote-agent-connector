@@ -43,7 +43,9 @@ scaffold_config() {
   mkdir -p "$RAC_DIR"; chmod 700 "$RAC_DIR"
   ( umask 077; cat > "$CONFIG" <<'EOF'
 # Remote Agent Connector — fill these in, then run: rac setup
-MIDDLEMAN=          # ssh target the Mac reverse-tunnels to (e.g. ox, or "ubuntu@1.2.3.4 -p 22")
+MIDDLEMAN=          # ONE ssh target the Mac reverse-tunnels to — an alias or user@host, NO extra flags
+                    #   (put a non-22 Port / IdentityFile in ~/.ssh/config; a space-separated value breaks
+                    #    the CLI's config source AND the app's host parser). e.g.  ox   or   ubuntu@1.2.3.4
 MACHINE_NAME=       # alias agents type: ssh <name>   (lowercase letters, digits, dashes)
 BOXES=              # optional: space-separated ssh targets whose agents may reach in; blank = just MIDDLEMAN
 EOF
@@ -253,7 +255,11 @@ cmd_status() {
 cmd_teardown() {
   load_config
   say "▸ tearing down RAC"
-  restart_app 2>/dev/null; osascript -e 'quit app "RemoteAgentConnector"' >/dev/null 2>&1 || true
+  # Quit + reap — NOT restart_app: restart_app's last act is `open "$APP"`, which would RE-LAUNCH the app
+  # we're removing, leaving the exec relay (127.0.0.1:18701 + a valid token) and the reverse tunnel alive
+  # through teardown, and re-dialing the middleman before its keys are stripped below.
+  osascript -e 'quit app "RemoteAgentConnector"' >/dev/null 2>&1 || true
+  pkill -x RemoteAgentConnector 2>/dev/null || true
   pkill -f "ssh -N .*-R 127.0.0.1:${TUNNEL_PORT:-0}:" 2>/dev/null || true
   [ -n "${MIDDLEMAN:-}" ] && { say "  middleman $MIDDLEMAN"; middleman_strip "$MIDDLEMAN"; }
   local b; for b in ${BOXES:-${MIDDLEMAN:-}}; do say "  box $b"; box_strip "$b" "${MACHINE_NAME:-x}"; done
@@ -268,10 +274,17 @@ hand_exec() {
   [ -f "$RAC_DIR/relay.token" ] || die "no relay token — is the app running?"
   local body; printf -v body '%q ' "$@"
   local hdr; hdr="$(mktemp)"
-  local out; out="$(curl -s -D "$hdr" -H "Authorization: Bearer $(cat "$RAC_DIR/relay.token")" --data-binary "$body" "$RELAY/exec")"
+  # Capture curl's exit + the HTTP status so a down/refusing relay is a FAILURE, not a silent exit 0.
+  local out rc http
+  out="$(curl -sS -w '\n%{http_code}' -D "$hdr" -H "Authorization: Bearer $(cat "$RAC_DIR/relay.token")" --data-binary "$body" "$RELAY/exec" 2>/dev/null)"; rc=$?
+  http="${out##*$'\n'}"; out="${out%$'\n'*}"
   printf '%s' "$out"
+  [ "$rc" -eq 0 ] || { rm -f "$hdr"; die "relay unreachable (curl exit $rc) — is the app running?"; }
+  [ "$http" = 200 ] || { rm -f "$hdr"; die "relay returned HTTP ${http:-000} (token stale? re-run: rac setup)"; }
   local code; code="$(sed -n 's/^[Xx]-[Ee]xit-[Cc]ode: *\([0-9]*\).*/\1/p' "$hdr" | tr -d '\r')"
-  rm -f "$hdr"; exit "${code:-0}"
+  rm -f "$hdr"
+  [ -n "$code" ] || die "relay gave no exit code — command status unknown"
+  exit "$code"
 }
 
 usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; }
