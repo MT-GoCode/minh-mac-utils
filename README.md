@@ -23,6 +23,12 @@ the target machine and you fill them in.
 | **fade-play-pause-chrome** | daemon that fades out + pauses browser music tabs and fades them back; `fadepause`/`faderesume` triggers | `./fade-play-pause-chrome/install.sh` | no |
 | **agentic-browser-setup** | installs `chrome-browser-fleet`: spins up isolated Chrome windows on their own CDP ports for agent browser automation | `./agentic-browser-setup/install.sh` | no |
 
+**Paseo daemon (`scripts/`).** `scripts/setup-paseo-daemon.sh` hands the third-party Paseo daemon to
+launchd (so it survives the desktop app dying — e.g. when demonlock closes the GUI on a lockout) and
+adds a nightly refresh that restarts it only after an app auto-update and only when no agent is running.
+`scripts/unset-paseo-daemon.sh` reverses it. Both are no-sudo, run as you, and need `jq`. This is
+config-wiring for an external app, not a repo-built tool, so it's a manual script rather than an installer.
+
 **Installers are commonized.** There is **no top-level `--all` driver** — install an app with
 `sudo ./<app>/install.sh` (or `./<app>/install.sh` for the no-sudo ones). Most GUI/CLI apps' own
 `install.sh` just declares a small inline manifest and sources the shared `scripts/install-lib.sh`

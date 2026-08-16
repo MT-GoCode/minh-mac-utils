@@ -9,6 +9,8 @@ set -euo pipefail
 PASEO="${PASEO_BIN:-$HOME/.local/bin/paseo}"
 U="$(id -u)"
 
+command -v jq >/dev/null || { echo "$(date): jq missing — cannot compare versions, skipping" >&2; exit 1; }
+
 st="$("$PASEO" --json daemon status 2>/dev/null || true)"
 if [ -z "$st" ]; then
   echo "$(date): daemon not reachable — kickstarting"

@@ -14,6 +14,7 @@ SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PASEO_BIN="$(command -v paseo || true)"
 [ -n "$PASEO_BIN" ] || PASEO_BIN="$HOME/.local/bin/paseo"
 [ -x "$PASEO_BIN" ] || { echo "paseo CLI not found" >&2; exit 1; }
+command -v jq >/dev/null || { echo "jq is required (brew install jq)" >&2; exit 1; }
 SETTINGS="$HOME/Library/Application Support/Paseo/desktop-settings.json"
 LA="$HOME/Library/LaunchAgents"
 U="$(id -u)"
