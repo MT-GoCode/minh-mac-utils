@@ -18,11 +18,9 @@ case "perm-ask":                           runPermAsk()
 // no sudo — self-serve delayed changes (land after 36h)
 case "delaysetpolicy", "delay-set-policy": runDelaySetPolicy(Array(argv.dropFirst()))
 case "delayzones":                         runDelayZones(Array(argv.dropFirst()))
-case "igotshitdueatmidnight":              runIGotShitDueAtMidnight(Array(argv.dropFirst()))
 
 // sudo commands
 case "setpolicy":                          runSetPolicy(argv.dropFirst().joined(separator: " "))
-case "snoozetonight":                       runSnoozeTonight()
 case "snooze":                             runSnooze(argv.dropFirst().joined(separator: " "))
 case "release-valve", "rv",
      "admin-release-valve", "arv":         runReleaseValve(Array(argv.dropFirst()))

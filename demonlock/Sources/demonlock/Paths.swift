@@ -42,10 +42,6 @@ enum Paths {
     static let dgpRequestMarker    = rvInboxDir + "/delaysetgatepolicy"      // CONTENTS = the new gate policy
     static let dgpAbortMarker      = rvInboxDir + "/delaysetgatepolicy-abort"
 
-    // "I got shit due at midnight": a no-sudo request that, after 1.5h, snoozes until 12:05 AM tonight.
-    static let delayedSnoozeFile   = supportDir + "/delayed-snooze.json"     // {requestedAt, applyAt, lastAppliedAt}
-    static let dsnRequestMarker    = rvInboxDir + "/igotshitdueatmidnight"
-    static let dsnAbortMarker      = rvInboxDir + "/igotshitdueatmidnight-abort"
 
     // safe-apps: a name-keyed registry of pending delayed registrations (root-owned), plus user markers.
     // register = a delayed add (contents = SafeApp JSON); remove = immediate tighten (contents = name);

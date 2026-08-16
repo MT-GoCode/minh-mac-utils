@@ -49,7 +49,6 @@ struct StateSnapshot: Codable {
     var delayedPolicy: DelayedStatus? = nil   // a queued `delaysetpolicy` change (nil ⇒ none ever queued)
     var delayedZones: DelayedStatus? = nil    // a queued zones-map change (nil ⇒ none ever queued)
     var delayedGatePolicy: DelayedStatus? = nil  // a queued release-valve gate-policy change
-    var delayedSnooze: DelayedSnoozeStatus? = nil   // a pending `igotshitdueatmidnight` request
     var safeApps: SafeApps.Status? = nil            // pending delayed safe-app registrations
     var snoozePresets: SnoozePresets.Status? = nil  // in-flight invocation + pending delayed-adds
     var lockbox: Lockbox.Status? = nil              // password-lockbox lock state (names only, no secrets)

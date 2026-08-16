@@ -21,8 +21,6 @@ final class AgentApp: NSObject, NSApplicationDelegate {
     private var lastRVPhase = ""
     private var dpApplied: [String: Double] = [:]   // kind → last-seen lastAppliedEpoch (drives apply alerts)
     private var dpSeeded = false                     // skip alerts on the first refresh (seed the baseline)
-    private var dsnApplied: Double = 0               // last-seen midnight-snooze lastAppliedEpoch
-    private var dsnSeeded = false
 
     func applicationDidFinishLaunching(_ note: Notification) {
         activity = ProcessInfo.processInfo.beginActivity(
@@ -87,23 +85,6 @@ final class AgentApp: NSObject, NSApplicationDelegate {
         var out = "\n\nDELAYED \(label.uppercased())\nQUEUED — lands in \(left/3600)h\(left%3600/60)m"
         if let p = d.payloadPreview { out += "\n  \(p)" }
         return out
-    }
-
-    /// Alert when a pending midnight-snooze request kicks in (its snooze lands). Same seed-first,
-    /// epoch-keyed logic as `handleDelayedApplied`.
-    private func handleMidnightSnooze(_ s: DelayedSnoozeStatus?) {
-        let ep = s?.lastAppliedEpoch ?? 0
-        if dsnSeeded, ep > dsnApplied {
-            notify("Midnight snooze active", "Demonlock is standing down until 12:05 AM, then re-arms.")
-        }
-        dsnApplied = ep; dsnSeeded = true
-    }
-
-    /// Panel section for a pending midnight-snooze request.
-    private func midnightSnoozeText(_ s: DelayedSnoozeStatus?) -> String {
-        guard let s, s.pending, let a = s.applyAtEpoch else { return "" }
-        let left = max(0, Int(a - nowEpoch()))
-        return "\n\nMIDNIGHT SNOOZE\nrequested — stands down until 12:05 AM in \(left/3600)h\(left%3600/60)m"
     }
 
     /// The RELEASE VALVE section shown in the panel (phase + delay/duration + the window-policy tree).
@@ -235,10 +216,9 @@ final class AgentApp: NSObject, NSApplicationDelegate {
         let locMap = s.health.locationTrail.isEmpty ? "" : "\n\nLOCATION\n" + s.health.locationTrail.joined(separator: "\n")
         treeView.string = policy + locMap + releaseValveText(s.releaseValve)
             + delayedText("policy", s.delayedPolicy) + delayedText("zones", s.delayedZones)
-            + midnightSnoozeText(s.delayedSnooze)
+            + delayedText("gate-policy", s.delayedGatePolicy)
         handleReleaseValve(s.releaseValve)
-        handleDelayedApplied([("policy", s.delayedPolicy), ("zones", s.delayedZones)])
-        handleMidnightSnooze(s.delayedSnooze)
+        handleDelayedApplied([("policy", s.delayedPolicy), ("zones", s.delayedZones), ("gate-policy", s.delayedGatePolicy)])
         let h = s.health
         healthLabel.stringValue = s.sshAddr ?? ""          // SSH-in hint (sshd/tmux survive a lockout → disarm)
         permButton.isHidden = !h.needsPermAsk

@@ -74,11 +74,6 @@ func runStatus() {
     printDelayedStatus("policy", s.delayedPolicy)
     printDelayedStatus("zones", s.delayedZones)
     printDelayedStatus("gate-policy", s.delayedGatePolicy)
-    if let ds = s.delayedSnooze, ds.pending, let a = ds.applyAtEpoch {
-        let f = DateFormatter(); f.dateFormat = "EEE HH:mm"
-        let left = max(0, Int(a - nowEpoch()))
-        print("  midnight snz  : REQUESTED — stands down until 12:05 AM at \(f.string(from: Date(timeIntervalSince1970: a)))  (in \(left/3600)h \(left%3600/60)m)")
-    }
     if let sa = s.safeApps, !sa.pending.isEmpty {
         print("  safe-apps     : \(sa.pending.count) pending registration(s) — `demonlock safe-apps show`")
     }
@@ -161,16 +156,11 @@ func runSetPolicy(_ policy: String) {
     print("✓ policy set:\n  \(p)\n\nRun `demonlock status` to see how it evaluates right now.")
 }
 
-// MARK: - snoozetonight (sudo)
-
-func runSnoozeTonight() {
-    requireRoot("snoozetonight")
-    applySnooze(until: TimeSpec.nextHHMM(Settings.load().snoozeHHMM))
-}
+// MARK: - snooze helper
 
 /// Write the snooze target, ensure ARMED (so the daemon re-arms itself at expiry — no sudo needed
-/// then), and confirm. Shared by `snooze` and `snoozetonight`: a snooze means "stand down, THEN
-/// resume," so it implies armed. `arm` resumes NOW (cancels the snooze); `disarm` is indefinite.
+/// then), and confirm. Used by `snooze` and the snooze-preset invocation: a snooze means "stand down,
+/// THEN resume," so it implies armed. `arm` resumes NOW (cancels the snooze); `disarm` is indefinite.
 private func applySnooze(until target: Date) {
     do { try SnoozeStore.set(target) } catch { fail("✗ couldn't write snooze: \(error)") }
     var armedNote = ""
@@ -713,48 +703,6 @@ private func printDelayedPolicyStatus() {
     } else {
         print("delayed policy: none queued.  Queue one with `demonlock delaysetpolicy \"<policy>\"` (lands in \(delayH)h).")
     }
-}
-
-// MARK: - igotshitdueatmidnight (NO sudo — delay-gated snooze until 12:05 AM)
-
-private let dsnUsage = """
-usage (no sudo):
-  demonlock igotshitdueatmidnight            # in 1.5h, stand down until 12:05 AM tonight, then re-arm
-  demonlock igotshitdueatmidnight --status   # show a pending request + when it kicks in
-  demonlock igotshitdueatmidnight --abort    # cancel a pending request
-  demonlock igotshitdueatmidnight --help     # this help   (--status / --abort / --help also work bare)
-"""
-
-func runIGotShitDueAtMidnight(_ args: [String]) {
-    if handleRequestFlags(args.first, usage: dsnUsage, abortMarker: Paths.dsnAbortMarker,
-                          abortNote: "if the snooze already kicked in, cancel that with `sudo demonlock arm`.",
-                          status: printMidnightSnoozeStatus) { return }
-    // No further verb — the only action is the (bare) request.
-    guard args.isEmpty else { fail("✗ unknown argument '\(args[0])'.\n" + dsnUsage) }
-    if !DelayedSnoozeState.load().isIdle {
-        fail("✗ a midnight-snooze request is already pending. Cancel it first: `demonlock igotshitdueatmidnight --abort`.")
-    }
-    dropDelayMarker(Paths.dsnRequestMarker)
-    let mins = Int(DelayedSnooze.delaySec / 60)
-    print("✓ requested — in \(mins)m demonlock stands down until 12:05 AM tonight, then re-arms automatically.")
-    print("  It kicks in even mid-lockout. Watch: `demonlock status`  ·  cancel: `demonlock igotshitdueatmidnight --abort`")
-    // Fail-closed edge: if 12:05 AM is under 1.5h away, by apply time it'll have passed → no snooze.
-    if TimeSpec.nextHHMM(DelayedSnooze.targetHHMM).timeIntervalSinceNow < DelayedSnooze.delaySec {
-        print("  ⚠️  but 12:05 AM is under \(mins)m away — by the time the delay is up midnight will have")
-        print("      passed, so you'll get NO snooze. This only helps if you ask earlier in the evening.")
-    }
-}
-
-private func printMidnightSnoozeStatus() {
-    let st = DelayedSnoozeState.load()
-    guard let applyAt = st.applyAt else {
-        print("midnight snooze: none pending.  Request one with `demonlock igotshitdueatmidnight` (kicks in 1.5h later).")
-        return
-    }
-    let f = DateFormatter(); f.dateFormat = "EEE HH:mm"
-    let left = max(0, Int(applyAt - nowEpoch()))
-    print("midnight snooze: REQUESTED — stands down until 12:05 AM at \(f.string(from: Date(timeIntervalSince1970: applyAt)))" +
-          "  (in \(left/3600)h \(left%3600/60)m, mid-lockout too)")
 }
 
 private let dzUsage = """
