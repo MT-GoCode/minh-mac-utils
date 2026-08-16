@@ -24,8 +24,10 @@ case "igotshitdueatmidnight":              runIGotShitDueAtMidnight(Array(argv.d
 case "setpolicy":                          runSetPolicy(argv.dropFirst().joined(separator: " "))
 case "snoozetonight":                       runSnoozeTonight()
 case "snooze":                             runSnooze(argv.dropFirst().joined(separator: " "))
-case "release-valve", "rv":                runReleaseValve(Array(argv.dropFirst()))
+case "release-valve", "rv",
+     "admin-release-valve", "arv":         runReleaseValve(Array(argv.dropFirst()))
 case "arm":                                runArm()
+case "nosudo":                             runNoSudo()
 case "disarm":                             runDisarm()
 
 // internal

@@ -59,7 +59,7 @@ final class AgentApp: NSObject, NSApplicationDelegate {
         defer { lastRVPhase = phase }
         guard !lastRVPhase.isEmpty else { return }        // skip the very first refresh
         if phase == "granted" && lastRVPhase != "granted" {
-            let mins = rv?.durationSec.map { Int($0 / 60) } ?? 0
+            let mins = rv?.requestedDurationSec.map { Int($0 / 60) } ?? 0
             notify("Release valve granted", "Admin access unlocked for \(mins) min.")
         } else if phase != "granted" && lastRVPhase == "granted" {
             notify("Release valve closed", "Admin access has been revoked.")
@@ -120,8 +120,8 @@ final class AgentApp: NSObject, NSApplicationDelegate {
         default:        line = "idle (no active request)"
         }
         var out = "\n\nRELEASE VALVE\n\(line)"
-        if let d = rv.delaySec, let u = rv.durationSec { out += "\n  delay \(Int(d/60))m · grant \(Int(u/60))m" }
-        if let t = rv.windowTree { out += "\n  window eval:\n" + t.asText(indent: 1) }
+        if let d = rv.delaySec, let u = rv.maxRequestDurationSec { out += "\n  delay \(Int(d/60))m · max grant \(Int(u/60))m" }
+        if let t = rv.windowTree { out += "\n  gate eval:\n" + t.asText(indent: 1) }
         return out
     }
 

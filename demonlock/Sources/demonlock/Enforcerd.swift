@@ -193,7 +193,7 @@ final class Enforcer {
 
         // Release valve: same inputs + the main verdict feeds IN_POLICY; drives the delay-gated grant.
         let rv = ReleaseValve.tick(now: now, mainResult: result, baseInputs: baseInputs,
-                                   username: usernameForUID(consoleUID))
+                                   username: usernameForUID(target), enforcedUID: euid)
 
         let inside = fix.map { ZoneStore.containing(lat: $0.lat, lon: $0.lon, zones: zones) } ?? []
         let policyStr = policyText ?? ""

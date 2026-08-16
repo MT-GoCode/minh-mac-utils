@@ -1,22 +1,32 @@
 import Foundation
 
-/// The RELEASE VALVE — a self-serve, delay-gated admin grant. You `--request` (no sudo); the daemon
-/// stamps the request time itself, waits out `delaySec`, then grants admin (via `sudome
-/// --give-to-user`) the first tick the WINDOW POLICY is provably true, for `durationSec`, then revokes
-/// (`--take-from-user`). No timers — all state is on disk and driven by the enforcer tick.
+/// The ADMIN RELEASE VALVE — a self-serve, delay-gated admin grant. You `request "<duration>"` (no
+/// sudo); the daemon stamps the request time itself, waits out `delaySec`, then — the first tick the
+/// GATE POLICY is provably true — grants admin (Admin.grant) for your requested duration, then revokes
+/// (Admin.revoke). No timers: all state on disk, driven by the enforcer tick.
 ///
-/// Split of trust: config + lifecycle state are root-owned; only `--set-*` and the daemon write them.
-/// `--request`/`abort` are non-root — they drop a marker in a user-owned inbox, and the daemon
-/// stamps the real request time, so the delay can't be backdated.
+/// Three config fields (root-owned, set via sudo): gatePolicy (WHEN a grant may open — policy syntax +
+/// the IN_POLICY primitive), delaySec (wait after request before eligible — clamped ≥ Bounds floor),
+/// maxRequestDurationSec (ceiling on the requested grant length — clamped ≤ Bounds ceiling).
+///
+/// Trust split: config + lifecycle state are root-owned; `request`/`abort` are non-root markers in the
+/// user-owned inbox, consumed via MarkerIO (owner-checked, symlink/hardlink-proof). `i-still-need-sudo`
+/// is a SUDO command (you only hold admin during a live grant, so it can only EXTEND one, never
+/// bootstrap one) and writes state directly as root. The REQUEST DELAY is the real commitment gate; the
+/// auto-revoke is anti-accident, not containment (see Admin). [reviews M1, M2, H5]
 
-// MARK: - Config (root-owned; all three required before --request works)
+// MARK: - Config (root-owned)
 
 struct ReleaseValveConfig: Codable {
-    var windowPolicy: String?   // when a request may be granted (policy syntax + the IN_POLICY primitive)
-    var delaySec: Double?       // how long after --request before it's eligible (anti-"request right before a window")
-    var durationSec: Double?    // how long the grant lasts before auto-revoke
+    var gatePolicy: String?             // when a request may be granted (policy syntax + IN_POLICY)
+    var delaySec: Double?               // wait after request before eligible (anti "request right before a window")
+    var maxRequestDurationSec: Double?  // ceiling on the duration a request may ask for
 
-    var isComplete: Bool { windowPolicy != nil && delaySec != nil && durationSec != nil }
+    var isComplete: Bool { gatePolicy != nil && delaySec != nil && maxRequestDurationSec != nil }
+
+    /// Effective (Bounds-clamped) values, so a stale file or a settings edit can't push below a floor.
+    var effectiveDelay: Double { Bounds.clamp(delaySec ?? Bounds.rvRequestDelayMin, Bounds.rvRequestDelayMin ... .greatestFiniteMagnitude) }
+    var effectiveMaxDuration: Double { min(maxRequestDurationSec ?? Bounds.rvMaxRequestDurationCeil, Bounds.rvMaxRequestDurationCeil) }
 
     static func load() -> ReleaseValveConfig {
         guard let d = try? Data(contentsOf: URL(fileURLWithPath: Paths.rvConfigFile)),
@@ -32,10 +42,11 @@ struct ReleaseValveConfig: Codable {
 // MARK: - Lifecycle state (root-owned). requestedAt == nil ⇒ idle.
 
 struct ReleaseValveState: Codable {
-    var requestedAt: Double?      // when the daemon accepted the request (its clock — not backdatable)
-    var eligibleAt: Double?       // requestedAt + delay (frozen at request time)
-    var grantedAt: Double?        // when granted (nil until granted)
-    var grantExpiresAt: Double?   // grantedAt + duration
+    var requestedAt: Double?          // when the daemon accepted the request (its clock — not backdatable)
+    var eligibleAt: Double?           // requestedAt + delay (frozen at request time)
+    var requestedDurationSec: Double? // grant length the request asked for (clamped to the config ceiling)
+    var grantedAt: Double?            // when granted (nil until granted)
+    var grantExpiresAt: Double?       // grantedAt + duration (extendable by i-still-need-sudo)
 
     var isIdle: Bool { requestedAt == nil }
     var isGranted: Bool { grantedAt != nil }
@@ -59,63 +70,76 @@ struct RVStatus: Codable {
     var requestedAtEpoch: Double?
     var eligibleAtEpoch: Double?
     var grantExpiresEpoch: Double?
-    var windowPolicy: String?
-    var windowTree: EvalNode?    // the window-policy evaluation (incl. IN_POLICY)
+    var requestedDurationSec: Double?
+    var gatePolicy: String?
+    var windowTree: EvalNode?    // the gate-policy evaluation (incl. IN_POLICY)
+    var windowOpen: Bool         // gate currently true — i-still-need-sudo requires this
     var delaySec: Double?
-    var durationSec: Double?
+    var maxRequestDurationSec: Double?
 }
 
 // MARK: - Tick (called once per enforcer tick, in the main-evaluation path)
 
 enum ReleaseValve {
-    /// Drive the valve one tick: consume markers, evaluate the window policy (IN_POLICY = `mainResult`),
-    /// advance the lifecycle, run sudome give/take, and return the status to publish. `username` is the
-    /// account to grant/revoke (resolved by the enforcer). `baseInputs` are the same policy inputs used
-    /// for the main evaluation (fix/bssids/zones) — we just add IN_POLICY.
-    static func tick(now: Date, mainResult: Tri, baseInputs: PolicyInputs, username: String?) -> RVStatus {
+    /// Drive the valve one tick: consume markers, evaluate the gate (IN_POLICY = `mainResult`), advance
+    /// the lifecycle, run Admin grant/revoke, return the status to publish. `username` is the account to
+    /// grant/revoke; `enforcedUID` owner-checks the user markers.
+    static func tick(now: Date, mainResult: Tri, baseInputs: PolicyInputs,
+                     username: String?, enforcedUID: uid_t?) -> RVStatus {
         let cfg = ReleaseValveConfig.load()
         var st = ReleaseValveState.load()
         let nowSec = now.timeIntervalSince1970
-        let fm = FileManager.default
 
-        // 1. Markers (non-root, user-dropped). Abort first, then request.
-        if fm.fileExists(atPath: Paths.rvAbortMarker) {
-            try? fm.removeItem(atPath: Paths.rvAbortMarker)
-            if st.isGranted, let u = username { revoke(u) }   // abort closes a live grant immediately
-            st = ReleaseValveState(); ReleaseValveState.write(st)
-        }
-        if fm.fileExists(atPath: Paths.rvRequestMarker) {
-            try? fm.removeItem(atPath: Paths.rvRequestMarker)
-            if cfg.isComplete && st.isIdle {
-                st.requestedAt = nowSec
-                st.eligibleAt = nowSec + (cfg.delaySec ?? 0)   // freeze eligibility at request time
-                ReleaseValveState.write(st)
-                log("release-valve: request accepted (eligible in \(Int(cfg.delaySec ?? 0))s)")
+        // 1. Markers (non-root, user-dropped, MarkerIO-hardened). Abort first, then request.
+        if let euid = enforcedUID {
+            if MarkerIO.consumeFlag(Paths.rvAbortMarker, enforcedUID: euid) {
+                if st.isGranted, let u = username { _ = Admin.revoke(u) }   // abort closes a live grant now
+                st = ReleaseValveState(); ReleaseValveState.write(st)
             }
-            // else: not fully configured, or a request is already active → ignore this marker
+            if let data = MarkerIO.consume(Paths.rvRequestMarker, enforcedUID: euid) {
+                let durText = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let asked = TimeSpec.parseDuration(durText) ?? 0
+                let dur = min(max(asked, 0), cfg.effectiveMaxDuration)
+                if cfg.isComplete, dur > 0 {
+                    if st.isIdle {
+                        st.requestedAt = nowSec
+                        st.eligibleAt = nowSec + cfg.effectiveDelay   // freeze eligibility at request time
+                        st.requestedDurationSec = dur
+                        ReleaseValveState.write(st)
+                        log("release-valve: request accepted (\(Int(dur/60))m grant, eligible in \(Int(cfg.effectiveDelay))s)")
+                    } else if !st.isGranted {
+                        // Idempotent: a repeat request while PENDING only updates the duration; it does NOT
+                        // reset eligibleAt (can't shorten OR extend the delay).
+                        st.requestedDurationSec = dur; ReleaseValveState.write(st)
+                        log("release-valve: pending request duration updated to \(Int(dur/60))m")
+                    }
+                    // granted → ignore (already have admin)
+                }
+            }
         }
 
-        // 2. Evaluate the window policy with IN_POLICY = the main verdict.
+        // 2. Evaluate the gate with IN_POLICY = the main verdict.
         var windowTree: EvalNode?
         var windowTri: Tri = .unknown
-        if let wp = cfg.windowPolicy, let policy = try? PolicyEngine.parse(wp) {
+        if let wp = cfg.gatePolicy, let policy = try? PolicyEngine.parse(wp) {
             var inp = baseInputs; inp.inPolicy = mainResult
             let (r, t) = PolicyEngine.evaluate(policy, inp)
             windowTri = r; windowTree = t
         }
 
-        // 3. Lifecycle: expire a live grant; or grant a pending request once eligible AND in-window.
+        // 3. Lifecycle: expire a live grant; or grant a pending request once eligible AND gate-true.
         if st.isGranted {
             if nowSec >= (st.grantExpiresAt ?? 0), let u = username {
-                revoke(u)
+                _ = Admin.revoke(u)
                 st = ReleaseValveState(); ReleaseValveState.write(st)
             }
         } else if !st.isIdle {
             if nowSec >= (st.eligibleAt ?? .infinity), windowTri == .t, let u = username {
-                grant(u)
+                _ = Admin.grant(u)
                 st.grantedAt = nowSec
-                st.grantExpiresAt = nowSec + (cfg.durationSec ?? 0)
+                st.grantExpiresAt = nowSec + (st.requestedDurationSec ?? 0)
                 ReleaseValveState.write(st)
+                log("release-valve: GRANT admin → \(u) for \(Int((st.requestedDurationSec ?? 0)/60))m")
             }
         }
 
@@ -127,12 +151,18 @@ enum ReleaseValve {
 
         return RVStatus(configured: cfg.isComplete, phase: phase,
                         requestedAtEpoch: st.requestedAt, eligibleAtEpoch: st.eligibleAt,
-                        grantExpiresEpoch: st.grantExpiresAt, windowPolicy: cfg.windowPolicy,
-                        windowTree: windowTree, delaySec: cfg.delaySec, durationSec: cfg.durationSec)
+                        grantExpiresEpoch: st.grantExpiresAt, requestedDurationSec: st.requestedDurationSec,
+                        gatePolicy: cfg.gatePolicy, windowTree: windowTree, windowOpen: windowTri == .t,
+                        delaySec: cfg.effectiveDelay, maxRequestDurationSec: cfg.effectiveMaxDuration)
     }
 
-    private static func grant(_ user: String)  { log("release-valve: GRANT admin → \(user)");  Proc.run(Paths.sudomeBin, ["--give-to-user", user]) }
-    private static func revoke(_ user: String) { log("release-valve: REVOKE admin ← \(user)"); Proc.run(Paths.sudomeBin, ["--take-from-user", user]) }
+    /// Revoke any live grant and clear all state. Called by `arm` and `nosudo` (both root). Idempotent.
+    /// [review M2 — arm must close the valve, else a pending/granted request hands out admin after arming]
+    static func hardReset(username: String?) {
+        let st = ReleaseValveState.load()
+        if st.isGranted, let u = username { _ = Admin.revoke(u) }
+        ReleaseValveState.write(ReleaseValveState())
+    }
 
     private static func log(_ s: String) {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm:ss"

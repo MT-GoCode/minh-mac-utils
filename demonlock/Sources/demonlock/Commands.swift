@@ -94,18 +94,18 @@ private func printDelayedStatus(_ label: String, _ d: DelayedStatus?) {
 private func printReleaseValve(_ rv: RVStatus) {
     func left(_ e: Double?) -> String { e.map { let s = max(0, Int($0 - nowEpoch())); return "\(s/3600)h\(s%3600/60)m\(s%60)s" } ?? "?" }
     print("\n  release valve : ", terminator: "")
-    if !rv.configured { print("not configured (set window-policy + delay + duration)"); return }
+    if !rv.configured { print("not configured (set gate-policy + delay + max-request-duration)"); return }
     switch rv.phase {
     case "granted":  print("GRANTED — admin held, \(left(rv.grantExpiresEpoch)) left, then auto-revoked")
     case "delay":    print("REQUEST pending — in delay, eligible in \(left(rv.eligibleAtEpoch))")
-    case "waiting":  print("REQUEST pending — eligible now, waiting for the window to open")
-    default:         print("idle (no active request) — `demonlock release-valve --request`")
+    case "waiting":  print("REQUEST pending — eligible now, gate \(rv.windowOpen ? "OPEN → granting" : "closed, waiting")")
+    default:         print("idle (no active request) — `demonlock admin-release-valve request \"<dur>\"`")
     }
-    if let d = rv.delaySec, let u = rv.durationSec {
-        print("                  delay \(Int(d/60))m · grant duration \(Int(u/60))m")
+    if let d = rv.delaySec, let u = rv.maxRequestDurationSec {
+        print("                  delay \(Int(d/60))m · max grant \(Int(u/60))m" + (rv.requestedDurationSec.map { " · requested \(Int($0/60))m" } ?? ""))
     }
-    if let wp = rv.windowPolicy { print("                  window-policy: \(wp)") }
-    if let t = rv.windowTree { print("\n  release-valve window eval  (✓ true · ✗ false · · unknown):\n" + t.asText(indent: 2)) }
+    if let wp = rv.gatePolicy { print("                  gate-policy: \(wp)") }
+    if let t = rv.windowTree { print("\n  release-valve gate eval  (✓ true · ✗ false · · unknown):\n" + t.asText(indent: 2)) }
 }
 
 // MARK: - zones list (user, no GUI)
@@ -210,7 +210,27 @@ func runArm() {
         try? SnoozeStore.set(nil)
         note = "  (cleared the active snooze)"
     }
+    // arm is the panic button: it must ALSO close the release valve (cancel a pending request AND revoke
+    // a live grant) + drop admin now, else a request would hand out sudo minutes after you armed, and
+    // status would lie. Running as root here, so do it inline. [review M2]
+    let user = Settings.load().enforcedUser
+    ReleaseValve.hardReset(username: user.isEmpty ? nil : user)
+    if !user.isEmpty { _ = Admin.revoke(user); note += "  (revoked admin + closed the release valve)" }
     print("✓ ARMED\(note) — after a \(Int(Settings.load().countdownSeconds))s countdown out of policy the enforcer force-closes your GUI apps (sshd/tmux survive). `sudo demonlock disarm` to stop.")
+}
+
+/// nosudo (no sudo): drop admin now. arm re-execs through the passwordless sudoers grant, so this does
+/// too — it TIGHTENS (revoke only), so it's safe to allow without a password.
+func runNoSudo() {
+    if geteuid() != 0 {
+        let rc = Proc.run("/usr/bin/sudo", ["-n", Paths.cliWrapper, "nosudo"])
+        if rc != 0 { fail("✗ couldn't drop admin without a password — the passwordless grant may be missing (reinstall), or run `sudo demonlock nosudo`.") }
+        exit(0)
+    }
+    let user = Settings.load().enforcedUser
+    ReleaseValve.hardReset(username: user.isEmpty ? nil : user)
+    if !user.isEmpty { _ = Admin.revoke(user) }
+    print("✓ admin dropped — release valve closed too. (Already-open login shells may keep cached group membership until you log out.)")
 }
 
 func runDisarm() {
@@ -219,98 +239,122 @@ func runDisarm() {
     print("✓ DISARMED — everything keeps running and the countdown still shows, but nothing gets killed.")
 }
 
-// MARK: - release valve
+// MARK: - admin-release-valve
 
 private let rvUsage = """
 usage:
-  # config (sudo; any subset in one call):
-  sudo demonlock release-valve --set-window-policy "<expr>"   # when a request may be granted; policy
-                                                              #   syntax + the IN_POLICY primitive
-  sudo demonlock release-valve --set-request-delay  "<dur>"   # wait after --request before eligible (d/h/m/s)
-  sudo demonlock release-valve --set-request-duration "<dur>" # how long the grant lasts before revoke
-  # use (no sudo; all three above must be set first):
-  demonlock release-valve --request                           # request admin; granted after the delay,
-                                                              #   at the next window, for the duration
-  demonlock release-valve --status                            # show the valve's phase / countdown
-  demonlock release-valve --abort                             # cancel a pending request / close a live grant
-                                                              #   (--status / --abort / --help also work bare)
+  # config (sudo; each subcommand sets one field):
+  sudo demonlock admin-release-valve set-gate-policy "<expr>"          # WHEN a grant may open (policy + IN_POLICY)
+  sudo demonlock admin-release-valve set-delay "<dur>"                 # wait after request before eligible (≥ floor)
+  sudo demonlock admin-release-valve set-max-request-duration "<dur>"  # ceiling on a request's grant length
+  # use (no sudo; all three set first):
+  demonlock admin-release-valve request "<dur>"     # ask for admin: granted after the delay, at the next open
+                                                    #   gate, for <dur> (≤ max). Idempotent while pending.
+  demonlock admin-release-valve status              # phase / countdown / gate eval
+  demonlock admin-release-valve abort               # cancel a pending request OR close a live grant now
+  # extend a LIVE grant (sudo — you only hold admin during a grant, so this can't bootstrap one):
+  sudo demonlock admin-release-valve i-still-need-sudo "for <dur>" | "until <HHMM>"   # ≤ 1h more, in-window only
 """
 
 func runReleaseValve(_ args: [String]) {
-    if handleRequestFlags(args.first, usage: rvUsage, abortMarker: Paths.rvAbortMarker,
-                          abortNote: "(also closes a live admin grant on the next tick.)",
-                          status: printReleaseValveStatusCLI) { return }
-
-    var request = false
-    var winPol: String?, delay: String?, dur: String?
-    var i = 0
-    while i < args.count {
-        func val() -> String { i + 1 < args.count ? args[i + 1] : "" }
-        switch args[i] {
-        case "--request":             request = true; i += 1
-        case "--set-window-policy":   winPol = val(); i += 2
-        case "--set-request-delay":   delay  = val(); i += 2
-        case "--set-request-duration":dur    = val(); i += 2
-        default: fail("✗ unknown argument '\(args[i])'\n" + rvUsage)
-        }
+    let sub = args.first ?? ""
+    let rest = Array(args.dropFirst()).joined(separator: " ")
+    switch sub {
+    case "", "help", "--help", "-h":   print(rvUsage)
+    case "status", "--status":         printReleaseValveStatusCLI()
+    case "abort", "--abort":
+        dropDelayMarker(Paths.rvAbortMarker)
+        print("✓ abort sent — cancels a pending request and closes a live grant on the next tick.")
+    case "request", "--request":                rvRequest(rest)
+    case "i-still-need-sudo":                    rvExtend(rest)
+    case "set-gate-policy":                      rvSetGatePolicy(rest)
+    case "set-delay":                            rvSetDelay(rest)
+    case "set-max-request-duration":             rvSetMaxDuration(rest)
+    default: fail("✗ unknown subcommand '\(sub)'\n" + rvUsage)
     }
-    let anySet = winPol != nil || delay != nil || dur != nil
-    if request && anySet { fail("✗ --request can't be combined with the --set-* flags.\n" + rvUsage) }
-
-    if anySet { rvSet(winPol, delay, dur); return }
-    if request { rvRequest(); return }
-    print(rvUsage)
 }
 
-/// --set-* (sudo): validate + persist the window policy / delay / duration (any subset).
-private func rvSet(_ winPol: String?, _ delay: String?, _ dur: String?) {
-    requireRoot("release-valve --set-*")
-    var cfg = ReleaseValveConfig.load()
-    if let wp = winPol {
-        let s = wp.trimmingCharacters(in: .whitespacesAndNewlines)
-        do { try PolicyEngine.validate(s, zones: ZoneStore.load(), allowInPolicy: true) }
-        catch { fail("✗ invalid window policy: \(error)") }
-        cfg.windowPolicy = s
-    }
-    if let d = delay {
-        guard let secs = TimeSpec.parseDuration(d), secs >= 0 else { fail("✗ bad --set-request-delay — use e.g. \"12h\", \"90m\", \"1h30m\"") }
-        cfg.delaySec = secs
-    }
-    if let d = dur {
-        guard let secs = TimeSpec.parseDuration(d), secs > 0 else { fail("✗ bad --set-request-duration — use e.g. \"1h\", \"30m\"") }
-        cfg.durationSec = secs
-    }
-    do { try cfg.save() } catch { fail("✗ couldn't write release-valve config: \(error)") }
-    func fmtDur(_ s: Double?) -> String { s.map { "\(Int($0/3600))h\(Int($0.truncatingRemainder(dividingBy: 3600)/60))m" } ?? "(unset)" }
-    print("✓ release-valve config:")
-    print("    window-policy : \(cfg.windowPolicy ?? "(unset)")")
-    print("    request-delay : \(fmtDur(cfg.delaySec))")
-    print("    duration      : \(fmtDur(cfg.durationSec))")
-    print(cfg.isComplete ? "  all set — `demonlock release-valve --request` is ready." :
-                           "  ⚠️  still missing a field; --request won't work until all three are set.")
-}
-
-/// --request (no sudo): drop a request marker for the daemon (which stamps the real time).
-private func rvRequest() {
+/// request "<dur>" (no sudo): drop a request marker whose contents are the requested grant duration.
+/// Idempotent while pending (updates the duration; the daemon won't reset the frozen delay).
+private func rvRequest(_ durText: String) {
     let cfg = ReleaseValveConfig.load()
     guard cfg.isComplete else {
-        fail("✗ release-valve isn't configured — set all three first (sudo):\n" + rvUsage)
+        fail("✗ release-valve isn't configured — set gate-policy, delay, and max-request-duration first (sudo):\n" + rvUsage)
+    }
+    guard let secs = TimeSpec.parseDuration(durText.trimmingCharacters(in: .whitespacesAndNewlines)), secs > 0 else {
+        fail("✗ a duration is required: `demonlock admin-release-valve request \"1h\"` (≤ \(Int(cfg.effectiveMaxDuration/60))m).")
     }
     let st = ReleaseValveState.load()
-    if !st.isIdle {
-        let phase = st.isGranted ? "granted" : "pending"
-        fail("✗ a request is already \(phase). Cancel it first: `demonlock release-valve abort`.")
+    if st.isGranted { fail("✗ admin is already granted — extend with i-still-need-sudo, or `abort` first.") }
+    let capped = min(secs, cfg.effectiveMaxDuration)
+    dropDelayMarker(Paths.rvRequestMarker, payload: "\(Int(capped))s")
+    if st.isIdle {
+        print("✓ requested \(Int(capped/60))m of admin — granted after ~\(Int(cfg.effectiveDelay/60))m, at the next open gate.")
+    } else {
+        print("✓ updated the pending request to \(Int(capped/60))m (the delay is unchanged).")
     }
-    rvDropMarker(Paths.rvRequestMarker, "request")
-    print("✓ requested — after the \(Int(cfg.delaySec ?? 0))s delay the daemon grants admin at the next window,")
-    print("  for \(Int((cfg.durationSec ?? 0)/60))m. Watch it with `demonlock status`; cancel with `release-valve abort`.")
+    print("  Watch: `demonlock status`  ·  cancel: `demonlock admin-release-valve abort`")
 }
 
-/// Touch a marker file in the user-owned inbox. Non-root; the daemon consumes it next tick.
-private func rvDropMarker(_ path: String, _ what: String) {
-    do { try Data().write(to: URL(fileURLWithPath: path)) }
-    catch { fail("✗ couldn't write the \(what) marker (\(path)). Is the release-valve inbox present? Try reinstalling.\n  \(error)") }
-    if what == "abort" { print("✓ abort sent — any pending request is cancelled and a live grant closes on the next tick.") }
+/// i-still-need-sudo (SUDO): extend a LIVE grant by ≤ Bounds.rvExtendMax, only while the gate is open.
+/// Requires sudo, which you only have during a grant — so it can extend but never bootstrap admin.
+private func rvExtend(_ spec: String) {
+    requireRoot("admin-release-valve i-still-need-sudo")
+    let s = spec.trimmingCharacters(in: .whitespacesAndNewlines)
+    let extra: Double
+    if let d = TimeSpec.parseDuration(s) { extra = d }
+    else if let t = try? TimeSpec.parseTarget(s) { extra = t.timeIntervalSinceNow }
+    else { fail("✗ usage: sudo demonlock admin-release-valve i-still-need-sudo \"for 45m\" | \"until 1730\"") }
+    guard extra > 0 else { fail("✗ that time is already past.") }
+    let capped = min(extra, Bounds.rvExtendMax)
+
+    var st = ReleaseValveState.load()
+    guard st.isGranted else { fail("✗ no live admin grant to extend — request one first (`admin-release-valve request \"1h\"`).") }
+    // The gate must be OPEN right now (from the daemon's published eval) — no extending after you leave.
+    guard let rv = StateStore.read()?.releaseValve, rv.windowOpen else {
+        fail("✗ the gate is closed right now — i-still-need-sudo only works inside the window.")
+    }
+    st.grantExpiresAt = nowEpoch() + capped
+    ReleaseValveState.write(st)
+    print("✓ extended — admin now held for \(Int(capped/60))m more (from now).")
+}
+
+private func rvSetGatePolicy(_ expr: String) {
+    requireRoot("admin-release-valve set-gate-policy")
+    let s = expr.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !s.isEmpty else { fail("✗ give a gate-policy expression (IN_POLICY allowed).") }
+    do { try PolicyEngine.validate(s, zones: ZoneStore.load(), allowInPolicy: true) } catch { fail("✗ invalid gate policy: \(error)") }
+    var cfg = ReleaseValveConfig.load(); cfg.gatePolicy = s
+    do { try cfg.save() } catch { fail("✗ couldn't write config: \(error)") }
+    rvPrintConfig(cfg)
+}
+
+private func rvSetDelay(_ durText: String) {
+    requireRoot("admin-release-valve set-delay")
+    guard let secs = TimeSpec.parseDuration(durText), secs >= 0 else { fail("✗ bad delay — e.g. \"1h\", \"90m\".") }
+    var cfg = ReleaseValveConfig.load(); cfg.delaySec = secs
+    do { try cfg.save() } catch { fail("✗ couldn't write config: \(error)") }
+    if secs < Bounds.rvRequestDelayMin { print("  note: below the \(Int(Bounds.rvRequestDelayMin/60))m floor — the floor is enforced at request time.") }
+    rvPrintConfig(cfg)
+}
+
+private func rvSetMaxDuration(_ durText: String) {
+    requireRoot("admin-release-valve set-max-request-duration")
+    guard let secs = TimeSpec.parseDuration(durText), secs > 0 else { fail("✗ bad duration — e.g. \"1h\", \"30m\".") }
+    var cfg = ReleaseValveConfig.load(); cfg.maxRequestDurationSec = secs
+    do { try cfg.save() } catch { fail("✗ couldn't write config: \(error)") }
+    if secs > Bounds.rvMaxRequestDurationCeil { print("  note: above the \(Int(Bounds.rvMaxRequestDurationCeil/3600))h ceiling — the ceiling is enforced at request time.") }
+    rvPrintConfig(cfg)
+}
+
+private func rvPrintConfig(_ cfg: ReleaseValveConfig) {
+    func fmtDur(_ s: Double?) -> String { s.map { "\(Int($0/3600))h\(Int($0.truncatingRemainder(dividingBy: 3600)/60))m" } ?? "(unset)" }
+    print("✓ release-valve config:")
+    print("    gate-policy          : \(cfg.gatePolicy ?? "(unset)")")
+    print("    request-delay        : \(fmtDur(cfg.delaySec))  (floor \(Int(Bounds.rvRequestDelayMin/60))m)")
+    print("    max-request-duration : \(fmtDur(cfg.maxRequestDurationSec))  (ceiling \(Int(Bounds.rvMaxRequestDurationCeil/3600))h)")
+    print(cfg.isComplete ? "  all set — `demonlock admin-release-valve request \"<dur>\"` is ready." :
+                           "  ⚠️  still missing a field; request won't work until all three are set.")
 }
 
 // MARK: - delaysetpolicy (NO sudo — queues a policy that lands after 36h)
