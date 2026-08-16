@@ -35,15 +35,8 @@ enum SnoozePresets {
     struct SPState: Codable {
         var invocation: Invocation? = nil     // ONE in-flight invocation (a single snooze slot)
         var adds: [String: AddPending] = [:]  // name → pending delayed-add
-        static func load() -> SPState {
-            guard let d = try? Data(contentsOf: URL(fileURLWithPath: Paths.snoozePresetsStateFile)),
-                  let s = try? JSONDecoder().decode(SPState.self, from: d) else { return SPState() }
-            return s
-        }
-        func save() {
-            let e = JSONEncoder(); e.outputFormatting = [.sortedKeys]
-            if let d = try? e.encode(self) { try? d.write(to: URL(fileURLWithPath: Paths.snoozePresetsStateFile), options: .atomic) }
-        }
+        static func load() -> SPState { loadJSON(Paths.snoozePresetsStateFile) ?? SPState() }
+        func save() { saveJSON(self, to: Paths.snoozePresetsStateFile) }
     }
 
     struct Status: Codable {

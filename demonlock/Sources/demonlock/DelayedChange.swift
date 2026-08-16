@@ -24,15 +24,8 @@ struct DelayedState: Codable {
     var pending: PendingChange?
     var lastAppliedAt: Double?
 
-    static func load(_ path: String) -> DelayedState {
-        guard let d = try? Data(contentsOf: URL(fileURLWithPath: path)),
-              let s = try? JSONDecoder().decode(DelayedState.self, from: d) else { return DelayedState() }
-        return s
-    }
-    func save(_ path: String) {
-        let e = JSONEncoder(); e.outputFormatting = [.sortedKeys]
-        if let d = try? e.encode(self) { try? d.write(to: URL(fileURLWithPath: path), options: .atomic) }
-    }
+    static func load(_ path: String) -> DelayedState { loadJSON(path) ?? DelayedState() }
+    func save(_ path: String) { saveJSON(self, to: path) }
 }
 
 // Published status (status CLI + agent UI + the applied-notification).
@@ -73,16 +66,16 @@ enum DelayedChange {
                 if !p.isEmpty, validate(p) {
                     st.pending = PendingChange(payload: p, requestedAt: now, applyAt: now + delaySec)
                     st.save(stateFile)
-                    log("delayed-\(kind): queued — applies in \(Int(delaySec/3600))h")
+                    logStderr("delayed-\(kind): queued — applies in \(Int(delaySec/3600))h")
                 } else {
-                    log("delayed-\(kind): rejected an invalid queued change")
+                    logStderr("delayed-\(kind): rejected an invalid queued change")
                 }
             }
         }
         // 3. apply when due (re-validate; a stale/invalid payload is dropped, fail-closed).
         if let pc = st.pending, now >= pc.applyAt {
-            if validate(pc.payload), apply(pc.payload) { st.lastAppliedAt = now; log("delayed-\(kind): APPLIED") }
-            else { log("delayed-\(kind): apply FAILED — dropped the queued change") }
+            if validate(pc.payload), apply(pc.payload) { st.lastAppliedAt = now; logStderr("delayed-\(kind): APPLIED") }
+            else { logStderr("delayed-\(kind): apply FAILED — dropped the queued change") }
             st.pending = nil; st.save(stateFile)
         }
 
@@ -94,10 +87,5 @@ enum DelayedChange {
     private static func preview(_ s: String) -> String {
         let one = s.replacingOccurrences(of: "\n", with: " ")
         return one.count > 90 ? String(one.prefix(87)) + "…" : one
-    }
-
-    private static func log(_ s: String) {
-        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        FileHandle.standardError.write(Data("[\(f.string(from: Date()))] \(s)\n".utf8))
     }
 }

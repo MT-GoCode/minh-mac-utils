@@ -26,6 +26,33 @@ enum Proc {
 
 func nowEpoch() -> Double { Date().timeIntervalSince1970 }
 
+// MARK: - Shared JSON file + logging (used by every on-disk store and daemon subsystem)
+
+/// Decode a Codable from a JSON file. nil if absent, unreadable, or corrupt (callers fall back to a
+/// default). The one place the load pattern lives.
+func loadJSON<T: Decodable>(_ path: String) -> T? {
+    guard let d = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
+    return try? JSONDecoder().decode(T.self, from: d)
+}
+
+/// Encode + ATOMICALLY write a Codable to a JSON file (sorted keys; pretty optional), then optionally
+/// chmod it. Best-effort → returns success. The one place the save pattern lives.
+@discardableResult
+func saveJSON<T: Encodable>(_ value: T, to path: String, mode: mode_t? = nil, pretty: Bool = false) -> Bool {
+    let e = JSONEncoder(); e.outputFormatting = pretty ? [.prettyPrinted, .sortedKeys] : [.sortedKeys]
+    guard let d = try? e.encode(value) else { return false }
+    do { try d.write(to: URL(fileURLWithPath: path), options: .atomic) } catch { return false }
+    if let m = mode { chmod(path, m) }
+    return true
+}
+
+/// A timestamped stderr log line, shared by the daemon subsystems (enforcer, release-valve, delayed
+/// changes, settings-guard). Format: `[yyyy-MM-dd HH:mm:ss] message`.
+func logStderr(_ s: String) {
+    let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    FileHandle.standardError.write(Data("[\(f.string(from: Date()))] \(s)\n".utf8))
+}
+
 /// Up, non-loopback, non-link-local IPv4 addresses (Wi-Fi/Ethernet) — for the "SSH in to disarm" hint.
 func localIPv4s() -> [String] {
     var out: [String] = []

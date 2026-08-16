@@ -100,14 +100,8 @@ struct HeldFix: Codable {
 }
 
 enum HeldFixStore {
-    static func read() -> HeldFix? {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: Paths.heldFixFile)) else { return nil }
-        return try? JSONDecoder().decode(HeldFix.self, from: data)
-    }
-    static func write(_ h: HeldFix) {
-        guard let data = try? JSONEncoder().encode(h) else { return }
-        try? data.write(to: URL(fileURLWithPath: Paths.heldFixFile), options: .atomic)
-    }
+    static func read() -> HeldFix? { loadJSON(Paths.heldFixFile) }
+    static func write(_ h: HeldFix) { saveJSON(h, to: Paths.heldFixFile) }
 }
 
 // MARK: - Small root-owned scalar files
@@ -148,13 +142,6 @@ enum PolicyStore {
 }
 
 enum StateStore {
-    static func read() -> StateSnapshot? {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: Paths.stateFile)) else { return nil }
-        return try? JSONDecoder().decode(StateSnapshot.self, from: data)
-    }
-    static func write(_ snap: StateSnapshot) {
-        let enc = JSONEncoder(); enc.outputFormatting = [.sortedKeys]
-        guard let data = try? enc.encode(snap) else { return }
-        try? data.write(to: URL(fileURLWithPath: Paths.stateFile), options: .atomic)
-    }
+    static func read() -> StateSnapshot? { loadJSON(Paths.stateFile) }
+    static func write(_ snap: StateSnapshot) { saveJSON(snap, to: Paths.stateFile) }
 }

@@ -14,17 +14,9 @@ struct LockboxEntry: Codable, Equatable { var name: String; var secret: String; 
 
 /// The 0600 root-only vault. Read/written only by the root daemon and root (sudo) CLI.
 enum LockboxStore {
-    static func load() -> [LockboxEntry] {
-        guard let d = try? Data(contentsOf: URL(fileURLWithPath: Paths.lockboxFile)),
-              let e = try? JSONDecoder().decode([LockboxEntry].self, from: d) else { return [] }
-        return e
-    }
-    static func save(_ entries: [LockboxEntry]) {
-        let enc = JSONEncoder(); enc.outputFormatting = [.sortedKeys]
-        guard let d = try? enc.encode(entries) else { return }
-        try? d.write(to: URL(fileURLWithPath: Paths.lockboxFile), options: .atomic)
-        chmod(Paths.lockboxFile, 0o600)   // secrets: root-only, never group/other-readable
-    }
+    static func load() -> [LockboxEntry] { loadJSON(Paths.lockboxFile) ?? [] }
+    // secrets: root-only, never group/other-readable
+    static func save(_ entries: [LockboxEntry]) { saveJSON(entries, to: Paths.lockboxFile, mode: 0o600) }
     static func names() -> [String] { load().map(\.name).sorted() }
 }
 
@@ -33,15 +25,8 @@ enum Lockbox {
     struct LBState: Codable {
         var pending: [String: Pending] = [:]      // name → pending unlock
         var unlockedUntil: [String: Double] = [:] // name → auto-relock time
-        static func load() -> LBState {
-            guard let d = try? Data(contentsOf: URL(fileURLWithPath: Paths.lockboxStateFile)),
-                  let s = try? JSONDecoder().decode(LBState.self, from: d) else { return LBState() }
-            return s
-        }
-        func save() {
-            let e = JSONEncoder(); e.outputFormatting = [.sortedKeys]
-            if let d = try? e.encode(self) { try? d.write(to: URL(fileURLWithPath: Paths.lockboxStateFile), options: .atomic) }
-        }
+        static func load() -> LBState { loadJSON(Paths.lockboxStateFile) ?? LBState() }
+        func save() { saveJSON(self, to: Paths.lockboxStateFile) }
     }
 
     struct Status: Codable { var entries: [EntryView] = [] }

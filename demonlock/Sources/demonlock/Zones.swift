@@ -48,10 +48,7 @@ struct Zone: Codable, Equatable {
 }
 
 enum ZoneStore {
-    static func load(from path: String = Paths.zonesFile) -> [Zone] {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return [] }
-        return (try? JSONDecoder().decode([Zone].self, from: data)) ?? []
-    }
+    static func load(from path: String = Paths.zonesFile) -> [Zone] { loadJSON(path) ?? [] }
 
     static func save(_ zones: [Zone], to path: String = Paths.zonesFile) throws {
         let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]

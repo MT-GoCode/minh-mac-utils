@@ -18,7 +18,7 @@ enum SettingsGuard {
         guard settings.guardSettingsPanes, ArmStore.isArmed(), AXIsProcessTrusted() else { return }
         guard let pid = settingsFrontmostPID() else { return }
         if let hit = guardedTitle(pid: pid, triggers: settings.guardedSettingsTitles) {
-            log("guarded pane \"\(hit)\" detected — killing System Settings (pid \(pid))")
+            logStderr("settings-guard: guarded pane \"\(hit)\" detected — killing System Settings (pid \(pid))")
             kill(pid, SIGKILL)
         }
     }
@@ -71,10 +71,5 @@ enum SettingsGuard {
         print("settings-guard : \(s.guardSettingsPanes ? "ENABLED" : "disabled") (active while armed)")
         print("  triggers     : \(s.guardedSettingsTitles.joined(separator: ", "))")
         print("  accessibility: \(AXIsProcessTrusted() ? "granted" : "NOT granted — run `demonlock perm-ask`")")
-    }
-
-    private static func log(_ s: String) {
-        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        FileHandle.standardError.write(Data("[\(f.string(from: Date()))] settings-guard: \(s)\n".utf8))
     }
 }

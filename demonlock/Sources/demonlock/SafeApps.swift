@@ -76,15 +76,8 @@ enum SafeApps {
     struct Pending: Codable { var app: SafeApp; var requestedAt: Double; var applyAt: Double }
     struct Registry: Codable {
         var pending: [String: Pending] = [:]   // name → pending add
-        static func load() -> Registry {
-            guard let d = try? Data(contentsOf: URL(fileURLWithPath: Paths.safeAppsPendingFile)),
-                  let r = try? JSONDecoder().decode(Registry.self, from: d) else { return Registry() }
-            return r
-        }
-        func save() {
-            let e = JSONEncoder(); e.outputFormatting = [.sortedKeys]
-            if let d = try? e.encode(self) { try? d.write(to: URL(fileURLWithPath: Paths.safeAppsPendingFile), options: .atomic) }
-        }
+        static func load() -> Registry { loadJSON(Paths.safeAppsPendingFile) ?? Registry() }
+        func save() { saveJSON(self, to: Paths.safeAppsPendingFile) }
     }
 
     /// Published status for `show` (the pending adds + their landing times).

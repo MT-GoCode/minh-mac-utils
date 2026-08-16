@@ -28,11 +28,7 @@ struct ReleaseValveConfig: Codable {
     var effectiveDelay: Double { Bounds.clamp(delaySec ?? Bounds.rvRequestDelayMin, Bounds.rvRequestDelayMin ... .greatestFiniteMagnitude) }
     var effectiveMaxDuration: Double { min(maxRequestDurationSec ?? Bounds.rvMaxRequestDurationCeil, Bounds.rvMaxRequestDurationCeil) }
 
-    static func load() -> ReleaseValveConfig {
-        guard let d = try? Data(contentsOf: URL(fileURLWithPath: Paths.rvConfigFile)),
-              let c = try? JSONDecoder().decode(ReleaseValveConfig.self, from: d) else { return ReleaseValveConfig() }
-        return c
-    }
+    static func load() -> ReleaseValveConfig { loadJSON(Paths.rvConfigFile) ?? ReleaseValveConfig() }
     func save() throws {
         let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys]
         try e.encode(self).write(to: URL(fileURLWithPath: Paths.rvConfigFile), options: .atomic)
@@ -51,15 +47,8 @@ struct ReleaseValveState: Codable {
     var isIdle: Bool { requestedAt == nil }
     var isGranted: Bool { grantedAt != nil }
 
-    static func load() -> ReleaseValveState {
-        guard let d = try? Data(contentsOf: URL(fileURLWithPath: Paths.rvStateFile)),
-              let s = try? JSONDecoder().decode(ReleaseValveState.self, from: d) else { return ReleaseValveState() }
-        return s
-    }
-    static func write(_ s: ReleaseValveState) {
-        let e = JSONEncoder(); e.outputFormatting = [.sortedKeys]
-        if let d = try? e.encode(s) { try? d.write(to: URL(fileURLWithPath: Paths.rvStateFile), options: .atomic) }
-    }
+    static func load() -> ReleaseValveState { loadJSON(Paths.rvStateFile) ?? ReleaseValveState() }
+    static func write(_ s: ReleaseValveState) { saveJSON(s, to: Paths.rvStateFile) }
 }
 
 // MARK: - Published status (status CLI + agent UI + notifications)
@@ -106,12 +95,12 @@ enum ReleaseValve {
                         st.eligibleAt = nowSec + cfg.effectiveDelay   // freeze eligibility at request time
                         st.requestedDurationSec = dur
                         ReleaseValveState.write(st)
-                        log("release-valve: request accepted (\(Int(dur/60))m grant, eligible in \(Int(cfg.effectiveDelay))s)")
+                        logStderr("release-valve: request accepted (\(Int(dur/60))m grant, eligible in \(Int(cfg.effectiveDelay))s)")
                     } else if !st.isGranted {
                         // Idempotent: a repeat request while PENDING only updates the duration; it does NOT
                         // reset eligibleAt (can't shorten OR extend the delay).
                         st.requestedDurationSec = dur; ReleaseValveState.write(st)
-                        log("release-valve: pending request duration updated to \(Int(dur/60))m")
+                        logStderr("release-valve: pending request duration updated to \(Int(dur/60))m")
                     }
                     // granted → ignore (already have admin)
                 }
@@ -139,7 +128,7 @@ enum ReleaseValve {
                 st.grantedAt = nowSec
                 st.grantExpiresAt = nowSec + (st.requestedDurationSec ?? 0)
                 ReleaseValveState.write(st)
-                log("release-valve: GRANT admin → \(u) for \(Int((st.requestedDurationSec ?? 0)/60))m")
+                logStderr("release-valve: GRANT admin → \(u) for \(Int((st.requestedDurationSec ?? 0)/60))m")
             }
         }
 
@@ -162,10 +151,5 @@ enum ReleaseValve {
         let st = ReleaseValveState.load()
         if st.isGranted, let u = username { _ = Admin.revoke(u) }
         ReleaseValveState.write(ReleaseValveState())
-    }
-
-    private static func log(_ s: String) {
-        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        FileHandle.standardError.write(Data("[\(f.string(from: Date()))] \(s)\n".utf8))
     }
 }
