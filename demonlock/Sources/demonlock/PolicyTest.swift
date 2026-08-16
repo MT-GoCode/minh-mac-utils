@@ -26,6 +26,28 @@ func runPolicyTest() {
         check("BSSID match is case-insensitive",             verdict(fix: (0.0, 0.0), bssids: ["A4:5E:60:11:22:33".lowercased()]) == .t)
     } catch { check("parse main policy: \(error)", false) }
 
+    // H3: deleting a referenced zone must NOT loosen. A dangling zone name evaluates to .unknown
+    // (indeterminate), so NOT LOCATED_IN_ANY([deleted]) = NOT(unknown) = unknown = fail-closed,
+    // never an allow-everywhere. Existing-zone semantics (inside→allow, outside→block) are unchanged.
+    do {
+        let notCasino = try PolicyEngine.parse("NOT LOCATED_IN_ANY([\"casino\"])")   // casino not in `zones`
+        let r = PolicyEngine.evaluate(notCasino, PolicyInputs(now: Date(), fix: (34.0, -118.0), bssids: nil, zones: zones)).0
+        check("dangling zone under NOT → unknown (not allow)", r == .unknown)
+        let bare = try PolicyEngine.parse("LOCATED_IN_ANY([\"casino\"])")
+        check("dangling zone bare → unknown",
+              PolicyEngine.evaluate(bare, PolicyInputs(now: Date(), fix: (34.0, -118.0), bssids: nil, zones: zones)).0 == .unknown)
+        let mixed = try PolicyEngine.parse("LOCATED_IN_ANY([\"office\", \"casino\"])")
+        check("dangling mixed, inside a live zone → allow (match wins)",
+              PolicyEngine.evaluate(mixed, PolicyInputs(now: Date(), fix: (34.0, -118.0), bssids: nil, zones: zones)).0 == .t)
+        check("dangling mixed, outside the live zone → unknown",
+              PolicyEngine.evaluate(mixed, PolicyInputs(now: Date(), fix: (0.0, 0.0), bssids: nil, zones: zones)).0 == .unknown)
+        let office = try PolicyEngine.parse("LOCATED_IN_ANY([\"office\"])")
+        check("existing zone inside → allow",
+              PolicyEngine.evaluate(office, PolicyInputs(now: Date(), fix: (34.0, -118.0), bssids: nil, zones: zones)).0 == .t)
+        check("existing zone outside → block",
+              PolicyEngine.evaluate(office, PolicyInputs(now: Date(), fix: (0.0, 0.0), bssids: nil, zones: zones)).0 == .f)
+    } catch { check("dangling-zone test parse: \(error)", false) }
+
     // AND short-circuits to false on a definitively-false clause even with unknown location.
     do {
         let p = try PolicyEngine.parse("LOCATED_IN_ANY([\"office\"]) AND TIME_IS_ANY([M0000-0001])")

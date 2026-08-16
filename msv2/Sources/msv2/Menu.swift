@@ -12,6 +12,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        // A kill/crash while the switcher was open leaves Karabiner's msv_switcher stuck
+        // at 1, so cmd+arrow remaps stay gated off — and a restart never cleared it,
+        // because only Switcher.close() ever reset it. Clear it unconditionally on launch.
+        Switcher.karabinerVar(0)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = NSImage(
             systemSymbolName: "square.stack", accessibilityDescription: "msv2")
@@ -36,6 +40,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         RunLoop.main.add(t, forMode: .common)
         refreshTitle()
     }
+
+    func applicationWillTerminate(_ n: Notification) { Switcher.karabinerVar(0) }
 
     private func refreshTitle() {
         let n = Engine.shared.currentIndex + 1

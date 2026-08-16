@@ -92,11 +92,21 @@ enum PolicyEngine {
                 return (.unknown, EvalNode(kind: "LOCATED_IN_ANY", label: label, result: nil, detail: "no location fix"))
             }
             let inside = ZoneStore.containing(lat: fix.lat, lon: fix.lon, zones: inp.zones)
-            let match = names.first { inside.contains($0) }
-            let r: Tri = match != nil ? .t : .f
-            let detail = match.map { "inside \"\($0)\"" }
-                ?? (inside.isEmpty ? "outside all zones" : "inside \(inside) (not in the listed set)")
-            return (r, EvalNode(kind: "LOCATED_IN_ANY", label: label, result: r.bool, detail: detail))
+            if let hit = names.first(where: { inside.contains($0) }) {
+                return (.t, EvalNode(kind: "LOCATED_IN_ANY", label: label, result: true, detail: "inside \"\(hit)\""))
+            }
+            // Not inside any listed zone. A referenced name that no longer exists is INDETERMINATE,
+            // not false: deleting a zone must never silently flip NOT LOCATED_IN_ANY([...]) from
+            // block to allow — the deleted zone might have contained you. Fail-closed to .unknown so
+            // NOT(unknown)=unknown. This is what makes zone DELETION monotone (review H3). Zones are
+            // validated to exist at setpolicy time; a name is only dangling if deleted afterward.
+            let missing = names.filter { !ZoneStore.hasZone(named: $0, in: inp.zones) }
+            if !missing.isEmpty {
+                let d = "unknown zone(s) " + missing.map { "\"\($0)\"" }.joined(separator: ", ") + " — indeterminate"
+                return (.unknown, EvalNode(kind: "LOCATED_IN_ANY", label: label, result: nil, detail: d))
+            }
+            let detail = inside.isEmpty ? "outside all zones" : "inside \(inside) (not in the listed set)"
+            return (.f, EvalNode(kind: "LOCATED_IN_ANY", label: label, result: false, detail: detail))
 
         case .foundInNearbyBSSID(let macs):
             let label = "FOUND_IN_NEARBY_BSSID([\(macs.count) AP\(macs.count == 1 ? "" : "s")])"

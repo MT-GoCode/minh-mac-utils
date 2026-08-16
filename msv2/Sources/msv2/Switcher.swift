@@ -117,11 +117,13 @@ final class Switcher: ObservableObject {
         let screen = NSScreen.screens.first {
             NSMouseInRect(NSEvent.mouseLocation, $0.frame, false)
         } ?? NSScreen.main ?? NSScreen.screens[0]
-        let size = NSSize(width: min(900, screen.frame.width * 0.7),
-                          height: min(560, screen.frame.height * 0.6))
+        // visibleFrame, not frame: frame includes the menu bar and Dock, so centering on
+        // it sits the HUD low. Mission Control fills the visible area; match it.
+        let area = screen.visibleFrame
+        let size = NSSize(width: area.width * 0.88, height: area.height * 0.86)
         panel?.setFrame(
-            NSRect(x: screen.frame.midX - size.width / 2,
-                   y: screen.frame.midY - size.height / 2,
+            NSRect(x: area.midX - size.width / 2,
+                   y: area.midY - size.height / 2,
                    width: size.width, height: size.height), display: true)
     }
 
