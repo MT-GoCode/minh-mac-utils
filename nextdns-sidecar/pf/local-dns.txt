@@ -1,0 +1,25 @@
+# nextdns-lockdown :: STATIC BASELINE for the captive-portal door (pf table <local_dns>).
+# Plaintext DNS (port 53) is allowed to these private ranges so hotel/airport/train
+# logins and macOS's captive.apple.com detection resolve via the local network.
+#
+# NOTE: this file is only the baseline. At runtime the daemon ALSO learns the
+# current network's actual default gateway + DHCP-advertised resolvers (v4 AND v6,
+# including public IPv6 resolvers that cellular-backed transit wifi hands out) and
+# adds exactly those hosts to <local_dns> each tick — so the door follows whatever
+# network you're on. See sync_captive_door() in bin/nextdns-lockdownd. The learned
+# hosts are NOT written here; this file stays the fixed private-range baseline.
+#
+# Still not a real bypass: only the gateway/resolver THIS network already told us to
+# use is opened (same trust as a manual `dig @gateway`); public *open* resolvers
+# (8.8.8.8 etc.) you weren't handed stay blocked.
+#
+# The daemon FLUSHES this whole table if the Encrypted-DNS profile is removed
+# (fail-closed), so DNS can't silently fall back to the gateway's unfiltered resolver.
+
+10.0.0.0/8
+172.16.0.0/12
+192.168.0.0/16
+100.64.0.0/10
+169.254.0.0/16
+fc00::/7
+fe80::/10

@@ -1,0 +1,33 @@
+# nextdns-lockdown :: Tor directory authorities (IPv4)
+# Loaded as pf table <tor_dirauth>. Blocked on all ports.
+#
+# This only stops VANILLA Tor bootstrap (the client must reach a dir authority
+# to fetch the consensus). It is a SPEED BUMP, not a wall:
+#   - Bridges + pluggable transports (obfs4, meek-azure, snowflake) are PURPOSE-BUILT
+#     to defeat IP blocking; meek/snowflake ride CDNs/WebRTC over TCP 443 and cannot
+#     be blocked without breaking the web.
+# Tor is not currently installed on this machine (checked at build time).
+# One IP per line; '#' comments allowed.
+
+# moria1
+128.31.0.39
+# tor26
+86.59.21.38
+# dizum (old + current)
+194.109.206.212
+45.66.33.45
+# gabelmoo
+131.188.40.189
+# dannenberg
+193.23.244.244
+# maatuska
+171.25.193.9
+# longclaw
+199.58.81.140
+# bastet
+204.13.164.118
+# faravahar (old + current)
+154.35.175.225
+216.218.219.41
+# serge (bridge authority)
+66.111.2.131
