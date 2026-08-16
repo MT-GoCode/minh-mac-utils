@@ -228,9 +228,9 @@ func runArm() {
     // arm is the panic button: it must ALSO close the release valve (cancel a pending request AND revoke
     // a live grant) + drop admin now, else a request would hand out sudo minutes after you armed, and
     // status would lie. Running as root here, so do it inline. [review M2]
-    let user = Settings.load().enforcedUser
-    ReleaseValve.hardReset(username: user.isEmpty ? nil : user)
-    if !user.isEmpty { _ = Admin.revoke(user); note += "  (revoked admin + closed the release valve)" }
+    let user = Settings.load().enforcedUserName()   // login name (resolves a numeric-uid enforcedUser)
+    ReleaseValve.hardReset(username: user)
+    if let u = user { _ = Admin.revoke(u); note += "  (revoked admin + closed the release valve)" }
     print("✓ ARMED\(note) — after a \(Int(Settings.load().countdownSeconds))s countdown out of policy the enforcer force-closes your GUI apps (sshd/tmux survive). `sudo demonlock disarm` to stop.")
 }
 
@@ -242,9 +242,9 @@ func runNoSudo() {
         if rc != 0 { fail("✗ couldn't drop admin without a password — the passwordless grant may be missing (reinstall), or run `sudo demonlock nosudo`.") }
         exit(0)
     }
-    let user = Settings.load().enforcedUser
-    ReleaseValve.hardReset(username: user.isEmpty ? nil : user)
-    if !user.isEmpty { _ = Admin.revoke(user) }
+    let user = Settings.load().enforcedUserName()
+    ReleaseValve.hardReset(username: user)
+    if let u = user { _ = Admin.revoke(u) }
     print("✓ admin dropped — release valve closed too. (Already-open login shells may keep cached group membership until you log out.)")
 }
 
@@ -330,6 +330,7 @@ private func lockboxAdd(_ args: [String]) {
     } else {
         guard let data = try? JSONEncoder().encode(entry), let json = String(data: data, encoding: .utf8) else { fail("✗ couldn't encode") }
         dropDelayMarker(Paths.lbAddMarker, payload: json)
+        chmod(Paths.lbAddMarker, 0o600)   // the marker holds the plaintext secret — not group/other-readable [review]
         print("✓ '\(name)' queued — added on the next tick (no sudo).")
     }
 }
@@ -373,7 +374,9 @@ func runSnoozePreset(_ args: [String]) {
     case "add":                  snoozePresetAdd(rest, immediate: true)
     case "delayed-add":
         if rest.first == "abort" { snoozePresetAbort(Array(rest.dropFirst())) } else { snoozePresetAdd(rest, immediate: false) }
-    case "abort":                snoozePresetAbort(rest)
+    case "abort":                // cancels the in-flight INVOCATION (delayed-adds use `delayed-add abort`)
+        dropDelayMarker(Paths.spInvokeAbort)
+        print("✓ abort sent — cancels the in-flight invocation on the next tick.")
     case "set-delay":            snoozePresetSetDelay(rest.joined(separator: " "))
     case "help", "--help", "-h": print(snoozePresetUsage)
     default: fail("✗ unknown subcommand '\(sub)'\n" + snoozePresetUsage)
@@ -436,8 +439,7 @@ private func snoozePresetAbort(_ args: [String]) {
 private func snoozePresetSetDelay(_ durText: String) {
     requireRoot("snooze-preset set-delay")
     guard let secs = TimeSpec.parseDuration(durText), secs > 0 else { fail("✗ bad delay — e.g. \"48h\".") }
-    var s = Settings.load(); s.snoozePresetAddDelaySec = secs
-    do { try s.save() } catch { fail("✗ couldn't write settings: \(error)") }
+    Settings.mutate { $0.snoozePresetAddDelaySec = secs }
     let eff = Int(Bounds.clamp(secs, Bounds.snoozePresetAddDelay) / 3600)
     print("✓ snooze-preset add-delay set to \(Int(secs/3600))h (effective \(eff)h after the baked clamp).")
 }
@@ -523,8 +525,7 @@ private func safeAppsAbort(_ args: [String]) {
 private func safeAppsSetDelay(_ durText: String) {
     requireRoot("safe-apps set-delay")
     guard let secs = TimeSpec.parseDuration(durText), secs > 0 else { fail("✗ bad delay — e.g. \"24h\", \"12h\".") }
-    var s = Settings.load(); s.safeAppsDelaySec = secs
-    do { try s.save() } catch { fail("✗ couldn't write settings: \(error)") }
+    Settings.mutate { $0.safeAppsDelaySec = secs }
     let eff = Int(Bounds.clamp(secs, Bounds.safeAppsDelay) / 3600)
     print("✓ safe-apps delayed-register delay set to \(Int(secs/3600))h (effective \(eff)h after the baked \(Int(Bounds.safeAppsDelay.lowerBound/3600))–\(Int(Bounds.safeAppsDelay.upperBound/3600))h clamp).")
 }
@@ -653,7 +654,7 @@ private func rvDelayGatePolicy(_ arg: String) {
         requireRoot("admin-release-valve delay-set-gate-policy set-delay")
         let dur = String(s.dropFirst("set-delay".count)).trimmingCharacters(in: .whitespaces)
         guard let secs = TimeSpec.parseDuration(dur), secs > 0 else { fail("✗ bad delay — e.g. \"36h\".") }
-        var st = Settings.load(); st.gatePolicyDelaySec = secs; do { try st.save() } catch { fail("✗ couldn't write settings: \(error)") }
+        Settings.mutate { $0.gatePolicyDelaySec = secs }
         print("✓ gate-policy delay set to \(Int(secs/3600))h (clamped to \(Int(Bounds.gatePolicyDelay.lowerBound/3600))–\(Int(Bounds.gatePolicyDelay.upperBound/3600))h).")
         return
     }

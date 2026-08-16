@@ -115,7 +115,10 @@ enum SnoozePresets {
         // apply the invocation when due: stand down until the frozen target (if still future), then re-arm.
         if let inv = st.invocation, now >= inv.applyAt {
             if inv.targetAt > now {
-                try? SnoozeStore.set(Date(timeIntervalSince1970: inv.targetAt))
+                // Cap the stand-down at the snooze ceiling, same as the manual `snooze` command — an
+                // "until" preset invoked in the small hours must not stand down for ~24h. [review]
+                let capped = min(inv.targetAt, now + Bounds.snoozeDurationMax)
+                try? SnoozeStore.set(Date(timeIntervalSince1970: capped))
                 if !ArmStore.isArmed() { try? ArmStore.set(true) }   // snooze ⇒ stand down THEN resume
             }
             st.invocation = nil; st.save()
@@ -136,20 +139,20 @@ enum SnoozePresets {
     }
 
     static func applyAdd(_ p: SnoozePreset) {
-        var s = Settings.load()
-        s.snoozePresetsUser.removeAll { $0.name == p.name }
-        s.snoozePresetsUser.append(p)
-        s.snoozePresetsRemoved.removeAll { $0 == p.name }
-        try? s.save()
+        Settings.mutate { s in
+            s.snoozePresetsUser.removeAll { $0.name == p.name }
+            s.snoozePresetsUser.append(p)
+            s.snoozePresetsRemoved.removeAll { $0 == p.name }
+        }
     }
 
     static func applyRemove(name: String) {
-        var s = Settings.load()
-        if s.snoozePresetsUser.contains(where: { $0.name == name }) {
-            s.snoozePresetsUser.removeAll { $0.name == name }
-        } else if defaults.contains(where: { $0.name == name }) {
-            if !s.snoozePresetsRemoved.contains(name) { s.snoozePresetsRemoved.append(name) }
+        Settings.mutate { s in
+            if s.snoozePresetsUser.contains(where: { $0.name == name }) {
+                s.snoozePresetsUser.removeAll { $0.name == name }
+            } else if defaults.contains(where: { $0.name == name }) {
+                if !s.snoozePresetsRemoved.contains(name) { s.snoozePresetsRemoved.append(name) }
+            }
         }
-        try? s.save()
     }
 }

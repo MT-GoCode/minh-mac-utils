@@ -166,6 +166,26 @@ struct Settings: Codable {
         try enc.encode(self).write(to: URL(fileURLWithPath: path), options: .atomic)
     }
 
+    /// Read-modify-write settings.json under an exclusive file lock. settings.json is now mutated by
+    /// several subsystems from two processes (the daemon's safe-apps / snooze-presets apply, plus sudo
+    /// CLI register/remove/set-delay), so a lock-free load→change→save races and drops updates. Every
+    /// such mutation must go through here. [review — concurrent writers]
+    static func mutate(_ change: (inout Settings) -> Void) {
+        let fd = open(Paths.settingsFile + ".lock", O_CREAT | O_RDWR, 0o600)
+        if fd >= 0 { flock(fd, LOCK_EX) }
+        defer { if fd >= 0 { flock(fd, LOCK_UN); close(fd) } }
+        var s = load()
+        change(&s)
+        try? s.save()
+    }
+
+    /// The enforced user's LOGIN NAME (resolving a numeric-uid string through getpwuid), for the tools
+    /// that need a name not a uid (dseditgroup). nil if unset/unknown. [review — Admin.revoke needs a name]
+    func enforcedUserName() -> String? {
+        guard let uid = enforcedUID(), let pw = getpwuid(uid) else { return nil }
+        return String(cString: pw.pointee.pw_name)
+    }
+
     /// Resolve enforcedUser (username or numeric uid string) to a uid. nil if unset/unknown.
     func enforcedUID() -> uid_t? {
         let v = enforcedUser.trimmingCharacters(in: .whitespacesAndNewlines)

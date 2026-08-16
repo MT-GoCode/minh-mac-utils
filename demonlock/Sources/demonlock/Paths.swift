@@ -14,6 +14,7 @@ enum Paths {
     static let snoozeFile      = supportDir + "/snooze"
     static let stateFile       = supportDir + "/state.json"
     static let heldFixFile     = supportDir + "/heldfix.json"
+    static let enforcedUIDCacheFile = supportDir + "/enforced-uid"   // last-resolved enforced uid, survives restart
     static let logsDir         = supportDir + "/logs"
     static let enforcerdLog    = logsDir + "/enforcerd.log"
 
@@ -77,7 +78,6 @@ enum Paths {
     static let appPath         = "/Applications/Demonlock.app"
     static let binaryPath      = appPath + "/Contents/MacOS/demonlock"
     static let cliWrapper      = "/usr/local/bin/demonlock"
-    static let sudomeBin       = "/usr/local/bin/sudome"    // release-valve grants/revokes admin via this
 
     static let enforcerdPlist  = "/Library/LaunchDaemons/com.demonlock.enforcerd.plist"
     static let agentPlist      = "/Library/LaunchAgents/com.demonlock.agent.plist"

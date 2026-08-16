@@ -88,20 +88,31 @@ if [ -e /usr/local/bin/sudome ] || [ -d /usr/local/etc/sudome ]; then
   rm -rf /usr/local/etc/sudome
 fi
 
-echo "▸ seeding $SUPPORT (defaults only if absent)"
+echo "▸ seeding $SUPPORT (preserving existing settings)"
 mkdir -p "$SUPPORT/logs"
 WIFI_DEV="$(/usr/sbin/networksetup -listallhardwareports | awk '/Wi-Fi/{getline; print $2; exit}')"
 [ -n "$WIFI_DEV" ] || WIFI_DEV="en0"
-# Seed ONLY the per-machine keys; every behavioral tunable is owned by the code defaults
-# (Settings.swift / LOCATION-MODEL.md) and decoded leniently, so changing a default actually
-# takes effect instead of being shadowed by a stale file. Rewritten each install to pick up
-# enforcedUser/wifiDevice; behavior keys deliberately absent.
-cat > "$SUPPORT/settings.json" <<EOF
+# settings.json now persists the user's safe-apps, snooze-presets, and custom delays — so a reinstall
+# must MERGE the per-machine keys (enforcedUser/wifiDevice), never overwrite the file. [review]
+if [ -f "$SUPPORT/settings.json" ]; then
+  /usr/bin/python3 - "$SUPPORT/settings.json" "$USER_NAME" "$WIFI_DEV" <<'PY'
+import json, sys
+path, user, wifi = sys.argv[1:4]
+try:
+    d = json.load(open(path));  d = d if isinstance(d, dict) else {}
+except Exception:
+    d = {}
+d["enforcedUser"], d["wifiDevice"] = user, wifi
+json.dump(d, open(path, "w"), indent=2, sort_keys=True)
+PY
+else
+  cat > "$SUPPORT/settings.json" <<EOF
 {
   "enforcedUser" : "$USER_NAME",
   "wifiDevice" : "$WIFI_DEV"
 }
 EOF
+fi
 [ -f "$SUPPORT/armed" ]      || printf '0'    > "$SUPPORT/armed"     # installs DISARMED
 [ -f "$SUPPORT/snooze" ]     || printf 'null' > "$SUPPORT/snooze"
 [ -f "$SUPPORT/zones.json" ] || printf '[]'   > "$SUPPORT/zones.json"

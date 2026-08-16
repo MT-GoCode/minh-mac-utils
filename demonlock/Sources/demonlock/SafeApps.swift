@@ -152,7 +152,6 @@ enum SafeApps {
         }
         if applied { reg.save() }
 
-        let f = DateFormatter(); f.dateFormat = "EEE HH:mm"
         return Status(pending: reg.pending.values
             .sorted { $0.app.name < $1.app.name }
             .map { PendingView(name: $0.app.name, bid: $0.app.bid, applyAtEpoch: $0.applyAt) })
@@ -160,22 +159,22 @@ enum SafeApps {
 
     /// Add/replace a user entry in settings.json (root-writable). Also un-tombstones the bid.
     static func applyAdd(_ app: SafeApp) {
-        var s = Settings.load()
-        s.safeAppsUser.removeAll { $0.bid == app.bid }
-        s.safeAppsUser.append(app)
-        s.safeAppsRemoved.removeAll { $0 == app.bid }
-        try? s.save()
+        Settings.mutate { s in
+            s.safeAppsUser.removeAll { $0.bid == app.bid }
+            s.safeAppsUser.append(app)
+            s.safeAppsRemoved.removeAll { $0 == app.bid }
+        }
     }
 
     /// Remove by NAME: drop a user entry, or tombstone a compiled default (never com.demonlock).
     static func applyRemove(name: String) {
-        var s = Settings.load()
-        if let u = s.safeAppsUser.first(where: { $0.name == name }) {
-            s.safeAppsUser.removeAll { $0.name == name }
-            s.safeAppsRemoved.removeAll { $0 == u.bid }   // a user add just disappears; no tombstone needed
-        } else if let d = defaults.first(where: { $0.name == name }), !unremovableBIDs.contains(d.bid) {
-            if !s.safeAppsRemoved.contains(d.bid) { s.safeAppsRemoved.append(d.bid) }
+        Settings.mutate { s in
+            if let u = s.safeAppsUser.first(where: { $0.name == name }) {
+                s.safeAppsUser.removeAll { $0.name == name }
+                s.safeAppsRemoved.removeAll { $0 == u.bid }   // a user add just disappears; no tombstone needed
+            } else if let d = defaults.first(where: { $0.name == name }), !unremovableBIDs.contains(d.bid) {
+                if !s.safeAppsRemoved.contains(d.bid) { s.safeAppsRemoved.append(d.bid) }
+            }
         }
-        try? s.save()
     }
 }

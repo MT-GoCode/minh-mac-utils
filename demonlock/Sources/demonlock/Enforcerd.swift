@@ -17,8 +17,14 @@ final class Enforcer {
     private var settings = Settings.load()
 
     private var sessionUID: uid_t?          // console session tracking (standby + countdown reset)
-    private var lastEnforcedUID: uid_t?     // last successfully-resolved enforced uid — keep enforcing it if a
-                                            // later settings read can't resolve the name (fail-closed, not standby)
+    // Last successfully-resolved enforced uid — keep enforcing it if a later settings read can't resolve
+    // the name (fail-closed, not standby). Seeded from disk so a CORRUPT settings.json at STARTUP (across
+    // a reboot/relaunch) doesn't drop to empty defaults → standby → enforcement silently off. [review L1]
+    private var lastEnforcedUID: uid_t? = {
+        guard let s = try? String(contentsOfFile: Paths.enforcedUIDCacheFile, encoding: .utf8),
+              let v = UInt32(s.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
+        return uid_t(v)
+    }()
     private var countdownDeadline: Date?    // set on entering a block; nil while allowed
     private var nextNuclear: Date?          // rate-limit for the nuclear (agent-dead) WindowServer kill
     private var nextAgentKick: Date?        // rate-limit for force-restarting a wedged-but-alive agent
@@ -65,8 +71,12 @@ final class Enforcer {
         let cdpoll = settings.countdownPollSeconds
         let armed = ArmStore.isArmed()
         // Resolve the enforced uid up front (kept across a transient name-resolution failure) so the
-        // marker consumers below can owner-check inbox markers even during standby.
-        if let e = settings.enforcedUID() { lastEnforcedUID = e }
+        // marker consumers below can owner-check inbox markers even during standby. Persist it so it
+        // survives a restart with a corrupt settings.json.
+        if let e = settings.enforcedUID() {
+            if lastEnforcedUID != e { try? String(e).write(toFile: Paths.enforcedUIDCacheFile, atomically: true, encoding: .utf8) }
+            lastEnforcedUID = e
+        }
         let euid = lastEnforcedUID
 
         // Delayed changes land here — BEFORE any early return — so a queued policy/zones edit applies on

@@ -224,8 +224,33 @@ final class ZonesController: NSObject, NSApplicationDelegate, MKMapViewDelegate,
         let i = table.selectedRow
         guard i >= 0, i < zones.count else { instr.stringValue = "Select a zone in the list to delete it."; return }
         let name = zones[i].name
-        if deleteWithSudo(name) { reload(); instr.stringValue = "✓ deleted \"\(name)\"" }
-        else { instr.stringValue = "Delete failed (is demonlock installed?)." }
+        // Deleting a zone is NOT monotone — a name used under NOT loosens the policy when removed — so it
+        // is gated exactly like adding: admin now, or delayed. (The free _zonedel grant is gone. review H3)
+        var remaining = ZoneStore.load(); remaining.removeAll { $0.name == name }
+        switch askDeleteMode(name) {
+        case .immediate:
+            if saveWithAdmin(remaining) { reload(); instr.stringValue = "✓ deleted \"\(name)\"" }
+            else { instr.stringValue = "Delete cancelled — needs admin." }
+        case .delayed:
+            if saveWithDelay(remaining) { instr.stringValue = "⏳ queued deletion of \"\(name)\" — lands in 36h. `demonlock delayzones --abort` to cancel." }
+            else { instr.stringValue = "Couldn't queue the change (is demonlock installed?)." }
+        case .cancel:
+            instr.stringValue = "Delete cancelled."
+        }
+    }
+
+    private func askDeleteMode(_ name: String) -> SaveMode {
+        let a = NSAlert()
+        a.messageText = "Delete zone “\(name)”?"
+        a.informativeText = "Deleting a zone can LOOSEN the policy (a zone used under NOT).\n\n• Delete now — needs admin.\n• Delete in 36h — no admin; the change lands automatically."
+        a.addButton(withTitle: "Delete now (admin)")
+        a.addButton(withTitle: "Delete in 36h")
+        a.addButton(withTitle: "Cancel")
+        switch a.runModal() {
+        case .alertFirstButtonReturn:  return .immediate
+        case .alertSecondButtonReturn: return .delayed
+        default:                       return .cancel
+        }
     }
 
     // MARK: privilege bridges
