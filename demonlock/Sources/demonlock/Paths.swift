@@ -41,6 +41,14 @@ enum Paths {
     static let dsnRequestMarker    = rvInboxDir + "/igotshitdueatmidnight"
     static let dsnAbortMarker      = rvInboxDir + "/igotshitdueatmidnight-abort"
 
+    // safe-apps: a name-keyed registry of pending delayed registrations (root-owned), plus user markers.
+    // register = a delayed add (contents = SafeApp JSON); remove = immediate tighten (contents = name);
+    // abort = drop a pending add (contents = name or "--all").
+    static let safeAppsPendingFile = supportDir + "/safe-apps-pending.json"
+    static let saRegisterMarker    = rvInboxDir + "/safeapp-register"
+    static let saRemoveMarker      = rvInboxDir + "/safeapp-remove"
+    static let saAbortMarker       = rvInboxDir + "/safeapp-abort"
+
     static let socketPath      = "/var/run/demonlock.sock"
 
     static let appPath         = "/Applications/Demonlock.app"

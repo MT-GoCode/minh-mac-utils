@@ -222,12 +222,12 @@ final class SensorFeeder: NSObject, CLLocationManagerDelegate {
     /// spareApps is reloaded each feed (editing settings.json takes effect live). feed() runs on main.
     private func currentGuiPids() -> [Int32] {
         let me = getpid()
-        let spare = Settings.load().spareApps
+        let spare = SafeApps.effectiveMap()
         return NSWorkspace.shared.runningApplications
             .filter { app in
                 guard app.processIdentifier > 0, app.processIdentifier != me else { return false }
                 let bid = app.bundleIdentifier ?? ""
-                if let team = spare[bid], Self.spareVerified(app, bid: bid, team: team) { return false }
+                if let e = spare[bid], Self.spareVerified(app, bid: bid, team: e.tid, rootOwned: e.rootOwned) { return false }
                 switch app.activationPolicy {
                 case .regular:
                     return true                                  // every foreground/Dock app (incl. com.apple.Safari)
@@ -256,14 +256,15 @@ final class SensorFeeder: NSObject, CLLocationManagerDelegate {
     ///   • Not root-owned (a third-party app in /Applications, possibly user-owned) → require the
     ///     VENDOR's Apple-rooted Team ID (`anchor apple generic` + leaf OU). That's THEIR team, so it's
     ///     independent of your signing identity, and Team (not cdhash) survives their auto-updates.
-    private static func spareVerified(_ app: NSRunningApplication, bid: String, team: String) -> Bool {
-        if Self.rootOwnedBundle(app.bundleURL) {
-            return Self.codeSatisfies(app, "identifier \"\(bid)\"")
+    static func spareVerified(_ app: NSRunningApplication, bid: String, team: String, rootOwned: Bool) -> Bool {
+        if rootOwned {
+            // Regime A: the entry declares it must be root-owned. Require a genuinely root-owned bundle
+            // (unmodifiable without sudo) with an intact signature carrying this identifier — ANY signer,
+            // so it survives losing the Developer ID.
+            return Self.rootOwnedBundle(app.bundleURL) && Self.codeSatisfies(app, "identifier \"\(bid)\"")
         }
-        // Not root-owned. Our OWN team's cert cannot gate here: we hold that key, so Regime B would be
-        // satisfiable by ANY bundle we sign — a browser renamed com.demonlock in ~/Applications would be
-        // spared. Own-team apps are spared ONLY by root ownership (Regime A above); a non-root-owned copy
-        // gets no Developer-ID fallback. Closes the Settings.swift fallthrough. [review M8]
+        // Regime B: Developer-ID (anchor apple generic + bid + team OU). REFUSED for our own team — we
+        // hold that key, so it'd be satisfiable by any bundle we sign. Own apps must be root-owned. [M8]
         if team == Self.ownTeamID { return false }
         return Self.codeSatisfies(app,
             "anchor apple generic and identifier \"\(bid)\" and certificate leaf[subject.OU] = \"\(team)\"")

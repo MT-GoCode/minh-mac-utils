@@ -69,11 +69,12 @@ struct Settings: Codable {
     var safeAppsDelaySec: Double       // safe-apps delayed-register landing delay
     var snoozePresetAddDelaySec: Double// snooze-preset delayed-add landing delay
 
-    var spareApps: [String: String]    // bundleID → expected TEAM ID (legacy schema; safe-apps rework replaces
-                                       // this with a richer table). An app is spared from the lockout kill ONLY
-                                       // if listed here AND its live code signature satisfies the regime for its
-                                       // ownership. Reloaded each feed. NOTE: spares only the per-app kill; the
-                                       // agent-dead NUCLEAR `killall -9 WindowServer` takes ALL GUI regardless.
+    // safe-apps: user-managed spare list layered over SafeApps.defaults. `safeAppsUser` are additions
+    // (by bid, they override a default); `safeAppsRemoved` are bids tombstoned out of the defaults
+    // (never com.demonlock). The effective list is SafeApps.effective(). Reloaded each feed. NOTE: spares
+    // only the per-app kill; the agent-dead NUCLEAR `killall -9 WindowServer` takes ALL GUI regardless.
+    var safeAppsUser: [SafeApp]
+    var safeAppsRemoved: [String]
 
     init(pollSeconds: Double = 1.0, countdownPollSeconds: Double = 0.5, countdownSeconds: Double = 10,
          agentRefreshSeconds: Double = 0.25,
@@ -85,28 +86,7 @@ struct Settings: Codable {
          policyDelaySec: Double = 36 * 3600, zonesDelaySec: Double = 36 * 3600,
          gatePolicyDelaySec: Double = 36 * 3600, safeAppsDelaySec: Double = 24 * 3600,
          snoozePresetAddDelaySec: Double = 48 * 3600,
-         spareApps: [String: String] = [
-            // Our own (team BULCQM9J2V) apps are safe here ONLY because the spare check requires a
-            // ROOT-OWNED bundle for own-team apps (they install to /Applications root:wheel) — a sibling
-            // you re-sign with your own Team ID in ~/Applications is NOT spared (it must go through root
-            // ownership, no Developer-ID fallback). Third-party entries below need no owner check — you
-            // can't re-sign as their teams.
-            "com.demonlock":                        "BULCQM9J2V",   // the enforcer itself (root-owned install) — UNREMOVABLE
-            "com.wtalk.daemon":                     "BULCQM9J2V",   // wtalk dictation (frozen, root-owned install)
-            "com.minh.remote-agent-connector":      "BULCQM9J2V",   // Remote Agent Connector (root-owned install)
-            "com.minh.msv2":                        "BULCQM9J2V",   // msv2 desktop-group ⌘⇥ switcher (root-owned install)
-            "com.minh.stayup":                      "BULCQM9J2V",   // stayup lid-closed-awake toggle (root-owned install)
-            "sh.paseo.desktop.helper":              "99ZMJMKU9Y",   // Paseo headless daemon ONLY (the .regular UI dies on lockout, by design)
-            "com.lwouis.alt-tab-macos":             "QXD7GW8FHY",   // AltTab
-            "com.raycast.macos":                    "SY64MV22J9",   // Raycast (menubar launcher)
-            "cc.ffitch.shottr":                     "2Y683PRQWN",   // Shottr (screenshot tool)
-            "com.if.Amphetamine":                   "U5SR49N3PT",   // Amphetamine (keep-awake)
-            "pro.betterdisplay.BetterDisplay":      "299YSU96J7",   // BetterDisplay
-            "com.pilotmoon.scroll-reverser":        "6W6K75YWQ9",   // Scroll Reverser
-            "org.pqrs.Karabiner-Core-Service":      "G43BCU2T37",   // Karabiner-Elements (several processes)
-            "org.pqrs.Karabiner-Menu":              "G43BCU2T37",
-            "org.pqrs.Karabiner-NotificationWindow":"G43BCU2T37",
-         ]) {
+         safeAppsUser: [SafeApp] = [], safeAppsRemoved: [String] = []) {
         self.pollSeconds = pollSeconds; self.countdownPollSeconds = countdownPollSeconds
         self.countdownSeconds = countdownSeconds; self.agentRefreshSeconds = agentRefreshSeconds
         self.graceSeconds = graceSeconds; self.maxAccuracyMeters = maxAccuracyMeters
@@ -120,7 +100,7 @@ struct Settings: Codable {
         self.policyDelaySec = policyDelaySec; self.zonesDelaySec = zonesDelaySec
         self.gatePolicyDelaySec = gatePolicyDelaySec; self.safeAppsDelaySec = safeAppsDelaySec
         self.snoozePresetAddDelaySec = snoozePresetAddDelaySec
-        self.spareApps = spareApps
+        self.safeAppsUser = safeAppsUser; self.safeAppsRemoved = safeAppsRemoved
     }
 
     init(from decoder: Decoder) throws {
@@ -151,15 +131,8 @@ struct Settings: Codable {
         gatePolicyDelaySec   = dbl(.gatePolicyDelaySec, d.gatePolicyDelaySec)
         safeAppsDelaySec     = dbl(.safeAppsDelaySec, d.safeAppsDelaySec)
         snoozePresetAddDelaySec = dbl(.snoozePresetAddDelaySec, d.snoozePresetAddDelaySec)
-        // spareApps MERGES over the compiled defaults (additive): "bid":"TEAM" adds/re-pins,
-        // "bid":"" drops a compiled default. Reloaded every feed, so edits take effect within a tick.
-        var merged = d.spareApps
-        if let override = try? c.decode([String: String].self, forKey: .spareApps) {
-            for (bid, team) in override {
-                if team.isEmpty { merged.removeValue(forKey: bid) } else { merged[bid] = team }
-            }
-        }
-        spareApps = merged
+        safeAppsUser    = (try? c.decode([SafeApp].self, forKey: .safeAppsUser)) ?? []
+        safeAppsRemoved = (try? c.decode([String].self, forKey: .safeAppsRemoved)) ?? []
     }
 
     /// Result of loading settings.json — distinguishes ABSENT (fresh install → defaults are fine) from

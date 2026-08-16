@@ -239,6 +239,93 @@ func runDisarm() {
     print("✓ DISARMED — everything keeps running and the countdown still shows, but nothing gets killed.")
 }
 
+// MARK: - safe-apps
+
+private let safeAppsUsage = """
+usage:
+  demonlock safe-apps show                     # the spare list + pending delayed registrations
+  sudo demonlock safe-apps register --name <n> --bid <id> --tid <TEAM> [--no-root-ownership]
+  demonlock safe-apps delayed-register --name <n> --bid <id> --tid <TEAM> [--no-root-ownership]
+  demonlock safe-apps delayed-register abort <name> | --all
+  demonlock safe-apps remove <name>            # immediate (removing tightens — no sudo)
+  sudo demonlock safe-apps set-delay "<dur>"   # delayed-register delay (clamped to the baked range)
+  (own-team apps must be root-owned; browsers + paseo desktop are permanently blocklisted)
+"""
+
+func runSafeApps(_ args: [String]) {
+    let sub = args.first ?? "show"
+    let rest = Array(args.dropFirst())
+    switch sub {
+    case "show", "list", "status", "--status": safeAppsShow()
+    case "register":                            safeAppsRegister(rest, immediate: true)
+    case "delayed-register":
+        if rest.first == "abort" { safeAppsAbort(Array(rest.dropFirst())) } else { safeAppsRegister(rest, immediate: false) }
+    case "remove":                              safeAppsRemove(rest.first)
+    case "abort":                               safeAppsAbort(rest)
+    case "set-delay":                           safeAppsSetDelay(rest.joined(separator: " "))
+    case "help", "--help", "-h":                print(safeAppsUsage)
+    default: fail("✗ unknown subcommand '\(sub)'\n" + safeAppsUsage)
+    }
+}
+
+private func flagValue(_ args: [String], _ flag: String) -> String? {
+    guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
+    return args[i + 1]
+}
+
+private func safeAppsShow() {
+    let apps = SafeApps.effective()
+    let rows = apps.map { [$0.name, $0.bid, $0.tid, $0.rootOwned ? "yes" : "no"] }
+    print(Table.section("SAFE APPS — spared from the lockout kill", ["name", "bundle id", "team", "root-req"], rows))
+    let delayH = Int(Bounds.clamp(Settings.load().safeAppsDelaySec, Bounds.safeAppsDelay) / 3600)
+    let pend = StateStore.read()?.safeApps?.pending ?? []
+    let prows = pend.map { [$0.name, $0.bid, TimeSpec.fmtLeft($0.applyAtEpoch - nowEpoch())] }
+    print("\n" + Table.section("PENDING REGISTRATIONS — land after \(delayH)h", ["name", "bundle id", "lands in"], prows))
+}
+
+private func safeAppsRegister(_ args: [String], immediate: Bool) {
+    guard let name = flagValue(args, "--name"), let bid = flagValue(args, "--bid"), let tid = flagValue(args, "--tid") else {
+        fail("✗ need --name <n> --bid <id> --tid <TEAM>\n" + safeAppsUsage)
+    }
+    let app = SafeApp(name: name, bid: bid, tid: tid, rootOwned: !args.contains("--no-root-ownership"))
+    if let why = SafeApps.rejectReason(app, settings: Settings.load()) { fail("✗ \(why)") }
+    if immediate {
+        requireRoot("safe-apps register")
+        SafeApps.applyAdd(app)
+        print("✓ registered '\(name)' (\(bid)) — spared now. Regime \(app.rootOwned ? "A (root-owned)" : "B (Developer-ID \(tid))").")
+    } else {
+        guard let data = try? JSONEncoder().encode(app), let json = String(data: data, encoding: .utf8) else { fail("✗ couldn't encode the entry") }
+        dropDelayMarker(Paths.saRegisterMarker, payload: json)
+        let delayH = Int(Bounds.clamp(Settings.load().safeAppsDelaySec, Bounds.safeAppsDelay) / 3600)
+        print("✓ queued '\(name)' — it becomes spared in \(delayH)h (no sudo). Watch: `demonlock safe-apps show` · cancel: `safe-apps delayed-register abort \(name)`.")
+    }
+}
+
+private func safeAppsRemove(_ name: String?) {
+    guard let name, !name.isEmpty else { fail("✗ usage: demonlock safe-apps remove <name>") }
+    if let d = SafeApps.defaults.first(where: { $0.name == name }), SafeApps.unremovableBIDs.contains(d.bid) {
+        fail("✗ '\(name)' (\(d.bid)) is unremovable — removing it would kill the agent on lockout.")
+    }
+    dropDelayMarker(Paths.saRemoveMarker, payload: name)
+    print("✓ remove '\(name)' sent — applied on the next tick (no delay; removing only tightens).")
+}
+
+private func safeAppsAbort(_ args: [String]) {
+    let arg = args.first ?? ""
+    guard arg == "--all" || !arg.isEmpty else { fail("✗ usage: demonlock safe-apps delayed-register abort <name> | --all") }
+    dropDelayMarker(Paths.saAbortMarker, payload: arg)
+    print("✓ abort sent for \(arg == "--all" ? "all pending registrations" : "'\(arg)'").")
+}
+
+private func safeAppsSetDelay(_ durText: String) {
+    requireRoot("safe-apps set-delay")
+    guard let secs = TimeSpec.parseDuration(durText), secs > 0 else { fail("✗ bad delay — e.g. \"24h\", \"12h\".") }
+    var s = Settings.load(); s.safeAppsDelaySec = secs
+    do { try s.save() } catch { fail("✗ couldn't write settings: \(error)") }
+    let eff = Int(Bounds.clamp(secs, Bounds.safeAppsDelay) / 3600)
+    print("✓ safe-apps delayed-register delay set to \(Int(secs/3600))h (effective \(eff)h after the baked \(Int(Bounds.safeAppsDelay.lowerBound/3600))–\(Int(Bounds.safeAppsDelay.upperBound/3600))h clamp).")
+}
+
 // MARK: - admin-release-valve
 
 private let rvUsage = """

@@ -49,6 +49,7 @@ struct StateSnapshot: Codable {
     var delayedPolicy: DelayedStatus? = nil   // a queued `delaysetpolicy` change (nil ⇒ none ever queued)
     var delayedZones: DelayedStatus? = nil    // a queued zones-map change (nil ⇒ none ever queued)
     var delayedSnooze: DelayedSnoozeStatus? = nil   // a pending `igotshitdueatmidnight` request
+    var safeApps: SafeApps.Status? = nil            // pending delayed safe-app registrations
 }
 
 // MARK: - Feed payload (agent → root over the trusted socket)

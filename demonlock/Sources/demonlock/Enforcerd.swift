@@ -26,6 +26,7 @@ final class Enforcer {
     private var dpPolicyStatus: DelayedStatus?   // last-computed delayed-policy status (published every tick)
     private var dpZonesStatus: DelayedStatus?    // last-computed delayed-zones status (published every tick)
     private var dsnStatus: DelayedSnoozeStatus?  // last-computed midnight-snooze request status
+    private var safeAppsStatus: SafeApps.Status? // last-computed safe-apps pending registrations
 
     // The one location truth (persisted root-owned; survives restarts — login "just works").
     private var held: HeldFix? = HeldFixStore.read()
@@ -69,6 +70,8 @@ final class Enforcer {
         // schedule regardless of arm / snooze / who's logged in, and this tick's evaluation below reads
         // the freshly-written policy.txt / zones.json. Statuses are stashed for every publish() call.
         runDelayedChanges(now.timeIntervalSince1970, enforcedUID: euid)
+        safeAppsStatus = SafeApps.tick(now: now.timeIntervalSince1970, enforcedUID: euid,
+                                       delaySec: Bounds.clamp(settings.safeAppsDelaySec, Bounds.safeAppsDelay))
         // Midnight-snooze request: same top-of-tick placement so an applied snooze is picked up by the
         // snooze check below THIS tick (stands the user down / clears the countdown immediately).
         dsnStatus = DelayedSnooze.tick(now: now.timeIntervalSince1970)
@@ -401,7 +404,8 @@ final class Enforcer {
             releaseValve: rv,
             delayedPolicy: dpPolicyStatus,
             delayedZones: dpZonesStatus,
-            delayedSnooze: dsnStatus))
+            delayedSnooze: dsnStatus,
+            safeApps: safeAppsStatus))
     }
 
     /// Resolve a uid to its login name (for `sudome --give/--take-from-user`). nil if unknown.

@@ -29,6 +29,7 @@ case "release-valve", "rv",
 case "arm":                                runArm()
 case "nosudo":                             runNoSudo()
 case "disarm":                             runDisarm()
+case "safe-apps", "safeapps":              runSafeApps(Array(argv.dropFirst()))
 
 // internal
 case "_policytest":                        runPolicyTest()
