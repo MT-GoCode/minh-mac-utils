@@ -43,23 +43,14 @@ else
     echo "  ! regime B: not Developer-ID signed by $TEAM — no fallback if ownership slips"
 fi
 
-# settings.json MERGES over demonlock's compiled-in default spareApps ("" drops a default),
-# so the effective list = compiled defaults (readable as strings in the binary) + overrides.
+# Membership: ask the binary for the EFFECTIVE spare list (defaults + user adds − removes), instead of
+# grepping settings.json or the binary strings — `safe-apps show` is the single source of truth now.
 DEMONLOCK_BIN="/Applications/Demonlock.app/Contents/MacOS/demonlock"
-if [ -f "$SETTINGS" ] || [ -x "$DEMONLOCK_BIN" ]; then
-    override="(absent)"
-    if [ -f "$SETTINGS" ]; then
-        override="$(/usr/bin/python3 -c "import json; print(json.load(open('$SETTINGS')).get('spareApps',{}).get('$BID','(absent)'))" 2>/dev/null || echo '(absent)')"
-    fi
-    if [ "$override" != "(absent)" ] && [ -n "$override" ]; then
-        echo "  ✓ listed in demonlock spareApps (settings.json)"
-    elif [ "$override" = "" ]; then
-        echo "  ✗ dropped from spareApps by a \"\" override in settings.json — killed on lockout"
-        ok=0
-    elif [ -x "$DEMONLOCK_BIN" ] && grep -aq "$BID" "$DEMONLOCK_BIN"; then
-        echo "  ✓ in demonlock's compiled-in default spareApps"
+if [ -x "$DEMONLOCK_BIN" ]; then
+    if "$DEMONLOCK_BIN" safe-apps show 2>/dev/null | grep -q "[[:space:]]$BID[[:space:]]"; then
+        echo "  ✓ in demonlock's effective spare list"
     else
-        echo "  ✗ NOT in demonlock spareApps — it WILL be killed on lockout"
+        echo "  ✗ NOT in demonlock's spare list — it WILL be killed on lockout (add it: safe-apps register)"
         ok=0
     fi
 else

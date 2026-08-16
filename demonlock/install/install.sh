@@ -51,19 +51,42 @@ EOF
 chmod 755 /usr/local/bin/demonlock
 chown root:wheel /usr/local/bin/demonlock
 
-# Passwordless grant for zone DELETION only — deleting a zone only ever *tightens* the policy,
-# so it's safe to allow without admin (and it survives you removing your admin rights). Adding a
-# zone still needs admin. The _zonedel subcommand only removes a named zone, nothing else.
+# Passwordless grants — both TIGHTEN-only (safe without admin; survive you dropping admin). They target
+# the go-w ROOT-OWNED BUNDLE binary, NOT /usr/local/bin/demonlock: if /usr/local/bin were ever
+# user-writable, a wrapper-path grant would be arbitrary root (review H4). We assert /usr/local ownership
+# below and abort if it's writable.
+#   arm    : turn enforcement ON.
+#   nosudo : drop admin now (revoke). disarm (loosening) is NOT granted — it stays admin-gated.
+# (The old `_zonedel *` grant is REMOVED: deleting a zone is NOT monotone — a zone referenced under NOT
+#  loosens the policy — so zone deletion now goes through the admin/delayed path, not a free grant. H3.)
+DL_BIN=/Applications/Demonlock.app/Contents/MacOS/demonlock
+for d in /usr/local /usr/local/bin; do
+  if [ -d "$d" ]; then
+    owner="$(/usr/bin/stat -f%u "$d")"; mode="$(/usr/bin/stat -f%Lp "$d")"
+    if [ "$owner" != "0" ] || [ "$(( 8#$mode & 8#022 ))" != "0" ]; then
+      echo "✗ $d is not root-owned / is group/other-writable (uid=$owner mode=$mode)."
+      echo "  A passwordless sudo grant there would be arbitrary root. Fix ownership first:"
+      echo "    sudo chown root:wheel $d && sudo chmod go-w $d"
+      exit 1
+    fi
+  fi
+done
 SUDOERS=/etc/sudoers.d/demonlock
-# Two passwordless grants, both TIGHTEN-only (safe to allow without admin; survive you dropping admin):
-#   _zonedel * : delete a named zone (shrinks the allow-set)
-#   arm        : turn enforcement ON. disarm (loosening) is deliberately NOT granted — it stays admin-gated.
 {
-  printf '%s ALL=(root) NOPASSWD: /usr/local/bin/demonlock _zonedel *\n' "$USER_NAME"
-  printf '%s ALL=(root) NOPASSWD: /usr/local/bin/demonlock arm\n' "$USER_NAME"
+  printf '%s ALL=(root) NOPASSWD: %s arm\n'    "$USER_NAME" "$DL_BIN"
+  printf '%s ALL=(root) NOPASSWD: %s nosudo\n' "$USER_NAME" "$DL_BIN"
 } > "$SUDOERS"
 chown root:wheel "$SUDOERS"; chmod 440 "$SUDOERS"
 visudo -cf "$SUDOERS" >/dev/null 2>&1 || { echo "  ⚠️  sudoers entry invalid — removing"; rm -f "$SUDOERS"; }
+
+# Retire the standalone setuid `sudome` binary — demonlock now grants/revokes admin itself (Admin.swift).
+# A leftover setuid-root sudome would be a parallel, delay-free path to admin, defeating the release
+# valve (review L2). Remove the binary and its credentials dir if present.
+if [ -e /usr/local/bin/sudome ] || [ -d /usr/local/etc/sudome ]; then
+  echo "▸ removing retired sudome (demonlock manages admin internally now)"
+  rm -f /usr/local/bin/sudome
+  rm -rf /usr/local/etc/sudome
+fi
 
 echo "▸ seeding $SUPPORT (defaults only if absent)"
 mkdir -p "$SUPPORT/logs"
@@ -99,6 +122,13 @@ cp install/com.demonlock.enforcerd.plist /Library/LaunchDaemons/
 cp install/com.demonlock.agent.plist     /Library/LaunchAgents/
 chown root:wheel /Library/LaunchDaemons/com.demonlock.enforcerd.plist /Library/LaunchAgents/com.demonlock.agent.plist
 chmod 644        /Library/LaunchDaemons/com.demonlock.enforcerd.plist /Library/LaunchAgents/com.demonlock.agent.plist
+# Point the agent log at the user's own Library/Logs, not world-writable /tmp (another local account
+# could pre-create /tmp/demonlock-agent.log as a symlink, and the log leaks location/BSSIDs). [review L3]
+USER_HOME="$(eval echo "~$USER_NAME")"
+mkdir -p "$USER_HOME/Library/Logs" 2>/dev/null || true
+chown "$USER_NAME" "$USER_HOME/Library/Logs" 2>/dev/null || true
+/usr/bin/sed -i '' "s#/tmp/demonlock-agent.log#$USER_HOME/Library/Logs/demonlock-agent.log#g" \
+    /Library/LaunchAgents/com.demonlock.agent.plist
 
 echo "▸ (re)loading services"
 # Boot both out first, pause so the old instances fully exit, then bootstrap (with a
@@ -113,11 +143,15 @@ launchctl bootstrap "gui/$USER_UID" /Library/LaunchAgents/com.demonlock.agent.pl
 
 echo
 
-echo "▸ verifying demonlock will spare it"
-bash "$(cd "$(dirname "$0")/../.." && pwd)/verify-spare.sh" /Applications/Demonlock.app com.demonlock
+echo "▸ verifying demonlock is in the spare list"
+if "$DL_BIN" safe-apps show 2>/dev/null | grep -q "com.demonlock"; then
+    echo "  ✓ com.demonlock is spared (root-owned, Regime A)"
+else
+    echo "  ⚠️  com.demonlock not found in the spare list — check the build"
+fi
 echo "✓ installed — currently DISARMED. Next steps:"
 echo "    demonlock scan                 # walk your office, capture BSSIDs (run WITHOUT sudo)"
-echo "    demonlock zones                # add zones (admin) / delete zones (free) on a map"
+echo "    demonlock zones                # add/delete zones (admin now, or delayed) on a map"
 echo "    sudo demonlock setpolicy '...' # set the allow-policy"
 echo "    demonlock status               # verify it evaluates"
 echo "    sudo demonlock arm             # turn enforcement on"

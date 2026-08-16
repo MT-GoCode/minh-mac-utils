@@ -78,6 +78,15 @@ func runStatus() {
         let left = max(0, Int(a - nowEpoch()))
         print("  midnight snz  : REQUESTED — stands down until 12:05 AM at \(f.string(from: Date(timeIntervalSince1970: a)))  (in \(left/3600)h \(left%3600/60)m)")
     }
+    if let sa = s.safeApps, !sa.pending.isEmpty {
+        print("  safe-apps     : \(sa.pending.count) pending registration(s) — `demonlock safe-apps show`")
+    }
+    if let sp = s.snoozePresets {
+        if let n = sp.invocationName, let a = sp.invocationApplyAtEpoch {
+            print("  snooze-preset : '\(n)' invoked — stands down in \(TimeSpec.fmtLeft(a - nowEpoch()))")
+        }
+        if !sp.pendingAdds.isEmpty { print("  snooze-preset : \(sp.pendingAdds.count) pending add(s) — `demonlock snooze-preset show`") }
+    }
 }
 
 /// A queued delayed-change line in `status` (only shown when something is pending).
@@ -196,11 +205,11 @@ func runSnooze(_ spec: String) {
 // MARK: - arm / disarm (sudo)
 
 func runArm() {
-    // arm TIGHTENS enforcement, so it's allowed WITHOUT admin via a passwordless sudoers grant (the
-    // installer adds `NOPASSWD: /usr/local/bin/demonlock arm`). disarm loosens → no grant, stays gated.
-    // Run as you → re-exec through `sudo -n`; the elevated copy lands back here as root and does it.
+    // arm TIGHTENS enforcement, so it's allowed WITHOUT admin via a passwordless sudoers grant. The
+    // grant targets the go-w, root-owned BUNDLE binary (not the /usr/local/bin wrapper, whose dir could
+    // be user-writable → arbitrary root) [review H4]. Run as you → re-exec through `sudo -n`.
     if geteuid() != 0 {
-        let rc = Proc.run("/usr/bin/sudo", ["-n", Paths.cliWrapper, "arm"])
+        let rc = Proc.run("/usr/bin/sudo", ["-n", Paths.binaryPath, "arm"])
         if rc != 0 { fail("✗ couldn't arm without admin — the passwordless grant may be missing (reinstall), or run `sudo demonlock arm`.") }
         exit(0)
     }
@@ -223,7 +232,7 @@ func runArm() {
 /// too — it TIGHTENS (revoke only), so it's safe to allow without a password.
 func runNoSudo() {
     if geteuid() != 0 {
-        let rc = Proc.run("/usr/bin/sudo", ["-n", Paths.cliWrapper, "nosudo"])
+        let rc = Proc.run("/usr/bin/sudo", ["-n", Paths.binaryPath, "nosudo"])
         if rc != 0 { fail("✗ couldn't drop admin without a password — the passwordless grant may be missing (reinstall), or run `sudo demonlock nosudo`.") }
         exit(0)
     }
