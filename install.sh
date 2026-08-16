@@ -22,8 +22,8 @@ install_one() {
   echo "══════ $app ══════"
   if [ -f "$dir/install.manifest" ]; then
     ( APP_DIR="$dir"; source "$ROOT/scripts/install-lib.sh"; source "$dir/install.manifest"; dl_run_manifest )
-  elif [ -x "$dir/install.sh" ]; then
-    ( cd "$dir" && ./install.sh )      # fallback: app's own installer
+  elif [ -f "$dir/install.sh" ]; then
+    ( cd "$dir" && bash install.sh )   # fallback: app's own installer (bash, so the +x bit doesn't matter)
   else
     echo "✗ $app has no install.manifest or install.sh"; return 1
   fi
