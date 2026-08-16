@@ -60,11 +60,15 @@ final class Enforcer {
         let poll = settings.pollSeconds
         let cdpoll = settings.countdownPollSeconds
         let armed = ArmStore.isArmed()
+        // Resolve the enforced uid up front (kept across a transient name-resolution failure) so the
+        // marker consumers below can owner-check inbox markers even during standby.
+        if let e = settings.enforcedUID() { lastEnforcedUID = e }
+        let euid = lastEnforcedUID
 
         // Delayed changes land here — BEFORE any early return — so a queued policy/zones edit applies on
         // schedule regardless of arm / snooze / who's logged in, and this tick's evaluation below reads
         // the freshly-written policy.txt / zones.json. Statuses are stashed for every publish() call.
-        runDelayedChanges(now.timeIntervalSince1970)
+        runDelayedChanges(now.timeIntervalSince1970, enforcedUID: euid)
         // Midnight-snooze request: same top-of-tick placement so an applied snooze is picked up by the
         // snooze check below THIS tick (stands the user down / clears the countdown immediately).
         dsnStatus = DelayedSnooze.tick(now: now.timeIntervalSince1970)
@@ -75,10 +79,9 @@ final class Enforcer {
             publish(phase: "standby", verdict: nil, reason: "no user logged in", now: now, armed: armed)
             return poll
         }
-        if let e = settings.enforcedUID() { lastEnforcedUID = e }
         // Keep enforcing the last-known uid if the name transiently fails to resolve (fail-closed, not
         // standby). nil only when nothing was ever configured (fresh install) → standby is correct. [L1]
-        guard let target = settings.enforcedUID() ?? lastEnforcedUID else {
+        guard let target = euid else {
             resetSession(consoleUID)
             publish(phase: "standby", verdict: nil, reason: "no enforced user configured", now: now, armed: armed)
             return poll
@@ -397,17 +400,19 @@ final class Enforcer {
     /// Drive both delayed-change slots (policy + zones) one tick. Each validates its payload against the
     /// CURRENT zones/syntax at both queue and apply time, and applies as root (this daemon). Runs before
     /// the tick's own policy read so a change that lands this tick takes effect immediately.
-    private func runDelayedChanges(_ nowSec: Double) {
+    private func runDelayedChanges(_ nowSec: Double, enforcedUID: uid_t?) {
         dpPolicyStatus = DelayedChange.tick(
             kind: "policy", now: nowSec, stateFile: Paths.delayedPolicyFile,
             requestMarker: Paths.dspRequestMarker, abortMarker: Paths.dspAbortMarker,
-            delaySec: DelayedChange.policyDelaySec,
+            delaySec: Bounds.clamp(settings.policyDelaySec, Bounds.policyDelay),
+            enforcedUID: enforcedUID,
             validate: { (try? PolicyEngine.validate($0, zones: ZoneStore.load())) != nil },
             apply: { (try? PolicyStore.write($0)) != nil })
         dpZonesStatus = DelayedChange.tick(
             kind: "zones", now: nowSec, stateFile: Paths.delayedZonesFile,
             requestMarker: Paths.dzRequestMarker, abortMarker: Paths.dzAbortMarker,
-            delaySec: DelayedChange.zonesDelaySec,
+            delaySec: Bounds.clamp(settings.zonesDelaySec, Bounds.zonesDelay),
+            enforcedUID: enforcedUID,
             validate: { (try? JSONDecoder().decode([Zone].self, from: Data($0.utf8))) != nil },
             apply: { payload in
                 do { try payload.write(toFile: Paths.zonesFile, atomically: true, encoding: .utf8)

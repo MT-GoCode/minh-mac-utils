@@ -54,26 +54,29 @@ enum DelayedChange {
     /// installs it and returns whether it stuck. Returns the status to publish.
     static func tick(kind: String, now: Double, stateFile: String,
                      requestMarker: String, abortMarker: String, delaySec: Double,
-                     validate: (String) -> Bool, apply: (String) -> Bool) -> DelayedStatus {
-        let fm = FileManager.default
+                     enforcedUID: uid_t?, validate: (String) -> Bool, apply: (String) -> Bool) -> DelayedStatus {
         var st = DelayedState.load(stateFile)
 
-        // 1. abort marker → drop whatever's queued.
-        if fm.fileExists(atPath: abortMarker) {
-            try? fm.removeItem(atPath: abortMarker)
-            if st.pending != nil { st.pending = nil; st.save(stateFile) }
-        }
-        // 2. request marker (contents = payload) → validate + (re)queue, resetting the delay. A repeat
-        //    request just pushes the landing further out (stricter), so it can't be used to shorten it.
-        if let data = try? Data(contentsOf: URL(fileURLWithPath: requestMarker)) {
-            try? fm.removeItem(atPath: requestMarker)
-            let p = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            if !p.isEmpty, validate(p) {
-                st.pending = PendingChange(payload: p, requestedAt: now, applyAt: now + delaySec)
-                st.save(stateFile)
-                log("delayed-\(kind): queued — applies in \(Int(delaySec/3600))h")
-            } else {
-                log("delayed-\(kind): rejected an invalid queued change")
+        // Markers are consumed through MarkerIO (O_NOFOLLOW + owner==enforcedUID + unlink-verify), so a
+        // symlink/hardlink in the user-owned inbox can't turn the root daemon into a read primitive, and
+        // a `chflags uchg` marker that can't be removed doesn't re-fire. No enforced user yet (fresh
+        // install) → no markers to trust → skip; the time-based apply below still runs.
+        if let euid = enforcedUID {
+            // 1. abort marker → drop whatever's queued.
+            if MarkerIO.consumeFlag(abortMarker, enforcedUID: euid), st.pending != nil {
+                st.pending = nil; st.save(stateFile)
+            }
+            // 2. request marker (contents = payload) → validate + (re)queue, resetting the delay. A repeat
+            //    request just pushes the landing further out (stricter), so it can't be used to shorten it.
+            if let data = MarkerIO.consume(requestMarker, enforcedUID: euid) {
+                let p = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if !p.isEmpty, validate(p) {
+                    st.pending = PendingChange(payload: p, requestedAt: now, applyAt: now + delaySec)
+                    st.save(stateFile)
+                    log("delayed-\(kind): queued — applies in \(Int(delaySec/3600))h")
+                } else {
+                    log("delayed-\(kind): rejected an invalid queued change")
+                }
             }
         }
         // 3. apply when due (re-validate; a stale/invalid payload is dropped, fail-closed).
