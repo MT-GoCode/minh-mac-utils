@@ -3,6 +3,11 @@
 # install.manifest. Every function assumes it runs as ROOT (the driver asserts that) with SUDO_USER set.
 # Manifests declare a few vars + a provide_bundle() shim; dl_run_manifest wires the common steps.
 
+dl_require_root() {   # each app's install.sh calls this after sourcing, before declaring its manifest
+  [ "$(id -u)" -eq 0 ] || { echo "run with sudo: sudo ${BASH_SOURCE[1]:-$0}"; exit 1; }
+  : "${SUDO_USER:?must run via sudo (need SUDO_USER)}"
+}
+
 dl_user()      { echo "${SUDO_USER:?must run via sudo}"; }
 dl_user_home() { eval echo "~$(dl_user)"; }
 dl_ok()   { echo "  ✓ $*"; }
