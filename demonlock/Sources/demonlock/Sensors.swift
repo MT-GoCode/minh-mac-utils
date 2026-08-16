@@ -260,9 +260,18 @@ final class SensorFeeder: NSObject, CLLocationManagerDelegate {
         if Self.rootOwnedBundle(app.bundleURL) {
             return Self.codeSatisfies(app, "identifier \"\(bid)\"")
         }
+        // Not root-owned. Our OWN team's cert cannot gate here: we hold that key, so Regime B would be
+        // satisfiable by ANY bundle we sign — a browser renamed com.demonlock in ~/Applications would be
+        // spared. Own-team apps are spared ONLY by root ownership (Regime A above); a non-root-owned copy
+        // gets no Developer-ID fallback. Closes the Settings.swift fallthrough. [review M8]
+        if team == Self.ownTeamID { return false }
         return Self.codeSatisfies(app,
             "anchor apple generic and identifier \"\(bid)\" and certificate leaf[subject.OU] = \"\(team)\"")
     }
+
+    /// Our Developer ID Team — own-team entries must go through Regime A (root ownership), never the
+    /// Developer-ID Regime B, because we hold this key. safe-apps register enforces the same on input.
+    static let ownTeamID = "BULCQM9J2V"
 
     /// Does the running process's live code signature satisfy `requirement`? Fails closed (false) on
     /// any error — no SecCode, bad requirement string, invalid signature. The audit-token-via-PID guest
