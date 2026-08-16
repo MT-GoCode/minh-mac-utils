@@ -16,7 +16,7 @@ struct SafeApp: Codable, Equatable {
 /// forced present (removing it kills the agent on lockout → nuclear WindowServer loop). Plus the CLI
 /// (`safe-apps …`) and the daemon-side registry tick that applies delayed registrations.
 enum SafeApps {
-    static let ownTeam = Sensors.ownTeamID
+    static let ownTeam = SensorFeeder.ownTeamID
 
     /// Compiled defaults. Own apps (root-owned installs) are rootOwned=true; third-party menubar
     /// utilities are rootOwned=false (Developer-ID Regime B). com.demonlock is UNREMOVABLE.
