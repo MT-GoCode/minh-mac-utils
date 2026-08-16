@@ -97,19 +97,11 @@ dl_swift_bundle() {  # <bundle_name>
   return 1
 }
 
-# The generic install flow, driven by the sourced manifest. gui-app / cli get the common wiring; complex
-# apps (demonlock, nextdns-sidecar) use APP_TYPE=passthrough to run their own bespoke installer.
+# The install flow, driven by the sourced manifest. gui-app / cli get the common wiring; complex apps
+# (demonlock, nextdns-sidecar, wtalk, remote-agent-connector, fade) keep their own bespoke install.sh
+# and may source this lib for individual steps.
 dl_run_manifest() {
   case "${APP_TYPE:-gui-app}" in
-    passthrough)
-      : "${CUSTOM_INSTALLER:?passthrough needs CUSTOM_INSTALLER}"
-      if [ "${RUN_AS:-root}" = user ]; then          # user-level installers (install into ~)
-        sudo -u "$(dl_user)" bash -c "cd '$APP_DIR' && $CUSTOM_INSTALLER"
-      else
-        ( cd "$APP_DIR" && eval "$CUSTOM_INSTALLER" )
-      fi
-      [ "${SPARED:-no}" = yes ] && dl_register_spare "$APP_NAME" "$BUNDLE_ID" "$TEAM_ID" "${SPARE_FLAG:-}"
-      ;;
     gui-app)
       local art; art="$(provide_bundle)" || { echo "✗ ${APP_NAME}: provide_bundle failed"; return 1; }
       dl_deploy_app "$art" "$BUNDLE" || return 1

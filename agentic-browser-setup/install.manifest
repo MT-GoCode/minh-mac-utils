@@ -1,7 +1,0 @@
-# chrome-browser-fleet — CLI to drive the RemoteAgent Chrome profile. Installs root-owned to
-# /usr/local/bin (the old installer put it in ~/.local/bin; /usr/local/bin is on PATH and consistent
-# with the other tools).
-APP_TYPE=cli
-APP_NAME=chrome-browser-fleet
-CLI=chrome-browser-fleet
-provide_bundle() { echo "$APP_DIR/chrome-browser-fleet"; }
