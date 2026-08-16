@@ -26,11 +26,10 @@ step. A single self-contained script.
 agent. It also adds `~/.local/bin` to your `PATH` (in `~/.zshrc`) if it isn't
 already, so `betterat` is callable on a fresh shell.
 
-> **`betterat install` is the real installer.** The repo also carries a
-> `betterat/install.sh` (the shared-lib manifest the other tools use), but it only
-> stages the script system-wide in `/usr/local/bin` root-owned — it does **not** set
-> up your per-user launchd agent or database. betterat is a no-sudo, runs-as-you tool,
-> so use `./betterat install`; jobs won't fire until you do.
+> **`betterat install` is the installer** (no sudo, runs as you). Unlike the other tools
+> — which install a root-owned app via `sudo ./<app>/install.sh` and the shared
+> `scripts/install-lib.sh` — betterat is a per-user tool that sets up its own launchd
+> agent and database, so it self-installs via `./betterat install`.
 
 ## Schedule
 

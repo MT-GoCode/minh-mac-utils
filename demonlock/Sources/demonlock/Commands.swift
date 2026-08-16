@@ -811,7 +811,8 @@ func printHelp() {
           true when now is in a window; days M T W R F S U (R=Thu, U=Sun) or * = all 7;
           HHMM 0000-2400, start < end (no midnight wrap — split into two windows)
       IN_POLICY   (release-valve window policy ONLY)
-          true when the MAIN policy currently allows — e.g. --set-window-policy "IN_POLICY AND TIME_IS_ANY([*1000-1100])"
+          true when the MAIN policy currently allows — e.g.
+          sudo demonlock admin-release-valve set-gate-policy "IN_POLICY AND TIME_IS_ANY([*1000-1100])"
 
       example:
         sudo demonlock setpolicy '(LOCATED_IN_ANY(["office"]) OR FOUND_IN_NEARBY_BSSID(["a4:97:33:5f:aa:b6"])) AND TIME_IS_ANY([MTWRF0700-2000])'
