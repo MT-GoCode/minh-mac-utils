@@ -16,25 +16,25 @@ set -uo pipefail
 DL=/Applications/Demonlock.app/Contents/MacOS/demonlock
 [ -x "$DL" ] || { echo "demonlock not installed — install it first, then re-run." >&2; exit 1; }
 
-# name | bundle id | Apple Team ID
+# bundle id | Apple Team ID   (all Regime B → --no-root-ownership --tid)
 apps=(
-  "alttab|com.lwouis.alt-tab-macos|QXD7GW8FHY"
-  "raycast|com.raycast.macos|SY64MV22J9"
-  "shottr|cc.ffitch.shottr|2Y683PRQWN"
-  "amphetamine|com.if.Amphetamine|U5SR49N3PT"
-  "betterdisplay|pro.betterdisplay.BetterDisplay|299YSU96J7"
-  "scroll-reverser|com.pilotmoon.scroll-reverser|6W6K75YWQ9"
-  "karabiner-core|org.pqrs.Karabiner-Core-Service|G43BCU2T37"
-  "karabiner-menu|org.pqrs.Karabiner-Menu|G43BCU2T37"
-  "karabiner-notify|org.pqrs.Karabiner-NotificationWindow|G43BCU2T37"
+  "com.lwouis.alt-tab-macos|QXD7GW8FHY"
+  "com.raycast.macos|SY64MV22J9"
+  "cc.ffitch.shottr|2Y683PRQWN"
+  "com.if.Amphetamine|U5SR49N3PT"
+  "pro.betterdisplay.BetterDisplay|299YSU96J7"
+  "com.pilotmoon.scroll-reverser|6W6K75YWQ9"
+  "org.pqrs.Karabiner-Core-Service|G43BCU2T37"
+  "org.pqrs.Karabiner-Menu|G43BCU2T37"
+  "org.pqrs.Karabiner-NotificationWindow|G43BCU2T37"
 )
 fail=0
 for e in "${apps[@]}"; do
-  IFS='|' read -r name bid tid <<<"$e"
-  if "$DL" safe-apps register --name "$name" --bid "$bid" --tid "$tid" --no-root-ownership; then
-    echo "  ✓ $name"
+  IFS='|' read -r bid tid <<<"$e"
+  if "$DL" safe-apps register "$bid" --no-root-ownership --tid "$tid"; then
+    echo "  ✓ $bid"
   else
-    echo "  ✗ $name (register failed)"; fail=1
+    echo "  ✗ $bid (register failed)"; fail=1
   fi
 done
 echo

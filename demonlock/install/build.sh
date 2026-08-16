@@ -8,8 +8,8 @@ cd "$HERE"
 APP="Demonlock.app"
 
 # Pick the signing identity — Developer ID → stable self-signed → ad-hoc (shared picker;
-# it prints the choice to stderr). See ../sign-identity.sh.
-SIGN_SH="$HERE/../sign-identity.sh"
+# it prints the choice to stderr). See ../signing-ladder.sh.
+SIGN_SH="$HERE/../signing-ladder.sh"
 if [ -f "$SIGN_SH" ]; then ID="$(bash "$SIGN_SH")"; else ID="${CODESIGN_IDENTITY:--}"; fi
 [ -z "${ID:-}" ] && ID="-"
 

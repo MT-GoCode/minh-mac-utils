@@ -29,7 +29,7 @@ if ! "$PY" -c "import PyInstaller" >/dev/null 2>&1; then
 fi
 
 # --- signing identity via the shared ladder: Developer ID → stable self-signed → ad-hoc. ---
-SIGN_SH="$HERE/../sign-identity.sh"
+SIGN_SH="$HERE/../signing-ladder.sh"
 if [ -f "$SIGN_SH" ]; then ID="$(bash "$SIGN_SH")"; else ID="${CODESIGN_IDENTITY:--}"; fi
 [ -z "${ID:-}" ] && ID="-"
 echo "▸ signing identity: $ID"

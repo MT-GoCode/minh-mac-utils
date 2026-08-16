@@ -73,6 +73,17 @@ enum SafeApps {
     struct Status: Codable { var pending: [PendingView] = [] }
     struct PendingView: Codable { var name: String; var bid: String; var applyAtEpoch: Double }
 
+    /// A [a-z0-9-]{1,24} handle derived from a bundle id (its last dotted component), for the
+    /// remove/show/abort handle. Overridable with --name; only needs to be unique, not meaningful.
+    static func deriveName(_ bid: String) -> String {
+        let last = String(bid.split(separator: ".").last ?? Substring(bid))
+        var out = ""
+        for c in last.lowercased() where out.count < 24 {
+            if c.isASCII, c.isLetter || c.isNumber || c == "-" { out.append(c) }
+        }
+        return out.isEmpty ? "app" : out
+    }
+
     // MARK: - validation (shared by CLI register + daemon apply)
 
     /// nil if OK, else the reason to reject. Names: [a-z0-9-]{1,24}, unique vs defaults/effective.
@@ -85,9 +96,13 @@ enum SafeApps {
             return "bundle id looks invalid"
         }
         if blocklistBIDs.contains(app.bid) { return "\(app.bid) is on the baked blocklist (browsers / paseo desktop) — never spareable" }
-        if !app.rootOwned && app.tid == ownTeam { return "own-team apps can't use --no-root-ownership (we hold that key) — they must be root-owned" }
-        guard app.tid.count == 10, app.tid.allSatisfy({ $0.isUppercase && $0.isLetter || $0.isNumber }) else {
-            return "team id must be a 10-char Apple Team ID (e.g. SY64MV22J9)"
+        // Regime A (root-owned) never reads the team, so tid is unused there and may be empty — nothing
+        // to validate. Only Regime B (--no-root-ownership) verifies a real Team ID, and refuses our own.
+        if !app.rootOwned {
+            if app.tid == ownTeam { return "own-team apps can't use --no-root-ownership (we hold that key) — they must be root-owned" }
+            guard app.tid.count == 10, app.tid.allSatisfy({ $0.isUppercase && $0.isLetter || $0.isNumber }) else {
+                return "team id must be a 10-char Apple Team ID (e.g. SY64MV22J9)"
+            }
         }
         // A name that collides with a DIFFERENT bid is rejected (names are unique handles).
         for a in effective(settings) where a.name == n && a.bid != app.bid { return "the name '\(n)' is already used by \(a.bid)" }

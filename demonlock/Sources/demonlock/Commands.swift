@@ -436,12 +436,14 @@ private func snoozePresetSetDelay(_ durText: String) {
 private let safeAppsUsage = """
 usage:
   demonlock safe-apps show                     # the spare list + pending delayed registrations
-  sudo demonlock safe-apps register --name <n> --bid <id> --tid <TEAM> [--no-root-ownership]
-  demonlock safe-apps delayed-register --name <n> --bid <id> --tid <TEAM> [--no-root-ownership]
+  sudo demonlock safe-apps register <bundle-id>                                   # root-owned (Regime A) — just the bundle
+  sudo demonlock safe-apps register <bundle-id> --no-root-ownership --tid <TEAM>  # Developer-ID (Regime B)
+  demonlock safe-apps delayed-register <bundle-id> [--no-root-ownership --tid <TEAM>]   # lands after the delay (no sudo)
   demonlock safe-apps delayed-register abort <name> | --all
   demonlock safe-apps remove <name>            # immediate (removing tightens — no sudo)
   sudo demonlock safe-apps set-delay "<dur>"   # delayed-register delay (clamped to the baked range)
-  (own-team apps must be root-owned; browsers + paseo desktop are permanently blocklisted)
+  (root-owned needs ONLY the bundle id — its team is never checked. --no-root-ownership needs --tid.
+   optional --name overrides the auto-derived handle; browsers + paseo desktop are blocklisted.)
 """
 
 func runSafeApps(_ args: [String]) {
@@ -465,6 +467,20 @@ private func flagValue(_ args: [String], _ flag: String) -> String? {
     return args[i + 1]
 }
 
+/// First bare (non-flag) token, skipping value-flags (--bid/--tid/--name) AND their values so a `--tid
+/// XXXXXXXXXX` value can't be mistaken for the positional bundle id.
+private func positionalArg(_ args: [String]) -> String? {
+    var i = 0
+    while i < args.count {
+        switch args[i] {
+        case "--bid", "--tid", "--name": i += 2                 // flag + its value
+        case let a where a.hasPrefix("-"): i += 1               // valueless flag (e.g. --no-root-ownership)
+        default: return args[i]
+        }
+    }
+    return nil
+}
+
 private func safeAppsShow() {
     let apps = SafeApps.effective()
     let rows = apps.map { [$0.name, $0.bid, $0.tid, $0.rootOwned ? "yes" : "no"] }
@@ -476,15 +492,28 @@ private func safeAppsShow() {
 }
 
 private func safeAppsRegister(_ args: [String], immediate: Bool) {
-    guard let name = flagValue(args, "--name"), let bid = flagValue(args, "--bid"), let tid = flagValue(args, "--tid") else {
-        fail("✗ need --name <n> --bid <id> --tid <TEAM>\n" + safeAppsUsage)
+    let rootOwned = !args.contains("--no-root-ownership")
+    // "you only need to specify the bundle": bid is --bid <id> OR the first bare positional token.
+    guard let bid = flagValue(args, "--bid") ?? positionalArg(args), !bid.isEmpty else {
+        fail("✗ need a bundle id: `safe-apps register <bundle-id>`\n" + safeAppsUsage)
     }
-    let app = SafeApp(name: name, bid: bid, tid: tid, rootOwned: !args.contains("--no-root-ownership"))
+    // team id is ONLY needed (and only ever checked) for Regime B. Root-owned stores it empty.
+    let tid: String
+    if rootOwned {
+        tid = flagValue(args, "--tid") ?? ""
+    } else {
+        guard let t = flagValue(args, "--tid") else {
+            fail("✗ --no-root-ownership needs --tid <TEAM> (Regime B verifies the Apple Team ID)\n" + safeAppsUsage)
+        }
+        tid = t
+    }
+    let name = flagValue(args, "--name") ?? SafeApps.deriveName(bid)
+    let app = SafeApp(name: name, bid: bid, tid: tid, rootOwned: rootOwned)
     if let why = SafeApps.rejectReason(app, settings: Settings.load()) { fail("✗ \(why)") }
     if immediate {
         requireRoot("safe-apps register")
         SafeApps.applyAdd(app)
-        print("✓ registered '\(name)' (\(bid)) — spared now. Regime \(app.rootOwned ? "A (root-owned)" : "B (Developer-ID \(tid))").")
+        print("✓ registered '\(name)' (\(bid)) — spared now. Regime \(app.rootOwned ? "A (root-owned; team not checked)" : "B (Developer-ID \(tid))").")
     } else {
         guard let data = try? JSONEncoder().encode(app), let json = String(data: data, encoding: .utf8) else { fail("✗ couldn't encode the entry") }
         dropDelayMarker(Paths.saRegisterMarker, payload: json)

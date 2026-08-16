@@ -111,11 +111,11 @@ fi
 echo "==> registering paseo daemon as a demonlock spare (needs root — may prompt)"
 DL=/Applications/Demonlock.app/Contents/MacOS/demonlock
 if [ -x "$DL" ]; then
-  sudo "$DL" safe-apps register --name paseo-daemon --bid sh.paseo.desktop.helper --tid 99ZMJMKU9Y --no-root-ownership \
-    || echo "    ⚠️  register failed — run manually: sudo demonlock safe-apps register --name paseo-daemon --bid sh.paseo.desktop.helper --tid 99ZMJMKU9Y --no-root-ownership"
+  sudo "$DL" safe-apps register sh.paseo.desktop.helper --no-root-ownership --tid 99ZMJMKU9Y \
+    || echo "    ⚠️  register failed — run manually: sudo demonlock safe-apps register sh.paseo.desktop.helper --no-root-ownership --tid 99ZMJMKU9Y"
 else
   echo "    (demonlock not installed yet — after installing it, run:"
-  echo "     sudo demonlock safe-apps register --name paseo-daemon --bid sh.paseo.desktop.helper --tid 99ZMJMKU9Y --no-root-ownership)"
+  echo "     sudo demonlock safe-apps register sh.paseo.desktop.helper --no-root-ownership --tid 99ZMJMKU9Y)"
 fi
 
 echo "==> done: daemon owned by launchd (sh.paseo.daemon), nightly refresh at 4:30"

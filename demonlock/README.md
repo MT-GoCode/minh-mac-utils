@@ -273,7 +273,7 @@ every non-Apple `.accessory` (menubar) app**, so a distraction repackaged as `LS
 the lockout. A `.accessory` app not on the list is spared **only if its live signature is genuinely
 Apple-signed** (`anchor apple`), so Control Center / Spotlight / Siri survive but an `LSUIElement`
 distraction stamped `com.apple.…` is killed — the bundle-id string is never trusted, the signature is
-verified. The agent is spared by PID; pure daemons (betterat, nextdns-sidecar) have no `.regular` GUI
+verified. The agent is spared by PID; pure daemons (nextdns-sidecar) have no `.regular` GUI
 app and are never in the kill-list. Everything else dies unless it's a **verified** safe-app.
 
 Each safe-app is `{name, bid, tid, rootOwned}`, and is spared by **one of two regimes** (`spareVerified`
@@ -291,33 +291,35 @@ in `Sensors.swift`):
 
 **Baked blocklist (`register` refuses):** every browser bundle id (Chrome/Safari/Firefox/Edge/Brave/
 Arc/Opera/Vivaldi/Yandex, incl. beta/dev channels) and `sh.paseo.desktop` — sparing any of them would
-defeat the whole point. (The Paseo daemon helper `sh.paseo.desktop.helper` is a separate compiled
-default spare, untouched by the blocklist.) `com.demonlock` is **unremovable** (losing it → the agent
-dies on lockout → nuclear WindowServer loop).
+defeat the whole point. (The Paseo daemon helper `sh.paseo.desktop.helper` is a *different* bundle id,
+so it can still be spared — the GUI dies, the daemon lives.) `com.demonlock` is **unremovable** (losing
+it → the agent dies on lockout → nuclear WindowServer loop).
 
-Defaults: our own `demonlock`, `wtalk` (`com.wtalk.daemon`), `remote-agent-connector`, `msv2`,
-`stayup` (Regime A), plus third-party `paseo-daemon`, `alttab`, `raycast`, `shottr`, `amphetamine`,
-`betterdisplay`, `scroll-reverser`, `karabiner-*` (Regime B).
+**The compiled default spare list is just `com.demonlock` itself** — demonlock is standalone and coupled
+to nothing. Everything else registers INTO it over time: your own apps (`wtalk`/`remote-agent-connector`/
+`msv2`/`stayup`, Regime A) from their own installers, the paseo daemon (Regime B) from
+`setup-paseo-daemon.sh`, and third-party utils (`alttab`/`raycast`/`shottr`/`amphetamine`/`betterdisplay`/
+`scroll-reverser`/`karabiner-*`, Regime B) via `register-recommended-spares.sh`.
 
 ```bash
 demonlock safe-apps show                                    # the effective list + pending registrations
-sudo demonlock safe-apps register --name foo --bid com.x.Foo --tid TEAMID10   # immediate
-demonlock safe-apps delayed-register --name foo --bid com.x.Foo --tid TEAMID10   # no sudo; lands after the delay
+sudo demonlock safe-apps register com.x.Foo                 # immediate; root-owned (Regime A) — bundle only
+sudo demonlock safe-apps register com.x.Foo --no-root-ownership --tid TEAMID10   # Developer-ID (Regime B)
+demonlock safe-apps delayed-register com.x.Foo              # no sudo; lands after the delay
 demonlock safe-apps delayed-register abort <name> | --all
 demonlock safe-apps remove <name>                           # no sudo, IMMEDIATE (removing tightens)
 sudo demonlock safe-apps set-delay "24h"                    # delayed-register delay (baked 8h–168h)
 ```
 
-Add `--no-root-ownership` to register a third-party app under Regime B (own-team apps can't use it).
-`demonlock safe-apps show` is the single source of truth for the effective list — `verify-spare.sh`
-queries it rather than grepping `settings.json`.
+**Root-owned needs ONLY the bundle id** — Regime A never reads the team. `--no-root-ownership` (Regime B)
+needs `--tid <TEAM>`; own-team apps can't use it. Optional `--name` overrides the auto-derived handle.
+`demonlock safe-apps show` is the single source of truth — `verify-spare.sh` queries it.
 
 ### To whitelist a new app of yours
 
 A brand-new own app is **killed** unless you do BOTH: install it **root-owned** in `/Applications`
 (sudo — a `~/Applications` copy is user-owned ⇒ fails the owner check), and register it root-owned
-(`sudo demonlock safe-apps register --name … --bid … --tid …`, or the installer's tail helper does it
-for you). A self-made `com.demonlock` impostor you can write to is user-owned ⇒ killed; the genuine
+(`sudo demonlock safe-apps register <bundle-id>`, or the installer's tail does it for you). A self-made `com.demonlock` impostor you can write to is user-owned ⇒ killed; the genuine
 one is root-owned and tamper-evident (editing it breaks the signature ⇒ also killed).
 
 ## test-lockout

@@ -19,8 +19,6 @@ the target machine and you fill them in.
 | **wtalk** | push-to-talk dictation daemon (Parakeet transcribe + Gemini cleanup); PyInstaller-frozen, sealed, root-owned | `sudo ./wtalk/install.sh` | yes |
 | **msv2** | desktop groups that scope ⌘⇥ + a hold-⌘⌥ overview; never moves windows; `msv2` CLI | `sudo ./msv2/install.sh` | yes |
 | **stayup** | menu-bar toggle for staying awake with the lid closed (`pmset disablesleep`); `stayup` CLI | `sudo ./stayup/install.sh` | yes |
-| **betterat** | no-sudo `at(1)`: schedule shell commands, persist + catch up on reboot | `./betterat install` | no |
-| **fade-play-pause-chrome** | daemon that fades out + pauses browser music tabs and fades them back; `fadepause`/`faderesume` triggers | `./fade-play-pause-chrome/install.sh` | no |
 | **agentic-browser-setup** | installs `chrome-browser-fleet`: spins up isolated Chrome windows on their own CDP ports for agent browser automation | `./agentic-browser-setup/install.sh` | no |
 
 **Paseo daemon (`scripts/`).** `scripts/setup-paseo-daemon.sh` hands the third-party Paseo daemon to
@@ -33,15 +31,14 @@ config-wiring for an external app, not a repo-built tool, so it's a manual scrip
 `sudo ./<app>/install.sh` (or `./<app>/install.sh` for the no-sudo ones). Most GUI/CLI apps' own
 `install.sh` just declares a small inline manifest and sources the shared `scripts/install-lib.sh`
 (build → deploy root-owned → CLI shim → launchd → register the demonlock spare); the more involved
-apps (demonlock, wtalk, nextdns-sidecar, remote-agent-connector, fade) keep a bespoke `install.sh`.
-They don't share one rigid runtime interface — most lockers have `arm`/`disarm`, but betterat,
-wtalk, fade, and agentic-browser-setup don't fit that mold, and that's fine.
+apps (demonlock, wtalk, nextdns-sidecar, remote-agent-connector) keep a bespoke `install.sh`.
+They don't share one rigid runtime interface — most lockers have `arm`/`disarm`, but wtalk and
+agentic-browser-setup don't fit that mold, and that's fine.
 
 **wtalk media auto-pause (optional):** if `nowplaying-cli` is on your `PATH`
 (`brew install nowplaying-cli`), wtalk fades the system volume out + pauses whatever's playing when
 you start a dictation and fades it back in on stop (decoupled — it only toggles media it actually
-paused; no-op if nowplaying-cli isn't installed). fade-play-pause-chrome is a separate standalone
-tool — wtalk no longer drives it.
+paused; no-op if nowplaying-cli isn't installed).
 
 ## Fresh-machine setup (in order)
 
@@ -61,8 +58,8 @@ tool — wtalk no longer drives it.
 3. **wtalk** — `cd wtalk && ./setup.sh` (venv+deps+ffmpeg) → `sudo ./install.sh` (PyInstaller-freeze, sign, deploy **root-owned** to `/Applications`, seed `~/.wtalk`) → put your Gemini key in `~/.wtalk/.env` → `wtalk restart` → bind a key in Karabiner to `/usr/local/bin/wtalk toggle` → grant **Microphone + Accessibility**.
 4. **msv2 / stayup** — `sudo ./msv2/install.sh`, `sudo ./stayup/install.sh` (each builds, signs, deploys root-owned, and registers itself as a demonlock spare).
 5. **remote-agent-connector** *(optional)* — `sudo ./remote-agent-connector/install.sh`, then Dock ▸ Get Permissions and `rac setup`.
-6. **betterat** — `./betterat install` (no sudo; sets up the per-user launchd agent + DB).
-7. **fade-play-pause-chrome / agentic-browser-setup** *(optional, no sudo)* — `./fade-play-pause-chrome/install.sh`, `./agentic-browser-setup/install.sh`.
+6. **agentic-browser-setup** *(optional, no sudo)* — `./agentic-browser-setup/install.sh`.
+7. **paseo daemon + third-party spares** *(optional)* — `./scripts/setup-paseo-daemon.sh`, then `sudo ./demonlock/register-recommended-spares.sh` (spares karabiner/alttab/raycast/etc.).
 
 ### 3. Only then harden
 Verify each tool's `status`. *Then* drop your daily admin with `demonlock nosudo` (re-login to fully

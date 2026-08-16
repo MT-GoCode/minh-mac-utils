@@ -1,5 +1,5 @@
 #!/bin/bash
-# Shared code-signing identity picker for the macOS .app tools (demonlock,
+# Shared code-signing ladder (identity picker) for the macOS .app tools (demonlock,
 # settingslock, wtalk). Echoes the chosen identity on STDOUT (a clean single
 # line the caller captures); logs the human-readable choice to STDERR.
 #

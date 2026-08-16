@@ -86,10 +86,14 @@ dl_write_sudoers() {  # <name> <line...>
 
 # Register an app in demonlock's spare list — IMMEDIATE (we're root; the installer is the main caller of
 # the sudo path). No-op with a note if demonlock isn't installed yet.
-dl_register_spare() {  # <name> <bid> <tid> [--no-root-ownership]
+dl_register_spare() {  # <name(unused)> <bid> <tid> [--no-root-ownership]
   local dl=/Applications/Demonlock.app/Contents/MacOS/demonlock
-  [ -x "$dl" ] || { echo "  · demonlock not installed — skipping spare registration for $1"; return 0; }
-  "$dl" safe-apps register --name "$1" --bid "$2" --tid "$3" ${4:+"$4"} && dl_ok "registered spare '$1'"
+  [ -x "$dl" ] || { echo "  · demonlock not installed — skipping spare registration for $2 (install demonlock, then: sudo demonlock safe-apps register $2)"; return 0; }
+  if [ "${4:-}" = "--no-root-ownership" ]; then
+    "$dl" safe-apps register "$2" --no-root-ownership --tid "$3" && dl_ok "registered spare '$2'"
+  else
+    "$dl" safe-apps register "$2" && dl_ok "registered spare '$2'"   # root-owned: bundle only
+  fi
 }
 
 # Build a swift app as the user (via its scripts/build.sh if present) and echo the located .app. Apps

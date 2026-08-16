@@ -13,7 +13,7 @@ mkdir -p "$APP/Contents/MacOS"
 cp .build/release/stayup "$APP/Contents/MacOS/stayup"
 cp scripts/Info.plist "$APP/Contents/Info.plist"
 
-IDENTITY=$(bash ../sign-identity.sh 2>/dev/null || echo "-")
+IDENTITY=$(bash ../signing-ladder.sh 2>/dev/null || echo "-")
 codesign --force --sign "${IDENTITY:--}" "$APP"
 
 echo "built + signed $APP (identity: ${IDENTITY:--})"
