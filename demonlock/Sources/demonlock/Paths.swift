@@ -36,6 +36,11 @@ enum Paths {
     static let dzRequestMarker     = rvInboxDir + "/delayzones"              // CONTENTS = the new zones.json
     static let dzAbortMarker       = rvInboxDir + "/delayzones-abort"
 
+    // Delayed release-valve gate-policy change (no sudo; lands after gatePolicyDelaySec).
+    static let delayedGatePolicyFile = supportDir + "/delayed-gatepolicy.json"
+    static let dgpRequestMarker    = rvInboxDir + "/delaysetgatepolicy"      // CONTENTS = the new gate policy
+    static let dgpAbortMarker      = rvInboxDir + "/delaysetgatepolicy-abort"
+
     // "I got shit due at midnight": a no-sudo request that, after 1.5h, snoozes until 12:05 AM tonight.
     static let delayedSnoozeFile   = supportDir + "/delayed-snooze.json"     // {requestedAt, applyAt, lastAppliedAt}
     static let dsnRequestMarker    = rvInboxDir + "/igotshitdueatmidnight"

@@ -25,6 +25,7 @@ final class Enforcer {
     private var lastAgentSeen = Date()      // last fresh feed — gates the startup/recovery grace below
     private var dpPolicyStatus: DelayedStatus?   // last-computed delayed-policy status (published every tick)
     private var dpZonesStatus: DelayedStatus?    // last-computed delayed-zones status (published every tick)
+    private var dpGatePolicyStatus: DelayedStatus?  // last-computed delayed gate-policy status
     private var dsnStatus: DelayedSnoozeStatus?  // last-computed midnight-snooze request status
     private var safeAppsStatus: SafeApps.Status? // last-computed safe-apps pending registrations
     private var snoozePresetsStatus: SnoozePresets.Status?  // in-flight invocation + pending adds
@@ -409,6 +410,7 @@ final class Enforcer {
             releaseValve: rv,
             delayedPolicy: dpPolicyStatus,
             delayedZones: dpZonesStatus,
+            delayedGatePolicy: dpGatePolicyStatus,
             delayedSnooze: dsnStatus,
             safeApps: safeAppsStatus,
             snoozePresets: snoozePresetsStatus,
@@ -442,6 +444,13 @@ final class Enforcer {
                 do { try payload.write(toFile: Paths.zonesFile, atomically: true, encoding: .utf8)
                      chmod(Paths.zonesFile, 0o644); return true } catch { return false }
             })
+        dpGatePolicyStatus = DelayedChange.tick(
+            kind: "gate-policy", now: nowSec, stateFile: Paths.delayedGatePolicyFile,
+            requestMarker: Paths.dgpRequestMarker, abortMarker: Paths.dgpAbortMarker,
+            delaySec: Bounds.clamp(settings.gatePolicyDelaySec, Bounds.gatePolicyDelay),
+            enforcedUID: enforcedUID,
+            validate: { (try? PolicyEngine.validate($0, zones: ZoneStore.load(), allowInPolicy: true)) != nil },
+            apply: { var c = ReleaseValveConfig.load(); c.gatePolicy = $0; try? c.save(); return true })
     }
 }
 

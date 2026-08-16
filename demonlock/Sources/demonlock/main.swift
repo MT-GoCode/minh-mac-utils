@@ -16,7 +16,7 @@ case "list-zones":                         runZoneList()
 case "perm-ask":                           runPermAsk()
 
 // no sudo — self-serve delayed changes (land after 36h)
-case "delaysetpolicy":                     runDelaySetPolicy(Array(argv.dropFirst()))
+case "delaysetpolicy", "delay-set-policy": runDelaySetPolicy(Array(argv.dropFirst()))
 case "delayzones":                         runDelayZones(Array(argv.dropFirst()))
 case "igotshitdueatmidnight":              runIGotShitDueAtMidnight(Array(argv.dropFirst()))
 

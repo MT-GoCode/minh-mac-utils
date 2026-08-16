@@ -73,6 +73,7 @@ func runStatus() {
     if let rv = s.releaseValve { printReleaseValve(rv) }
     printDelayedStatus("policy", s.delayedPolicy)
     printDelayedStatus("zones", s.delayedZones)
+    printDelayedStatus("gate-policy", s.delayedGatePolicy)
     if let ds = s.delayedSnooze, ds.pending, let a = ds.applyAtEpoch {
         let f = DateFormatter(); f.dateFormat = "EEE HH:mm"
         let left = max(0, Int(a - nowEpoch()))
@@ -559,6 +560,7 @@ func runReleaseValve(_ args: [String]) {
     case "set-gate-policy":                      rvSetGatePolicy(rest)
     case "set-delay":                            rvSetDelay(rest)
     case "set-max-request-duration":             rvSetMaxDuration(rest)
+    case "delay-set-gate-policy":                rvDelayGatePolicy(rest)
     default: fail("✗ unknown subcommand '\(sub)'\n" + rvUsage)
     }
 }
@@ -634,6 +636,31 @@ private func rvSetMaxDuration(_ durText: String) {
     do { try cfg.save() } catch { fail("✗ couldn't write config: \(error)") }
     if secs > Bounds.rvMaxRequestDurationCeil { print("  note: above the \(Int(Bounds.rvMaxRequestDurationCeil/3600))h ceiling — the ceiling is enforced at request time.") }
     rvPrintConfig(cfg)
+}
+
+/// delay-set-gate-policy "<expr>" | abort | status | set-delay "<dur>" (last is sudo). A no-sudo delayed
+/// change to the release-valve gate policy, landing after gatePolicyDelaySec.
+private func rvDelayGatePolicy(_ arg: String) {
+    let s = arg.trimmingCharacters(in: .whitespacesAndNewlines)
+    if s.isEmpty || s == "status" || s == "--status" {
+        if let pc = DelayedState.load(Paths.delayedGatePolicyFile).pending {
+            print("delayed gate-policy: QUEUED — lands \(TimeSpec.fmtWhen(pc.applyAt))  (\(TimeSpec.fmtLeft(pc.applyAt - nowEpoch())) left)\n  \(pc.payload)")
+        } else { print("delayed gate-policy: none queued.") }
+        return
+    }
+    if s == "abort" || s == "--abort" { dropDelayMarker(Paths.dgpAbortMarker); print("✓ abort sent — cancels a queued gate-policy change next tick."); return }
+    if s.hasPrefix("set-delay") {
+        requireRoot("admin-release-valve delay-set-gate-policy set-delay")
+        let dur = String(s.dropFirst("set-delay".count)).trimmingCharacters(in: .whitespaces)
+        guard let secs = TimeSpec.parseDuration(dur), secs > 0 else { fail("✗ bad delay — e.g. \"36h\".") }
+        var st = Settings.load(); st.gatePolicyDelaySec = secs; do { try st.save() } catch { fail("✗ couldn't write settings: \(error)") }
+        print("✓ gate-policy delay set to \(Int(secs/3600))h (clamped to \(Int(Bounds.gatePolicyDelay.lowerBound/3600))–\(Int(Bounds.gatePolicyDelay.upperBound/3600))h).")
+        return
+    }
+    do { try PolicyEngine.validate(s, zones: ZoneStore.load(), allowInPolicy: true) } catch { fail("✗ invalid gate policy: \(error)") }
+    dropDelayMarker(Paths.dgpRequestMarker, payload: s)
+    let delayH = Int(Bounds.clamp(Settings.load().gatePolicyDelaySec, Bounds.gatePolicyDelay) / 3600)
+    print("✓ queued — the release-valve gate policy changes in \(delayH)h (no sudo). abort: `admin-release-valve delay-set-gate-policy abort`.")
 }
 
 private func rvPrintConfig(_ cfg: ReleaseValveConfig) {
