@@ -125,7 +125,7 @@ sudo -u "$USER_NAME" launchctl bootstrap "gui/$USER_UID" "$PLIST" 2>/dev/null \
 echo
 
 echo "▸ verifying demonlock will spare it"
-bash "$(cd "$(dirname "$0")/../.." && pwd)/verify-spare.sh" /Applications/wtalk.app com.wtalk.daemon
+bash "$HERE/../verify-spare.sh" /Applications/wtalk.app com.wtalk.daemon
 echo "✓ installed $DEST  (root:wheel, sealed — demonlock can now safely spare it)"
 echo "  Next steps:"
 echo "    1. Add your Gemini key:   \$EDITOR $DATA/.env   (GEMINI_API_KEY=…), then:  wtalk restart"
