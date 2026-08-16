@@ -49,6 +49,14 @@ enum Paths {
     static let saRemoveMarker      = rvInboxDir + "/safeapp-remove"
     static let saAbortMarker       = rvInboxDir + "/safeapp-abort"
 
+    // snooze-presets: a single in-flight invocation + a name-keyed registry of pending delayed-adds.
+    static let snoozePresetsStateFile = supportDir + "/snooze-presets.json"
+    static let spInvokeMarker  = rvInboxDir + "/snoozepreset-invoke"        // contents = preset name
+    static let spInvokeAbort   = rvInboxDir + "/snoozepreset-invoke-abort"
+    static let spAddMarker     = rvInboxDir + "/snoozepreset-add"           // contents = SnoozePreset JSON (delayed)
+    static let spAddAbort      = rvInboxDir + "/snoozepreset-add-abort"     // contents = name or "--all"
+    static let spRemoveMarker  = rvInboxDir + "/snoozepreset-remove"        // contents = name (immediate)
+
     static let socketPath      = "/var/run/demonlock.sock"
 
     static let appPath         = "/Applications/Demonlock.app"

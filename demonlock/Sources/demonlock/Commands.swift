@@ -239,6 +239,99 @@ func runDisarm() {
     print("✓ DISARMED — everything keeps running and the countdown still shows, but nothing gets killed.")
 }
 
+// MARK: - snooze-presets
+
+private let snoozePresetUsage = """
+usage:
+  demonlock snooze-preset show                 # presets + pending delayed-adds
+  demonlock snooze-preset invoke <name>        # stand down after the preset's invoke-delay (one at a time)
+  demonlock snooze-preset remove <name>        # immediate (removing tightens — no sudo)
+  demonlock snooze-preset delayed-add --name <n> --duration "<spec>" --delay "<dur>"   # lands after the add-delay
+  demonlock snooze-preset delayed-add abort <name> | --all
+  sudo demonlock snooze-preset add --name <n> --duration "<spec>" --delay "<dur>"      # immediate
+  sudo demonlock snooze-preset set-delay "<dur>"    # the delayed-add delay (baked-clamped)
+  (<spec> is a snooze target: "for 90m" | "until 0500"; <dur> is the invoke delay, e.g. "1h")
+"""
+
+func runSnoozePreset(_ args: [String]) {
+    let sub = args.first ?? "show"
+    let rest = Array(args.dropFirst())
+    switch sub {
+    case "show", "list", "status", "--status": snoozePresetShow()
+    case "invoke":               snoozePresetInvoke(rest.first)
+    case "remove":               snoozePresetRemove(rest.first)
+    case "add":                  snoozePresetAdd(rest, immediate: true)
+    case "delayed-add":
+        if rest.first == "abort" { snoozePresetAbort(Array(rest.dropFirst())) } else { snoozePresetAdd(rest, immediate: false) }
+    case "abort":                snoozePresetAbort(rest)
+    case "set-delay":            snoozePresetSetDelay(rest.joined(separator: " "))
+    case "help", "--help", "-h": print(snoozePresetUsage)
+    default: fail("✗ unknown subcommand '\(sub)'\n" + snoozePresetUsage)
+    }
+}
+
+private func snoozePresetShow() {
+    let inv = StateStore.read()?.snoozePresets
+    let presets = SnoozePresets.effective()
+    let rows = presets.map { p -> [String] in
+        let active = (inv?.invocationName == p.name)
+        let left = active ? TimeSpec.fmtLeft((inv?.invocationApplyAtEpoch ?? 0) - nowEpoch()) : "N/A"
+        return [p.name, p.spec, TimeSpec.fmtLeft(p.invokeDelaySec), left]
+    }
+    print(Table.section("SNOOZE PRESETS", ["name", "target", "invoke-delay", "landing in"], rows))
+    let delayH = Int(Bounds.clamp(Settings.load().snoozePresetAddDelaySec, Bounds.snoozePresetAddDelay) / 3600)
+    let prows = (inv?.pendingAdds ?? []).map { [$0.name, TimeSpec.fmtLeft($0.applyAtEpoch - nowEpoch())] }
+    print("\n" + Table.section("PENDING DELAYED-ADDS — land after \(delayH)h", ["name", "lands in"], prows))
+}
+
+private func snoozePresetInvoke(_ name: String?) {
+    guard let name, !name.isEmpty else { fail("✗ usage: demonlock snooze-preset invoke <name>") }
+    guard let p = SnoozePresets.find(name) else { fail("✗ no preset '\(name)' — see `demonlock snooze-preset show`.") }
+    dropDelayMarker(Paths.spInvokeMarker, payload: name)
+    print("✓ '\(name)' invoked — stands down (\(p.spec)) in \(TimeSpec.fmtLeft(Bounds.clamp(p.invokeDelaySec, Bounds.snoozePresetInvokeDelay))), then re-arms. One at a time; cancel with `snooze-preset abort` (via invoke-abort).")
+}
+
+private func snoozePresetRemove(_ name: String?) {
+    guard let name, !name.isEmpty else { fail("✗ usage: demonlock snooze-preset remove <name>") }
+    dropDelayMarker(Paths.spRemoveMarker, payload: name)
+    print("✓ remove '\(name)' sent — applied on the next tick.")
+}
+
+private func snoozePresetAdd(_ args: [String], immediate: Bool) {
+    guard let name = flagValue(args, "--name"), let dur = flagValue(args, "--duration"), let delay = flagValue(args, "--delay") else {
+        fail("✗ need --name <n> --duration \"<spec>\" --delay \"<dur>\"\n" + snoozePresetUsage)
+    }
+    guard let invokeDelay = TimeSpec.parseDuration(delay) else { fail("✗ bad --delay — e.g. \"1h\", \"90m\".") }
+    let p = SnoozePreset(name: name, spec: dur, invokeDelaySec: invokeDelay)
+    if let why = SnoozePresets.rejectReason(p) { fail("✗ \(why)") }
+    if immediate {
+        requireRoot("snooze-preset add")
+        SnoozePresets.applyAdd(p)
+        print("✓ added preset '\(name)' (\(dur), invoke-delay \(TimeSpec.fmtLeft(invokeDelay))).")
+    } else {
+        guard let data = try? JSONEncoder().encode(p), let json = String(data: data, encoding: .utf8) else { fail("✗ couldn't encode the preset") }
+        dropDelayMarker(Paths.spAddMarker, payload: json)
+        let delayH = Int(Bounds.clamp(Settings.load().snoozePresetAddDelaySec, Bounds.snoozePresetAddDelay) / 3600)
+        print("✓ queued preset '\(name)' — becomes available in \(delayH)h (no sudo). Cancel: `snooze-preset delayed-add abort \(name)`.")
+    }
+}
+
+private func snoozePresetAbort(_ args: [String]) {
+    let arg = args.first ?? ""
+    guard arg == "--all" || !arg.isEmpty else { fail("✗ usage: demonlock snooze-preset delayed-add abort <name> | --all") }
+    dropDelayMarker(Paths.spAddAbort, payload: arg)
+    print("✓ abort sent for \(arg == "--all" ? "all pending adds" : "'\(arg)'").")
+}
+
+private func snoozePresetSetDelay(_ durText: String) {
+    requireRoot("snooze-preset set-delay")
+    guard let secs = TimeSpec.parseDuration(durText), secs > 0 else { fail("✗ bad delay — e.g. \"48h\".") }
+    var s = Settings.load(); s.snoozePresetAddDelaySec = secs
+    do { try s.save() } catch { fail("✗ couldn't write settings: \(error)") }
+    let eff = Int(Bounds.clamp(secs, Bounds.snoozePresetAddDelay) / 3600)
+    print("✓ snooze-preset add-delay set to \(Int(secs/3600))h (effective \(eff)h after the baked clamp).")
+}
+
 // MARK: - safe-apps
 
 private let safeAppsUsage = """

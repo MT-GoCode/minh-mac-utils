@@ -30,6 +30,7 @@ case "arm":                                runArm()
 case "nosudo":                             runNoSudo()
 case "disarm":                             runDisarm()
 case "safe-apps", "safeapps":              runSafeApps(Array(argv.dropFirst()))
+case "snooze-preset", "snooze-presets":    runSnoozePreset(Array(argv.dropFirst()))
 
 // internal
 case "_policytest":                        runPolicyTest()

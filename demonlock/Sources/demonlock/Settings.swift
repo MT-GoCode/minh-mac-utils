@@ -75,6 +75,9 @@ struct Settings: Codable {
     // only the per-app kill; the agent-dead NUCLEAR `killall -9 WindowServer` takes ALL GUI regardless.
     var safeAppsUser: [SafeApp]
     var safeAppsRemoved: [String]
+    // snooze-presets: user-managed named snooze shortcuts layered over SnoozePresets.defaults.
+    var snoozePresetsUser: [SnoozePreset]
+    var snoozePresetsRemoved: [String]
 
     init(pollSeconds: Double = 1.0, countdownPollSeconds: Double = 0.5, countdownSeconds: Double = 10,
          agentRefreshSeconds: Double = 0.25,
@@ -86,7 +89,8 @@ struct Settings: Codable {
          policyDelaySec: Double = 36 * 3600, zonesDelaySec: Double = 36 * 3600,
          gatePolicyDelaySec: Double = 36 * 3600, safeAppsDelaySec: Double = 24 * 3600,
          snoozePresetAddDelaySec: Double = 48 * 3600,
-         safeAppsUser: [SafeApp] = [], safeAppsRemoved: [String] = []) {
+         safeAppsUser: [SafeApp] = [], safeAppsRemoved: [String] = [],
+         snoozePresetsUser: [SnoozePreset] = [], snoozePresetsRemoved: [String] = []) {
         self.pollSeconds = pollSeconds; self.countdownPollSeconds = countdownPollSeconds
         self.countdownSeconds = countdownSeconds; self.agentRefreshSeconds = agentRefreshSeconds
         self.graceSeconds = graceSeconds; self.maxAccuracyMeters = maxAccuracyMeters
@@ -101,6 +105,7 @@ struct Settings: Codable {
         self.gatePolicyDelaySec = gatePolicyDelaySec; self.safeAppsDelaySec = safeAppsDelaySec
         self.snoozePresetAddDelaySec = snoozePresetAddDelaySec
         self.safeAppsUser = safeAppsUser; self.safeAppsRemoved = safeAppsRemoved
+        self.snoozePresetsUser = snoozePresetsUser; self.snoozePresetsRemoved = snoozePresetsRemoved
     }
 
     init(from decoder: Decoder) throws {
@@ -133,6 +138,8 @@ struct Settings: Codable {
         snoozePresetAddDelaySec = dbl(.snoozePresetAddDelaySec, d.snoozePresetAddDelaySec)
         safeAppsUser    = (try? c.decode([SafeApp].self, forKey: .safeAppsUser)) ?? []
         safeAppsRemoved = (try? c.decode([String].self, forKey: .safeAppsRemoved)) ?? []
+        snoozePresetsUser    = (try? c.decode([SnoozePreset].self, forKey: .snoozePresetsUser)) ?? []
+        snoozePresetsRemoved = (try? c.decode([String].self, forKey: .snoozePresetsRemoved)) ?? []
     }
 
     /// Result of loading settings.json — distinguishes ABSENT (fresh install → defaults are fine) from
