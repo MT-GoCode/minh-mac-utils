@@ -62,9 +62,8 @@ func runStatus() {
     if let ssh = s.sshAddr { print("  \(ssh)") }
     if let dl = s.countdownDeadlineEpoch { print("  countdown     : \(max(0, Int(dl - nowEpoch())))s remaining") }
     if let sn = s.snoozeUntilEpoch {
-        let f = DateFormatter(); f.dateFormat = "EEE yyyy-MM-dd HH:mm"
         let left = max(0, Int(sn - nowEpoch()))
-        print("  snooze        : SNOOZED until \(f.string(from: Date(timeIntervalSince1970: sn)))  " +
+        print("  snooze        : SNOOZED until \(TimeSpec.fmtWhen(sn))  " +
               "(\(left / 3600)h \(left % 3600 / 60)m left — enforcement stood down)")
     }
     print("  policy        : \(s.policyString.isEmpty ? "(none set)" : s.policyString)")
@@ -93,8 +92,7 @@ func runStatus() {
 /// A queued delayed-change line in `status` (only shown when something is pending).
 private func printDelayedStatus(_ label: String, _ d: DelayedStatus?) {
     guard let d, d.pending else { return }
-    let f = DateFormatter(); f.dateFormat = "EEE yyyy-MM-dd HH:mm"
-    let when = d.applyAtEpoch.map { f.string(from: Date(timeIntervalSince1970: $0)) } ?? "?"
+    let when = d.applyAtEpoch.map { TimeSpec.fmtWhen($0) } ?? "?"
     let left = d.applyAtEpoch.map { max(0, Int($0 - nowEpoch())) } ?? 0
     print("  delayed \(label) : QUEUED — lands \(when)  (\(left/3600)h \(left%3600/60)m left)")
     if let p = d.payloadPreview { print("                  \(p)") }
@@ -168,8 +166,7 @@ private func applySnooze(until target: Date) {
         do { try ArmStore.set(true); armedNote = "  (re-armed it for you — don't run `arm`, it'd cancel this)" }
         catch { armedNote = "  ⚠️ couldn't arm — it won't resume; run `sudo demonlock arm`" }
     }
-    let f = DateFormatter(); f.dateFormat = "EEE yyyy-MM-dd HH:mm"
-    print("✓ snoozed — stands down until \(f.string(from: target)), then RE-ARMS automatically.\(armedNote)")
+    print("✓ snoozed — stands down until \(TimeSpec.fmtWhen(target.timeIntervalSince1970)), then RE-ARMS automatically.\(armedNote)")
 }
 
 // MARK: - snooze (sudo)
@@ -695,9 +692,8 @@ func runDelaySetPolicy(_ args: [String]) {
 private func printDelayedPolicyStatus() {
     let delayH = Int(DelayedChange.policyDelaySec / 3600)
     if let pc = DelayedState.load(Paths.delayedPolicyFile).pending {
-        let f = DateFormatter(); f.dateFormat = "EEE yyyy-MM-dd HH:mm"
         let left = max(0, Int(pc.applyAt - nowEpoch()))
-        print("delayed policy: QUEUED — lands \(f.string(from: Date(timeIntervalSince1970: pc.applyAt)))" +
+        print("delayed policy: QUEUED — lands \(TimeSpec.fmtWhen(pc.applyAt))" +
               "  (\(left/3600)h \(left%3600/60)m left)")
         print("  \(pc.payload)")
     } else {
@@ -714,9 +710,8 @@ usage (no sudo — a zones change is CREATED from the map's "Save in 36h"; here 
 
 private func printDelayZonesStatus() {
     if let pc = DelayedState.load(Paths.delayedZonesFile).pending {
-        let f = DateFormatter(); f.dateFormat = "EEE yyyy-MM-dd HH:mm"
         let left = max(0, Int(pc.applyAt - nowEpoch()))
-        print("delayed zones: QUEUED — lands \(f.string(from: Date(timeIntervalSince1970: pc.applyAt)))  (\(left/3600)h \(left%3600/60)m left)")
+        print("delayed zones: QUEUED — lands \(TimeSpec.fmtWhen(pc.applyAt))  (\(left/3600)h \(left%3600/60)m left)")
         print("  cancel with `demonlock delayzones --abort`")
     } else {
         print("delayed zones: none queued.  Queue one from the map (`demonlock zones` → add → \"Save in 36h\").")
