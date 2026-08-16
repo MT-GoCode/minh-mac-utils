@@ -759,35 +759,31 @@ func printHelp() {
     USAGE: demonlock <command>
 
     USER COMMANDS (no sudo):
-      status              Arm state, phase, verdict, reason, policy, zones, health + live policy tree
-      zones               Map of your zones (streets, search, your location). Add a new circle/
-                          polygon (needs admin) or Delete one (free — deleting only tightens policy)
+      status              Arm state, phase, verdict, reason, policy, zones, health + every subsystem
+      zones               Map of your zones. Add/Delete a zone — each asks: now (admin) or in 36h.
       zones list          Print zone names + shapes (no map) — `list-zones` also works
-      scan                Continuously scan nearby Wi-Fi (SSID + BSSID) until Ctrl+C —
-                          walk your office to capture every access point (run WITHOUT sudo)
+      scan                Continuously scan nearby Wi-Fi (SSID + BSSID) until Ctrl+C
       perm-ask            (Re)grant the Location permission the agent needs
-      release-valve --request   Ask for a delay-gated admin grant (granted after the delay, at the
-                          next window, for the set duration). `release-valve abort` cancels/closes it.
-      delaysetpolicy "<expr>"   Queue a NEW allow-policy that lands in 36h — no sudo now OR at apply
-                          time (the commitment device is the wait). --abort cancels · --status shows it.
-      delayzones --status|--abort   View / cancel a zones change queued from the map's "Save in 36h".
-      igotshitdueatmidnight   Request a delayed snooze: in 1.5h, stand down until 12:05 AM tonight,
-                          then re-arm (kicks in even mid-lockout). --status / --abort.
-      arm                 Turn enforcement ON (no sudo — arming only TIGHTENS; passwordless grant)
+      arm                 Turn enforcement ON (also drops admin + closes the release valve)
+      nosudo              Drop admin now (revoke) + close the release valve
+      admin-release-valve request "<dur>"   Ask for delay-gated admin (`… status` / `… abort`;
+                          `… i-still-need-sudo` extends a live grant — sudo, in-window). See `… help`.
+      safe-apps …         Manage the lockout spare list (show / delayed-register / remove). `… help`.
+      snooze-preset …     Named snooze shortcuts (show / invoke / delayed-add). `… help`.
+      password-lockbox …  Delay-gated secret store (show / unlock / copy / add). `… help`.
+      delay-set-policy "<expr>"   Queue a new allow-policy that lands after the delay (no sudo).
+      delayzones --status|--abort  View / cancel a zones change queued from the map's "Save in 36h".
       help                This help
 
     SUDO COMMANDS (require `sudo`):
       setpolicy "<expr>"  Set the allow-policy (validated before it takes effect)
       disarm              Turn enforcement OFF (everything keeps running; countdown just no-ops)
-      snoozetonight       Allow everything until the next snooze time (default 05:00)
-      snooze "<spec>"     Stand down until "for <duration>" or "until <[day]HHMM>" (capped 18h),
-                          then RE-ARM automatically — no sudo needed at resume. Implies armed, so this
-                          is the escape-then-resume flow: just snooze (don't `disarm`/`arm` around it).
+      snooze "<spec>"     Stand down "for <duration>" | "until <[day]HHMM>" (capped 18h), then RE-ARM.
                           e.g. sudo demonlock snooze "for 90m"  ·  sudo demonlock snooze "until 0730"
-      release-valve --set-window-policy "<expr>" | --set-request-delay "<dur>" |
-                    --set-request-duration "<dur>"
-                          Configure the release valve (any subset per call). window-policy uses the
-                          policy syntax + IN_POLICY; then `release-valve --request` (no sudo) works.
+      admin-release-valve set-gate-policy "<expr>" | set-delay "<dur>" | set-max-request-duration "<dur>"
+                          Configure the release valve (gate uses policy syntax + IN_POLICY). Then
+                          `admin-release-valve request "<dur>"` (no sudo) works.
+      safe-apps register … | snooze-preset add … | password-lockbox add …   Immediate variants.
 
     POLICY LANGUAGE  (the ALLOW condition — combine with AND / OR / NOT / parentheses):
       LOCATED_IN_ANY(["zone name", ...])
