@@ -754,6 +754,24 @@ func runPermAsk() {
     Proc.run("/usr/bin/open", ["x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"])
 }
 
+// MARK: - test-lockout (user) — do the lockout kill on demand, to verify it works
+
+func runTestLockout(_ args: [String]) {
+    let go = args.contains("--go")
+    let targets = SensorFeeder.guiKillTargets(excludingPID: getpid()).sorted { $0.name < $1.name }
+    if targets.isEmpty { print("test-lockout: nothing to close — no non-spared GUI apps are running right now."); return }
+    print("test-lockout: a real lockout would SIGKILL these \(targets.count) app(s):")
+    for t in targets { print("  • \(t.name)  (pid \(t.pid))") }
+    print("  spared apps, Apple menubar items, and sshd/tmux survive. (A test never does the nuclear WindowServer kill.)")
+    guard go else {
+        print("\nDRY RUN — nothing closed. Re-run with --go to actually close them:\n  demonlock test-lockout --go")
+        return
+    }
+    print("\nclosing now…")
+    for t in targets where t.pid > 1 { kill(t.pid, SIGKILL) }
+    print("✓ done — that's exactly the per-app kill a real lockout performs.")
+}
+
 // MARK: - help
 
 func printHelp() {

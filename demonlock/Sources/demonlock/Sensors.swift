@@ -221,28 +221,29 @@ final class SensorFeeder: NSObject, CLLocationManagerDelegate {
     /// nil-bundle helpers; and this agent itself (spared by PID, so the sensor survives the lockout).
     /// spareApps is reloaded each feed (editing settings.json takes effect live). feed() runs on main.
     private func currentGuiPids() -> [Int32] {
-        let me = getpid()
+        SensorFeeder.guiKillTargets(excludingPID: getpid()).map(\.pid)
+    }
+
+    /// The lockout kill TARGETS for the current session — every `.regular` app PLUS non-Apple
+    /// `.accessory` (menubar) apps, MINUS verified spares, Apple `.accessory` items, and `excludingPID`.
+    /// Shared by the agent's feed (`currentGuiPids`) AND `demonlock test-lockout`, so a test closes
+    /// exactly what a real lockout would. Menubar sparing VERIFIES the signature ("anchor apple" — a
+    /// Developer-ID cert can't satisfy it), not the bundle-id string, so a distraction stamped
+    /// "com.apple.…" can't dodge it.
+    static func guiKillTargets(excludingPID me: pid_t) -> [(pid: Int32, name: String)] {
         let spare = SafeApps.effectiveMap()
-        return NSWorkspace.shared.runningApplications
-            .filter { app in
-                guard app.processIdentifier > 0, app.processIdentifier != me else { return false }
-                let bid = app.bundleIdentifier ?? ""
-                if let e = spare[bid], Self.spareVerified(app, bid: bid, team: e.tid, rootOwned: e.rootOwned) { return false }
-                switch app.activationPolicy {
-                case .regular:
-                    return true                                  // every foreground/Dock app (incl. com.apple.Safari)
-                case .accessory:
-                    // Spare a menubar app ONLY if it's GENUINELY Apple-signed (Control Center's
-                    // Wi-Fi/battery, Spotlight, Siri, input menu). We VERIFY the signature ("anchor
-                    // apple" — which a Developer-ID cert can't satisfy), not the bundle-id string:
-                    // otherwise an LSUIElement distraction stamped "com.apple.…" (or no bundle id at
-                    // all) would dodge the lockout. Non-Apple menubar apps die unless whitelisted above.
-                    return !Self.codeSatisfies(app, "anchor apple")
-                default:
-                    return false                                 // .prohibited — no user-facing window
-                }
+        return NSWorkspace.shared.runningApplications.compactMap { app in
+            guard app.processIdentifier > 0, app.processIdentifier != me else { return nil }
+            let bid = app.bundleIdentifier ?? ""
+            if let e = spare[bid], spareVerified(app, bid: bid, team: e.tid, rootOwned: e.rootOwned) { return nil }
+            let kill: Bool
+            switch app.activationPolicy {
+            case .regular:   kill = true
+            case .accessory: kill = !codeSatisfies(app, "anchor apple")
+            default:         kill = false     // .prohibited — no user-facing window
             }
-            .map { $0.processIdentifier }
+            return kill ? (app.processIdentifier, app.localizedName ?? bid) : nil
+        }
     }
 
     /// True iff `app` is genuinely a whitelisted app. Two regimes, picked by who could have put the

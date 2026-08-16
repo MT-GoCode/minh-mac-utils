@@ -14,6 +14,7 @@ case "scan":                               runScan()
 case "zones", "view-zones", "edit-zones":  argv.dropFirst().contains("list") ? runZoneList() : runZones()
 case "list-zones":                         runZoneList()
 case "perm-ask":                           runPermAsk()
+case "test-lockout":                       runTestLockout(Array(argv.dropFirst()))
 
 // no sudo — self-serve delayed changes (land after 36h)
 case "delaysetpolicy", "delay-set-policy": runDelaySetPolicy(Array(argv.dropFirst()))
