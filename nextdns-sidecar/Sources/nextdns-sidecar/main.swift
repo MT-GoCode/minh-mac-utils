@@ -28,22 +28,46 @@ func runDomains(_ a: [String]) {
     case "delay-add":  cmdDelayAdd(doms)
     case "abort":      cmdAbort(doms)
     case "future":     cmdFuture()
+    case "test":       cmdTest(doms)
     default:
         fail("""
         usage:
-          nextdns-sidecar domains block <domain>...        # block now (no sudo)
-          sudo nextdns-sidecar domains add <domain>...     # allow now (sudo)
-          nextdns-sidecar domains delay-add <domain>...    # allow after the delay (no sudo)
-          nextdns-sidecar domains abort <domain> | --all   # cancel queued delayed allow(s)
-          nextdns-sidecar domains future                   # list pending delayed allows
+          nextdns-sidecar domains block <domain>... | -f FILE     # block now (no sudo)
+          sudo nextdns-sidecar domains add <domain>... | -f FILE  # allow now (sudo)
+          nextdns-sidecar domains delay-add <domain>... | -f FILE # allow after the delay (no sudo)
+          nextdns-sidecar domains abort <domain> | --all          # cancel queued delayed allow(s)
+          nextdns-sidecar domains future                          # list pending delayed allows
+          nextdns-sidecar domains test [--blocked|--allowed] <domain>... | -f FILE   # is it blocked?
         """)
     }
 }
 
+/// Expand CLI args into a domain list: `-f FILE` (one domain per line, `#` comments) plus positionals.
+func collectDomains(_ args: [String]) -> [String] {
+    var out: [String] = []; var i = 0
+    while i < args.count {
+        if args[i] == "-f" {
+            i += 1
+            guard i < args.count else { fail("error: -f needs a file path") }
+            guard let text = try? String(contentsOfFile: args[i], encoding: .utf8) else { fail("error: can't read file: \(args[i])") }
+            for line in text.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
+                var s = String(line)
+                if let h = s.firstIndex(of: "#") { s = String(s[..<h]) }
+                s = s.trimmingCharacters(in: .whitespaces)
+                if !s.isEmpty { out.append(s) }
+            }
+        } else {
+            out.append(args[i])
+        }
+        i += 1
+    }
+    return out
+}
+
 /// block — no sudo, immediate tighten. Drops a marker; the daemon calls the API next tick.
 func cmdBlock(_ ds: [String]) {
-    let doms = ds.filter { !$0.isEmpty }
-    guard !doms.isEmpty else { fail("usage: nextdns-sidecar domains block <domain>...") }
+    let doms = collectDomains(ds).filter { !$0.isEmpty }
+    guard !doms.isEmpty else { fail("usage: nextdns-sidecar domains block <domain>... | -f FILE") }
     for d in doms where !validDomain(d) { fail("error: invalid domain: \(d)") }
     dropMarker(Paths.mBlock, doms.joined(separator: "\n"))
     print("✓ block queued for \(doms.count) domain(s) — applies within a few seconds (daemon).")
@@ -52,8 +76,8 @@ func cmdBlock(_ ds: [String]) {
 /// add — sudo, immediate allow. Runs as root, reads creds, calls the API directly (like nextdns-allow).
 func cmdAdd(_ ds: [String]) {
     guard geteuid() == 0 else { fail("nextdns-sidecar domains add: must run as root — use `sudo nextdns-sidecar domains add ...`") }
-    let doms = ds.filter { !$0.isEmpty }
-    guard !doms.isEmpty else { fail("usage: sudo nextdns-sidecar domains add <domain>...") }
+    let doms = collectDomains(ds).filter { !$0.isEmpty }
+    guard !doms.isEmpty else { fail("usage: sudo nextdns-sidecar domains add <domain>... | -f FILE") }
     for d in doms where !validDomain(d) { fail("error: invalid domain: \(d)") }
     guard let api = NextDNSAPI.load() else { fail("error: cannot read credentials at \(Paths.credFile) (run the installer)") }
     var failures = 0
@@ -68,8 +92,8 @@ func cmdAdd(_ ds: [String]) {
 
 /// delay-add — no sudo, lands after the (root-configured, Bounds-clamped) delay.
 func cmdDelayAdd(_ ds: [String]) {
-    let doms = ds.filter { !$0.isEmpty }
-    guard !doms.isEmpty else { fail("usage: nextdns-sidecar domains delay-add <domain>...") }
+    let doms = collectDomains(ds).filter { !$0.isEmpty }
+    guard !doms.isEmpty else { fail("usage: nextdns-sidecar domains delay-add <domain>... | -f FILE") }
     for d in doms where !validDomain(d) { fail("error: invalid domain: \(d)") }
     dropMarker(Paths.mDelayAdd, doms.joined(separator: "\n"))
     let h = Int(Config.load().clampedDelay / 3600)
@@ -103,15 +127,50 @@ func cmdFuture() {
     }
 }
 
-// MARK: - networklockdown  (arm / disarm / status)
+/// test — no sudo, read-only. Resolve each domain through the SYSTEM resolver and report BLOCKED vs
+/// ALLOWED. Restores nextdns-test with the profile-mode fix (system resolver, not `dig @127.0.0.1`).
+func cmdTest(_ ds: [String]) {
+    var filter = "all", raw: [String] = [], i = 0
+    while i < ds.count {
+        switch ds[i] {
+        case "--blocked": filter = "blocked"
+        case "--allowed": filter = "allowed"
+        case "--all":     filter = "all"
+        case "-f":        i += 1; guard i < ds.count else { fail("error: -f needs a file path") }; raw += ["-f", ds[i]]
+        default:          raw.append(ds[i])
+        }
+        i += 1
+    }
+    let doms = collectDomains(raw).filter { !$0.isEmpty }
+    guard !doms.isEmpty else { fail("usage: nextdns-sidecar domains test [--blocked|--allowed] <domain>... | -f FILE") }
+    var nb = 0, na = 0
+    for d in doms {
+        let blocked = Lockdown.isBlocked(d)
+        if blocked { nb += 1 } else { na += 1 }
+        if filter == "all" || (filter == "blocked" && blocked) || (filter == "allowed" && !blocked) {
+            print("\((blocked ? "BLOCKED" : "ALLOWED").padding(toLength: 8, withPad: " ", startingAt: 0)) \(d)")
+        }
+    }
+    FileHandle.standardError.write(Data("tested \(doms.count): \(nb) blocked, \(na) allowed\n".utf8))
+}
+
+// MARK: - networklockdown  (arm / disarm / status / selftest / reload)
 
 func runNetworkLockdown(_ a: [String]) {
     switch a.first ?? "status" {
-    case "arm":     cmdArm()
-    case "disarm":  cmdDisarm()
-    case "status":  Lockdown.printStatus()
-    default:        fail("usage: nextdns-sidecar networklockdown {arm|disarm|status}")
+    case "arm":      cmdArm()
+    case "disarm":   cmdDisarm()
+    case "status":   Lockdown.printStatus()
+    case "selftest": Lockdown.selfTest()
+    case "reload":   cmdReload()
+    default:         fail("usage: nextdns-sidecar networklockdown {arm|disarm|status|selftest|reload}")
     }
+}
+
+/// reload — sudo. Re-validate + reload the pf ruleset after editing the on-disk tables.
+func cmdReload() {
+    guard geteuid() == 0 else { fail("nextdns-sidecar networklockdown reload: requires root — `sudo nextdns-sidecar networklockdown reload`") }
+    Lockdown.reload()
 }
 
 /// arm — no sudo, tightening. Client-side refuses if the DoH profile is missing (would strand DNS),
@@ -123,6 +182,13 @@ func cmdArm() {
           Arming blocks every other DNS path, so with no encrypted resolver you'd have a total outage.
           Install the profile (System Settings ▸ General ▸ Device Management), confirm with
           `nextdns-sidecar networklockdown status`, then re-run `nextdns-sidecar networklockdown arm`.
+        """)
+    }
+    if !Lockdown.resolvesSystem() {
+        fail("""
+        ✗ refusing to arm: DNS isn't resolving right now (mid captive-portal login?).
+          Arming blocks every public DNS path, so arming now could strand you. Get online normally
+          first, confirm a website loads, then re-run `nextdns-sidecar networklockdown arm`.
         """)
     }
     dropMarker(Paths.mArm)
@@ -167,11 +233,14 @@ func printHelp() {
       nextdns-sidecar domains delay-add <domain>...    allow after the delay     (no sudo)
       nextdns-sidecar domains abort <domain> | --all   cancel queued delayed allow(s)
       nextdns-sidecar domains future                   list pending delayed allows
+      nextdns-sidecar domains test <domain>...         is it blocked? (also -f FILE, --blocked/--allowed)
 
     networklockdown (pf wall forcing DNS through the NextDNS DoH profile):
       nextdns-sidecar networklockdown arm              enforce                   (no sudo — tightening)
       sudo nextdns-sidecar networklockdown disarm      stop enforcing            (sudo — loosening)
       nextdns-sidecar networklockdown status           show state                (no sudo)
+      nextdns-sidecar networklockdown selftest         probe bypass vectors      (no sudo)
+      sudo nextdns-sidecar networklockdown reload      re-load pf after edits    (sudo)
 
     config:
       sudo nextdns-sidecar set-delay "<dur>"           delay-add delay, e.g. "12h" (clamped 8h–168h)

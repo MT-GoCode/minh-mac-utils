@@ -47,7 +47,12 @@ sudo nextdns-sidecar domains add <domain>...     # allow now                    
 nextdns-sidecar domains delay-add <domain>...    # allow after the delay           (no sudo)
 nextdns-sidecar domains abort <domain> | --all   # cancel queued delayed allow(s)  (no sudo, tighten)
 nextdns-sidecar domains future                   # list pending delayed allows     (no sudo)
+nextdns-sidecar domains test <domain>...         # is it blocked? (also -f FILE, --blocked/--allowed)
 ```
+
+All of `block` / `add` / `delay-add` / `test` also accept `-f FILE` (one domain per line, `#` comments).
+`test` resolves each domain through the **system resolver** (→ DoH → NextDNS) and reports BLOCKED
+(`0.0.0.0`/empty) vs ALLOWED; a `/usr/local/bin/nextdns-test` shim aliases it.
 
 `delay-add` lands after the root-configured, baked-clamped delay (default **12h**, range **8h–168h**);
 the tag/target is committed at request time and the daemon applies it — no sudo needed then either.
@@ -56,15 +61,18 @@ the tag/target is committed at request time and the daemon applies it — no sud
 **networklockdown** (the `pf` DNS wall):
 
 ```bash
-nextdns-sidecar networklockdown arm      # enforce           (no sudo, tighten)
-sudo nextdns-sidecar networklockdown disarm   # stop enforcing (sudo, loosen)
-nextdns-sidecar networklockdown status   # show state        (no sudo)
+nextdns-sidecar networklockdown arm        # enforce               (no sudo, tighten)
+sudo nextdns-sidecar networklockdown disarm     # stop enforcing    (sudo, loosen)
+nextdns-sidecar networklockdown status     # show state            (no sudo)
+nextdns-sidecar networklockdown selftest   # probe bypass vectors  (no sudo)
+sudo nextdns-sidecar networklockdown reload     # re-load pf after editing tables (sudo)
 ```
 
-`arm` **refuses if the NextDNS Encrypted-DNS profile is not installed** — arming blocks every other
-DNS path, so with no encrypted resolver you'd have a total outage. `disarm` runs as root and tears
-`pf` down **now** (works even if the daemon is wedged); the DoH profile is untouched, so DNS keeps
-being filtered.
+`arm` **refuses if the NextDNS Encrypted-DNS profile is not installed OR DNS isn't resolving right now**
+(mid captive-portal login) — arming blocks every other DNS path, so either would be a total outage.
+`disarm` runs as root and tears `pf` down **now** (works even if the daemon is wedged); the DoH profile
+is untouched, so DNS keeps being filtered. `selftest` actively probes plain-DNS/DoH/DoT leaks + each
+browser's Secure-DNS policy and reports PASS/FAIL against the armed state.
 
 **config:**
 
@@ -82,11 +90,30 @@ sudo nextdns-sidecar set-delay "12h"     # the delay-add landing delay (clamped 
 4. **State dir** `/Library/Application Support/NextDNSSidecar` with a **user-owned `inbox/`** for the no-sudo markers.
 5. **Validates** the `pf` ruleset with `pfctl -n` (parse only — never enables `pf` or arms).
 6. **Loads** the LaunchDaemon `com.nextdns-sidecar.enforcerd`.
-7. **Checks** (does NOT install) the Encrypted-DNS profile: `arm` is refused until it's present.
+7. **Builds** the hardened resolver profile from your apple.nextdns.io download (prompted, or
+   `--profile-src <file>`), then **checks** (never silently installs) both profiles and prints the exact
+   `open` lines for the missing ones. `arm` is refused until the DoH profile is present.
 
-Install your NextDNS **Encrypted-DNS `.mobileconfig`** from <https://apple.nextdns.io> (System
-Settings ▸ General ▸ Device Management), confirm with `nextdns-sidecar networklockdown status`, then
-`nextdns-sidecar networklockdown arm`.
+## Profiles (the captive-portal fix)
+
+Two profiles you approve in **System Settings ▸ General ▸ Device Management** (macOS can't install a
+hand-authored profile silently). The installer prints `open "<path>"` for each missing one:
+
+- **`NextDNS-hardened.mobileconfig`** — built by `profiles/harden-nextdns-profile.sh` from the
+  `.mobileconfig` you download at <https://apple.nextdns.io>: strips the signature (shows "Unverified" —
+  expected), injects NextDNS anycast `ServerAddresses` (so DoH bootstraps with port 53 firewalled), and
+  adds `OnDemandRules` that resolve `captive.apple.com` et al. over **plaintext, never DoH** — **this is
+  what makes captive portals appear.** The stock profile works too but doesn't handle captive as cleanly.
+- **`profiles/no-browser-doh.mobileconfig`** — forces Secure DNS **off** in every Chromium browser +
+  Firefox so they can't bypass the system resolver (the `pf` DoH-IP blocklist is only a backstop).
+
+Then confirm with `nextdns-sidecar networklockdown status` and `... arm`.
+
+## Uninstall
+
+`sudo ./uninstall.sh` (disarms, boots out the daemon, removes the binary + `nextdns-test` shim + pf
+ruleset + state; keeps credentials/config unless `--purge`). Remove the two profiles yourself in Device
+Management.
 
 ## Post-install layout
 

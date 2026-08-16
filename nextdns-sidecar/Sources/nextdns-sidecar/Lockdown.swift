@@ -106,11 +106,117 @@ enum Lockdown {
         print("  state:        " + (isArmedFlag() ? "ARMED (enforcing)" : "disarmed"))
         print("  pf:           " + (pfEnabled() ? "enabled" : "disabled"))
         print("  pf rules:     " + (pfOursLoaded() ? "loaded" : "not loaded"))
-        if profilePresent() { print("  DoH profile:  installed") }
-        else { print("  DoH profile:  \(red)MISSING\(rst)  (no encrypted resolver — arm is refused)") }
-        let resolves = Proc.capture("/usr/bin/dscacheutil", ["-q", "host", "-a", "name", "apple.com"]).contains("ip_address")
-        print("  resolution:   " + (resolves ? "working" : "NOT resolving"))
+        if profilePresent() {
+            print("  DoH profile:  installed")
+            print("  DoH server:   \(profileURL())")
+        } else {
+            print("  DoH profile:  \(red)MISSING\(rst)  (no encrypted resolver — arm is refused)")
+        }
+        print("  resolution:   " + (resolvesSystem() ? "working" : "NOT resolving"))
         let daemon = !Proc.capture("/bin/launchctl", ["print", "system/\(Paths.label)"]).isEmpty
         print("  daemon:       " + (daemon ? "loaded" : "NOT loaded"))
+    }
+
+    // ---- resolution + profile URL helpers ----
+
+    /// Resolve through the SYSTEM resolver (mDNSResponder → DoH → NextDNS), not `dig`. Used by status,
+    /// selftest, and the arm safety guard.
+    static func resolvesSystem(_ host: String = "apple.com") -> Bool {
+        Proc.capture("/usr/bin/dscacheutil", ["-q", "host", "-a", "name", host]).contains("ip_address")
+    }
+
+    /// The DoH endpoint the installed Encrypted-DNS profile points at (plutil-extracted).
+    static func profileURL() -> String {
+        let u = Proc.capture("/usr/bin/plutil", ["-extract", "DNSSettings.ServerURL", "raw", Paths.profilePlist])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return u.isEmpty ? "(unknown)" : u
+    }
+
+    /// BLOCKED iff the system resolver returns nothing or only 0.0.0.0 (NextDNS's block reply). IPv4 (A)
+    /// only, matching the old nextdns-test; an allowed IPv6-only domain would read BLOCKED (rare).
+    static func isBlocked(_ d: String) -> Bool {
+        let out = Proc.capture("/usr/bin/dscacheutil", ["-q", "host", "-a", "name", d])
+        let real = out.split(separator: "\n").compactMap { line -> String? in
+            let t = line.trimmingCharacters(in: .whitespaces)
+            guard t.hasPrefix("ip_address:") else { return nil }
+            let ip = String(t.dropFirst("ip_address:".count)).trimmingCharacters(in: .whitespaces)
+            return (ip.isEmpty || ip == "0.0.0.0") ? nil : ip
+        }
+        return real.isEmpty
+    }
+
+    // ---- reload (root) + selftest (no sudo) ----
+
+    /// Re-validate + reload the pf ruleset, picking up on-disk table edits without a disarm/arm cycle.
+    static func reload() {
+        if Proc.run(pfctl, ["-n", "-f", Paths.pfConf]) != 0 { fail("ruleset FAILED validation — not reloaded") }
+        Proc.run(pfctl, ["-f", Paths.pfConf]); Proc.run(pfctl, ["-e"])
+        print("Ruleset re-validated and reloaded.")
+    }
+
+    /// Actively probe the real bypass vectors + per-browser DoH policy, report OPEN/CLOSED vs armed state.
+    /// Ported from the old nextdns-lockdown selftest.
+    static func selfTest() {
+        let grn = "\u{1b}[32m", red = "\u{1b}[31m", dim = "\u{1b}[2m", rst = "\u{1b}[0m"
+        func ok(_ s: String)   { print("  \(grn)PASS\(rst) \(s)") }
+        func bad(_ s: String)  { print("  \(red)FAIL\(rst) \(s)") }
+        func note(_ s: String) { print("  \(dim)\(s)\(rst)") }
+        let armed = isArmedFlag()
+        print("== NextDNS Sidecar self-test ==")
+        note(armed ? "state ARMED  -> bypass vectors should be CLOSED"
+                   : "state DISARMED -> bypass vectors will be OPEN (expected when off)")
+        print("")
+
+        for server in ["8.8.8.8", "1.1.1.1"] {
+            let ans = Proc.capture("/usr/bin/dig", ["+time=3", "+tries=1", "@\(server)", "example.com", "+short"])
+                .split(separator: "\n").first.map { String($0).trimmingCharacters(in: .whitespaces) } ?? ""
+            if ans.isEmpty { ok("plain DNS to \(server) is blocked") }
+            else if armed { bad("plain DNS to \(server) LEAKS -> \(ans)") }
+            else { note("plain DNS to \(server) open (\(ans))") }
+        }
+        let doh = Proc.capture("/usr/bin/curl", ["-s", "--max-time", "6", "-H", "accept: application/dns-json",
+                  "https://1.1.1.1/dns-query?name=example.com&type=A"])
+        if doh.isEmpty { ok("DoH to https://1.1.1.1 is blocked") }
+        else if armed { bad("DoH to https://1.1.1.1 LEAKS") }
+        else { note("DoH to https://1.1.1.1 open") }
+
+        if Proc.run("/usr/bin/nc", ["-z", "-G", "3", "-w", "3", "1.1.1.1", "853"]) == 0 {
+            if armed { bad("DoT 853 to 1.1.1.1 reachable") } else { note("DoT 853 to 1.1.1.1 reachable (open)") }
+        } else { ok("DoT 853 to 1.1.1.1 is blocked") }
+
+        if profilePresent() { ok("Encrypted-DNS profile installed (\(profileURL()))") }
+        else { bad("Encrypted-DNS profile MISSING — install the NextDNS .mobileconfig") }
+
+        let browsers: [(String, String, String)] = [
+            ("/Applications/Google Chrome.app", "com.google.Chrome", "Chrome"),
+            ("/Applications/Google Chrome Beta.app", "com.google.Chrome.beta", "Chrome Beta"),
+            ("/Applications/Google Chrome Dev.app", "com.google.Chrome.dev", "Chrome Dev"),
+            ("/Applications/Google Chrome Canary.app", "com.google.Chrome.canary", "Chrome Canary"),
+            ("/Applications/Microsoft Edge.app", "com.microsoft.Edge", "Edge"),
+            ("/Applications/Microsoft Edge Beta.app", "com.microsoft.Edge.Beta", "Edge Beta"),
+            ("/Applications/Microsoft Edge Dev.app", "com.microsoft.Edge.Dev", "Edge Dev"),
+            ("/Applications/Microsoft Edge Canary.app", "com.microsoft.Edge.Canary", "Edge Canary"),
+            ("/Applications/Brave Browser.app", "com.brave.Browser", "Brave"),
+            ("/Applications/Vivaldi.app", "com.vivaldi.Vivaldi", "Vivaldi"),
+            ("/Applications/Opera.app", "com.operasoftware.Opera", "Opera"),
+            ("/Applications/Arc.app", "company.thebrowser.Browser", "Arc"),
+        ]
+        let fm = FileManager.default
+        for (app, dom, lbl) in browsers where fm.fileExists(atPath: app) {
+            let v = Proc.capture("/usr/bin/defaults", ["read", "/Library/Managed Preferences/\(dom)", "DnsOverHttpsMode"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if v == "off" { ok("\(lbl) Secure DNS forced off (policy)") }
+            else { bad("\(lbl) installed but Secure-DNS policy NOT set — install/extend no-browser-doh.mobileconfig") }
+        }
+        if fm.fileExists(atPath: "/Applications/Firefox.app") {
+            let v = Proc.capture("/usr/bin/defaults", ["read", "/Library/Managed Preferences/org.mozilla.firefox", "DNSOverHTTPS"])
+            if v.contains("Enabled = 0") { ok("Firefox DoH off (locked policy)") }
+            else { bad("Firefox installed but DoH policy NOT set — install no-browser-doh.mobileconfig") }
+        }
+
+        if resolvesSystem() { ok("normal resolution works (system resolver)") }
+        else { bad("system resolution failed — DNS may be down (or mid captive-portal login)") }
+        print("")
+        note("Verify filtering in a browser: https://test.nextdns.io should show your profile.")
     }
 }

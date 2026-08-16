@@ -21,8 +21,6 @@ enum Paths {
 
     static let label        = "com.nextdns-sidecar.enforcerd"
     static let profilePlist = "/Library/Managed Preferences/com.apple.dnsSettings.managed.plist"
-    static let binPath      = "/usr/local/bin/nextdns-sidecar"
-    static let logFile      = "/var/log/nextdns-sidecar.log"
 }
 
 /// BAKED delay bounds — compiled in, never read from a file, so a config edit can't push the no-sudo
@@ -119,7 +117,7 @@ func nowEpoch() -> Double { Date().timeIntervalSince1970 }
 
 func isArmedFlag() -> Bool { FileManager.default.fileExists(atPath: Paths.armedFile) }
 
-/// Timestamped daemon log line → stderr (launchd redirects it to Paths.logFile).
+/// Timestamped daemon log line → stderr (launchd redirects it to the log file; see the LaunchDaemon plist).
 func logLine(_ s: String) {
     let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
     FileHandle.standardError.write(Data("\(f.string(from: Date())) \(s)\n".utf8))
