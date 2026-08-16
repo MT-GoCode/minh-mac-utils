@@ -1,0 +1,6 @@
+# fade-play-pause-chrome — a USER-level LaunchAgent (installs into ~/Library/LaunchAgents from a
+# template). Runs as the user, not root; passthrough to its own installer.
+APP_TYPE=passthrough
+APP_NAME=fade-play-pause-chrome
+RUN_AS=user
+CUSTOM_INSTALLER="bash install.sh"

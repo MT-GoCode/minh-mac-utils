@@ -1,0 +1,5 @@
+# betterat — a bash CLI utility. No sparing, no daemon; just a script on PATH.
+APP_TYPE=cli
+APP_NAME=betterat
+CLI=betterat
+provide_bundle() { echo "$APP_DIR/betterat"; }

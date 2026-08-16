@@ -1,0 +1,18 @@
+# stayup — lid-closed-awake toggle. Root-owned GUI app (demonlock compiled-default spare com.minh.stayup)
+# plus a passwordless pmset grant so the app can toggle disablesleep without admin.
+APP_TYPE=gui-app
+APP_NAME=stayup
+BUNDLE=stayup.app
+BUNDLE_ID=com.minh.stayup
+TEAM_ID=BULCQM9J2V
+CLI=stayup
+CLI_EXEC=stayup
+SPARED=no    # compiled-in default spare
+
+provide_bundle() { dl_swift_bundle stayup.app; }
+
+post_install() {
+  dl_write_sudoers stayup \
+    "$(dl_user) ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 1, /usr/bin/pmset -a disablesleep 0"
+  sudo -u "$(dl_user)" open "/Applications/$BUNDLE" 2>/dev/null || true
+}
