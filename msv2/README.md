@@ -50,8 +50,8 @@ sudo ./install.sh
 Self-contained: `install.sh` declares a small manifest and sources the shared
 `../scripts/install-lib.sh`. It builds + signs (Developer ID, team BULCQM9J2V), deploys
 **root-owned** to `/Applications`, symlinks the CLI to `/usr/local/bin/msv2`, and launches.
-msv2 is a **demonlock compiled-in default spare** (root-owned Regime A), so nothing is
-registered at install — it's spared out of the box. `./scripts/build.sh` alone does a quick
+msv2 **registers itself as a demonlock spare at install** (root-owned Regime A) — demonlock ships
+no base list, so each app registers into it. `./scripts/build.sh` alone does a quick
 dev build into `~/Applications`. Uninstall: `sudo ./uninstall.sh`.
 
 ## Requirements

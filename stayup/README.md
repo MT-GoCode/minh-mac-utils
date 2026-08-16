@@ -35,8 +35,8 @@ Self-contained: `install.sh` declares a small manifest and sources the shared
 `../scripts/install-lib.sh`. It builds + signs (Developer ID, team BULCQM9J2V), deploys
 **root-owned** to `/Applications`, installs the `stayup` CLI to `/usr/local/bin`, writes
 `/etc/sudoers.d/stayup` granting passwordless `pmset -a disablesleep 1|0` **and nothing
-else**, and launches. stayup is a **demonlock compiled-in default spare** (root-owned Regime
-A), so it's spared out of the box — nothing is registered at install. Uninstall:
+else**, and launches. stayup **registers itself as a demonlock spare at install** (root-owned
+Regime A) — demonlock ships no base list, so each app registers into it. Uninstall:
 `sudo ./uninstall.sh` (restores normal sleep first).
 
 `./scripts/build.sh` alone just builds+signs into `build/` — it deliberately installs

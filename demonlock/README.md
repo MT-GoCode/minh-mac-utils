@@ -444,7 +444,7 @@ Zones ride the **same engine**: in the map (`demonlock zones`), a save asks **"S
 ## Code signing
 
 Apple Silicon requires a signature to run at all. The installer auto-picks the best identity
-(shared `../sign-identity.sh`) and prints which it used:
+(shared `../signing-ladder.sh`) and prints which it used:
 
 1. **Developer ID Application** — if one is in your login keychain. Best: Apple-rooted, the TCC
    grant persists across rebuilds, survives cert expiry (secure timestamp). *Get one (optional):*

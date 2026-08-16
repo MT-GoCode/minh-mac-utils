@@ -140,7 +140,7 @@ cleaned text still lands on the clipboard — just press ⌘V.)
 ## Code signing
 
 Apple Silicon requires a signature to run at all. `install/build.sh` auto-picks the best
-identity (shared `../sign-identity.sh`) and deep-signs the whole bundle with it:
+identity (shared `../signing-ladder.sh`) and deep-signs the whole bundle with it:
 
 1. **Developer ID Application** (team `BULCQM9J2V`) — if one is in your login keychain. Best:
    Apple-rooted, the TCC grant persists across rebuilds, survives cert expiry (secure timestamp).

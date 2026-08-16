@@ -3,12 +3,13 @@
 # install.sh — install nextdns-sidecar (root). Installs DISARMED; you arm explicitly.
 #
 # Merges the two source tools into ONE Swift binary + ONE root LaunchDaemon:
-#   • NextDNS list manager  (block / add / delay-add / abort / future)   — was nextdns-discipline
-#   • DNS-bypass pf lockdown (networklockdown arm / disarm / status)      — was nextdns-lockdown
+#   • NextDNS list manager  (block / add / delay-add / abort / future / test)      — was nextdns-discipline
+#   • DNS-bypass pf lockdown (networklockdown arm / disarm / status / selftest / reload) — was nextdns-lockdown
 #
 # Safe by construction: validates the pf ruleset with `pfctl -n` before anything loads; does NOT enable
-# pf or arm; does NOT install configuration profiles (it only CHECKS the Encrypted-DNS profile is present).
-# Credentials are preserved across runs unless --reconfigure/--key-file.
+# pf or arm. It BUILDS the hardened DoH profile from your apple.nextdns.io download (--profile-src) and
+# prints the `open` lines for the two profiles, but never SILENTLY installs one — you approve them in
+# System Settings. Credentials are preserved across runs unless --reconfigure/--key-file.
 #
 set -euo pipefail
 
