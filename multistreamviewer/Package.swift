@@ -2,9 +2,9 @@
 import PackageDescription
 
 let package = Package(
-    name: "msv2",
+    name: "multistreamviewer",
     platforms: [.macOS(.v14)],
     targets: [
-        .executableTarget(name: "msv2")
+        .executableTarget(name: "multistreamviewer")
     ]
 )

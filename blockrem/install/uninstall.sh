@@ -8,12 +8,12 @@ USER_NAME="${SUDO_USER:-$(stat -f %Su /dev/console)}"
 USER_UID="$(id -u "$USER_NAME")"
 
 echo "▸ unloading services"
-launchctl bootout "gui/$USER_UID/com.blockrem.agent" 2>/dev/null || true
-launchctl bootout system/com.blockrem.enforcerd 2>/dev/null || true
+launchctl bootout "gui/$USER_UID/com.minh.blockrem.agent" 2>/dev/null || true
+launchctl bootout system/com.minh.blockrem.enforcerd 2>/dev/null || true
 
 echo "▸ removing files"
-rm -f /Library/LaunchDaemons/com.blockrem.enforcerd.plist
-rm -f /Library/LaunchAgents/com.blockrem.agent.plist
+rm -f /Library/LaunchDaemons/com.minh.blockrem.enforcerd.plist
+rm -f /Library/LaunchAgents/com.minh.blockrem.agent.plist
 rm -rf /Applications/Blockrem.app
 rm -f /usr/local/bin/blockrem
 

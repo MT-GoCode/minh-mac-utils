@@ -16,7 +16,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$HERE"
 APP="wtalk.app"
-BUNDLE_ID="com.wtalk.daemon"
+BUNDLE_ID="com.minh.wtalk"
 
 PY="$HERE/.venv/bin/python"
 [ -x "$PY" ] || { echo "✗ no $HERE/.venv — run ./setup.sh first (creates the venv + deps)"; exit 1; }

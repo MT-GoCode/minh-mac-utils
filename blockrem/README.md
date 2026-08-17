@@ -19,7 +19,7 @@ sudo ./install.sh          # builds + signs as you (Developer ID ladder), deploy
 blockrem perm-ask          # grant Accessibility — needed to block keyboard/mouse
 ```
 
-The installer registers blockrem (`com.blockrem`) as a **demonlock spare** so a demonlock lockout won't
+The installer registers blockrem (`com.minh.blockrem`) as a **demonlock spare** so a demonlock lockout won't
 force-close the overlay agent; confirm with `demonlock test-lockout`. (Harmless if demonlock isn't installed.)
 
 Uninstall: `sudo ./uninstall.sh` (add `--purge` to also delete the schedule). The visual cover works
@@ -77,15 +77,15 @@ blockrem snooze "at U0800"       # no blocks until Sunday 8 AM
 
 ## How it works
 
-Two processes from one signed bundle (`com.blockrem`), mirroring demonlock's shape:
+Two processes from one signed bundle (`com.minh.blockrem`), mirroring demonlock's shape:
 
-- **Root daemon** (`com.blockrem.enforcerd`, LaunchDaemon) — reads the user-owned `schedule.json`,
+- **Root daemon** (`com.minh.blockrem.enforcerd`, LaunchDaemon) — reads the user-owned `schedule.json`,
   polls every second, prunes finished one-shots, computes the current block (honoring snooze), and
   publishes `active.json`. It also runs a **watchdog**: KeepAlive restarts a crashed agent, and the
   daemon re-bootstraps the agent if you `launchctl bootout` it (which a non-root user can do to their
   own GUI agent). The daemon lives in the `system` domain, so you can't stop it without sudo — that's
   what keeps reviving the overlay.
-- **GUI agent** (`com.blockrem.agent`, LaunchAgent, `LSUIElement`) — renders *only* from
+- **GUI agent** (`com.minh.blockrem.agent`, LaunchAgent, `LSUIElement`) — renders *only* from
   `active.json`: a shield window per display at `CGShieldingWindowLevel` re-maximized every tick, plus
   a `CGEventTap` that swallows input while a block is active. Denies the polite Cmd-Q during a block.
 

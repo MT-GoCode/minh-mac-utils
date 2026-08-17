@@ -31,7 +31,7 @@ final class Hotkeys {
             callback: { _, type, event, _ in Hotkeys.callback(type: type, event: event) },
             userInfo: nil)
         guard let tap else {
-            NSLog("msv2: event tap failed — grant Accessibility and relaunch")
+            NSLog("multistreamviewer: event tap failed — grant Accessibility and relaunch")
             return
         }
         let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)

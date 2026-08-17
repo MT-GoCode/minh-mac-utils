@@ -21,7 +21,7 @@ final class SettingsWindow: ObservableObject {
             let w = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 520, height: 720),
                 styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-            w.title = "msv2 Settings"
+            w.title = "multistreamviewer Settings"
             w.contentView = NSHostingView(
                 rootView: SettingsView()
                     .environmentObject(Config.shared)

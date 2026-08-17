@@ -1,6 +1,6 @@
-# msv2 — a scoped ⌘⇥ switcher
+# multistreamviewer — a scoped ⌘⇥ switcher
 
-Not a window mover. msv2 **never moves, hides, or parks a window** — the one thing every
+Not a window mover. multistreamviewer **never moves, hides, or parks a window** — the one thing every
 previous approach got wrong. It's AltTab for macOS with one twist: a private ⌘⇥ that only
 offers the windows in your current *group*. Everything else keeps living exactly where it
 is; you just stop tabbing to it until you switch groups.
@@ -31,7 +31,7 @@ wrong tag, fixed by re-tagging.
   Settings…, Quit.
 - **Settings** (menu → Settings…): overview grid width/height · app priority list ·
   excluded apps · seed commands (toggle + edit) · permission status with grant buttons.
-  Stored in `~/Library/Application Support/msv2/config.json`.
+  Stored in `~/Library/Application Support/multistreamviewer/config.json`.
 
 No numbered hotkeys — you navigate by the ⌘⌥ overview and by ⌘⇥. New windows join
 whatever desktop is current; focusing a window from another desktop (⌘⇥, Dock, a
@@ -49,8 +49,8 @@ sudo ./install.sh
 
 Self-contained: `install.sh` declares a small manifest and sources the shared
 `../scripts/install-lib.sh`. It builds + signs (Developer ID, team BULCQM9J2V), deploys
-**root-owned** to `/Applications`, symlinks the CLI to `/usr/local/bin/msv2`, and launches.
-msv2 **registers itself as a demonlock spare at install** (root-owned Regime A) — demonlock ships
+**root-owned** to `/Applications`, symlinks the CLI to `/usr/local/bin/multistreamviewer`, and launches.
+multistreamviewer **registers itself as a demonlock spare at install** (root-owned Regime A) — demonlock ships
 no base list, so each app registers into it. `./scripts/build.sh` alone does a quick
 dev build into `~/Applications`. Uninstall: `sudo ./uninstall.sh`.
 
@@ -84,5 +84,5 @@ Accessibility.
 
 ```sh
 swift build -c release
-.build/release/msv2
+.build/release/multistreamviewer
 ```

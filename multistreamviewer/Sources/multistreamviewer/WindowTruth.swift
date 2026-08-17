@@ -60,7 +60,7 @@ enum WindowTruth {
     //                              of their parent window and so appear in no window list
     //
     // AltTab's allow-list also accepts AXDialog, because macOS reports minimized and
-    // ⌘H-hidden windows with that subrole. msv2 never needs to: only ONSCREEN windows are
+    // ⌘H-hidden windows with that subrole. multistreamviewer never needs to: only ONSCREEN windows are
     // ever judged here, and a minimized or hidden window is offscreen by definition. The
     // plain subrole is therefore enough — and it also drops the standalone AXDialog file
     // panels that AltTab's wider list lets through.
@@ -98,7 +98,7 @@ enum WindowTruth {
     }
 
     /// One AX sweep of an app, recording a verdict for every window it admits to having.
-    /// Returns false if the app could not be asked at all — a wedged app, or msv2 running
+    /// Returns false if the app could not be asked at all — a wedged app, or multistreamviewer running
     /// before the Accessibility grant. That must never empty the switcher, so the caller
     /// leaves that app's windows alone rather than dropping them.
     @MainActor
@@ -147,7 +147,7 @@ enum WindowTruth {
         return nil
     }
 
-    /// `msv2 windows` — every on-screen candidate and whether the switcher takes it. The
+    /// `multistreamviewer windows` — every on-screen candidate and whether the switcher takes it. The
     /// check for everything above: open Chrome's ⌘F bar, or a save dialog, and it must
     /// print DROP while the window it belongs to still prints KEEP.
     @MainActor

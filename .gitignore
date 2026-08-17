@@ -53,8 +53,8 @@ demonlock/yourpolicies.txt
 # ---------- remote-agent-connector (Swift, successor to foreman-uplink) ----------
 remote-agent-connector/RemoteAgentConnector.app/
 
-# ---------- msv2 / stayup (Swift) ----------
-msv2/.build/
-msv2/build/
+# ---------- multistreamviewer / stayup (Swift) ----------
+multistreamviewer/.build/
+multistreamviewer/build/
 stayup/.build/
 stayup/build/

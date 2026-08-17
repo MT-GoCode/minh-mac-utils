@@ -69,7 +69,7 @@ longer builds the app or touches `~/.local/bin` — install is a root operation 
 3. Installs the CLI wrapper `/usr/local/bin/wtalk` → the bundle's binary.
 4. **Seeds `~/.wtalk`** (user-owned DATA) with `.env`, `config.txt`, and `prompts/` — only
    if absent, so it never clobbers your edits/keys.
-5. Installs the **LaunchAgent** (`com.wtalk.agent`, root-owned plist in
+5. Installs the **LaunchAgent** (`com.minh.wtalk.agent`, root-owned plist in
    `/Library/LaunchAgents`) and bootstraps it into your `gui/<uid>` session (run at login,
    kept alive).
 
@@ -123,7 +123,7 @@ swallowed while dictating).
 ## Permissions (one-time)
 
 The installer freezes a real **`wtalk.app`** bundle (code-signed, bundle id
-`com.wtalk.daemon`) and runs it under launchd. So macOS treats it like any normal
+`com.minh.wtalk`) and runs it under launchd. So macOS treats it like any normal
 app: permissions show up as **“wtalk”** (not a hidden Python path), and it **prompts**
 you. Grant these in **System Settings → Privacy & Security**:
 
@@ -178,8 +178,8 @@ sudo ./uninstall.sh            # boots out the agent, removes the app + plist + 
 # add --purge to also delete ~/.wtalk:
 sudo ./uninstall.sh --purge
 # optional — revoke the TCC grants:
-tccutil reset Microphone com.wtalk.daemon
-tccutil reset Accessibility com.wtalk.daemon
+tccutil reset Microphone com.minh.wtalk
+tccutil reset Accessibility com.minh.wtalk
 # (the Karabiner F5 rule is yours — remove it in Karabiner if you want)
 ```
 
@@ -212,7 +212,7 @@ wtalk help
 
 Install/uninstall are **root operations** (the bundle is deployed root-owned), so they're
 shell scripts, not `wtalk` subcommands. Everything else is dispatched by the frozen binary
-itself. One mechanism: a launchd LaunchAgent (`com.wtalk.agent`, runs at login, kept alive) —
+itself. One mechanism: a launchd LaunchAgent (`com.minh.wtalk.agent`, runs at login, kept alive) —
 `wtalk restart` and the installers all act on that same agent, so "is it running?" is never
 ambiguous.
 

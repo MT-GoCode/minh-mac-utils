@@ -12,7 +12,7 @@ struct SafeApp: Codable, Equatable {
     var rootOwned: Bool
 }
 
-/// The effective spare list = compiled defaults + user additions − user removals, with com.demonlock
+/// The effective spare list = compiled defaults + user additions − user removals, with com.minh.demonlock
 /// forced present (removing it kills the agent on lockout → nuclear WindowServer loop). Plus the CLI
 /// (`safe-apps …`) and the daemon-side registry tick that applies delayed registrations.
 enum SafeApps {
@@ -24,11 +24,11 @@ enum SafeApps {
     /// (each installer runs `demonlock safe-apps register …`; the no-installer third-party set via
     /// demonlock/register-recommended-spares.sh). So demonlock carries no knowledge of other apps.
     static let defaults: [SafeApp] = [
-        SafeApp(name: "demonlock", bid: "com.demonlock", tid: ownTeam, rootOwned: true),
+        SafeApp(name: "demonlock", bid: "com.minh.demonlock", tid: ownTeam, rootOwned: true),
     ]
 
     /// Never removable — losing this spare is self-defeating.
-    static let unremovableBIDs: Set<String> = ["com.demonlock"]
+    static let unremovableBIDs: Set<String> = ["com.minh.demonlock"]
 
     /// Baked, unremovable blocklist: bundle ids `register` refuses. Browsers (every variant) + the Paseo
     /// desktop UI — sparing any of them would defeat the whole point of a lockout. [Minh]
@@ -46,13 +46,13 @@ enum SafeApps {
 
     // MARK: - effective list
 
-    /// defaults + user adds (by bid, user wins) − user removes, com.demonlock forced present.
+    /// defaults + user adds (by bid, user wins) − user removes, com.minh.demonlock forced present.
     static func effective(_ settings: Settings = Settings.load()) -> [SafeApp] {
         var byBID: [String: SafeApp] = [:]
         for a in defaults { byBID[a.bid] = a }
         for a in settings.safeAppsUser { byBID[a.bid] = a }
         for bid in settings.safeAppsRemoved where !unremovableBIDs.contains(bid) { byBID.removeValue(forKey: bid) }
-        if byBID["com.demonlock"] == nil, let d = defaults.first(where: { $0.bid == "com.demonlock" }) { byBID[d.bid] = d }
+        if byBID["com.minh.demonlock"] == nil, let d = defaults.first(where: { $0.bid == "com.minh.demonlock" }) { byBID[d.bid] = d }
         return byBID.values.sorted { $0.name < $1.name }
     }
 
@@ -174,7 +174,7 @@ enum SafeApps {
         if reg.pending.count != before { reg.save() }
     }
 
-    /// Remove by NAME: drop a user entry, or tombstone a compiled default (never com.demonlock).
+    /// Remove by NAME: drop a user entry, or tombstone a compiled default (never com.minh.demonlock).
     static func applyRemove(name: String) {
         Settings.mutate { s in
             if let u = s.safeAppsUser.first(where: { $0.name == name }) {

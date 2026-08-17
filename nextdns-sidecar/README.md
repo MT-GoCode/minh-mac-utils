@@ -89,7 +89,7 @@ sudo nextdns-sidecar set-delay "12h"     # the delay-add landing delay (clamped 
 3. **Credentials** — prompts for your **NextDNS Profile ID + API key** on first install (or `--reconfigure` / `--key-file <path>` / `--profile <id>` to change them); kept across runs otherwise.
 4. **State dir** `/Library/Application Support/NextDNSSidecar` with a **user-owned `inbox/`** for the no-sudo markers.
 5. **Validates** the `pf` ruleset with `pfctl -n` (parse only — never enables `pf` or arms).
-6. **Loads** the LaunchDaemon `com.nextdns-sidecar.enforcerd`.
+6. **Loads** the LaunchDaemon `com.minh.nextdns-sidecar.enforcerd`.
 7. **Builds** the hardened resolver profile from your apple.nextdns.io download (prompted, or
    `--profile-src <file>`), then **checks** (never silently installs) both profiles and prints the exact
    `open` lines for the missing ones. `arm` is refused until the DoH profile is present.
@@ -123,7 +123,7 @@ Management.
 | `/usr/local/etc/nextdns-sidecar/` | root:wheel | 700 | pf ruleset/tables + `config.json` |
 | `/usr/local/etc/nextdns-sidecar/credentials` | root:wheel | **600** | NextDNS Profile ID + API key (never committed) |
 | `/Library/Application Support/NextDNSSidecar/inbox/` | **you** | 700 | user-owned marker inbox (no-sudo verbs) |
-| `/Library/LaunchDaemons/com.nextdns-sidecar.enforcerd.plist` | root:wheel | 644 | the root daemon |
+| `/Library/LaunchDaemons/com.minh.nextdns-sidecar.enforcerd.plist` | root:wheel | 644 | the root daemon |
 
 ## Credentials (never in this repo)
 

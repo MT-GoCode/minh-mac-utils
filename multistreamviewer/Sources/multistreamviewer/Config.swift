@@ -39,7 +39,7 @@ final class Config: ObservableObject {
 
     private static var file: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("msv2/config.json")
+            .appendingPathComponent("multistreamviewer/config.json")
     }
 
     init() {

@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.blockrem.agent</string>
+    <string>com.minh.demonlock.enforcerd</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Applications/Blockrem.app/Contents/MacOS/blockrem</string>
-        <string>agent</string>
+        <string>/Applications/Demonlock.app/Contents/MacOS/demonlock</string>
+        <string>enforcerd</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -16,8 +16,8 @@
     <key>ThrottleInterval</key>
     <integer>2</integer>
     <key>StandardOutPath</key>
-    <string>/tmp/blockrem-agent.log</string>
+    <string>/Library/Application Support/Demonlock/logs/enforcerd.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/blockrem-agent.log</string>
+    <string>/Library/Application Support/Demonlock/logs/enforcerd.log</string>
 </dict>
 </plist>

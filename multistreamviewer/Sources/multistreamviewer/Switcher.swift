@@ -3,7 +3,7 @@ import SwiftUI
 
 // The ⌘⇥ switcher, AltTab-style but scoped: it only offers windows in the current
 // group. Hold ⌘, press ⇥ / ⇧⇥ / arrows to move the selection, release ⌘ to commit, esc
-// to cancel. This is the whole point of msv2 — no window is ever moved or hidden; the
+// to cancel. This is the whole point of multistreamviewer — no window is ever moved or hidden; the
 // switcher simply filters what you can ⌘⇥ to.
 @MainActor
 final class Switcher: ObservableObject {

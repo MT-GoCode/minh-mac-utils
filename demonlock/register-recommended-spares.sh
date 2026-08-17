@@ -3,7 +3,7 @@
 # this repo (keyboard remapper, launcher, etc.) as demonlock spares, so a lockout doesn't kill them.
 #
 # demonlock ships with NO base spare list except itself — every other app is registered dynamically.
-# Your own apps (msv2/stayup/wtalk/remote-agent-connector) self-register from their own installers; this
+# Your own apps (multistreamviewer/stayup/wtalk/remote-agent-connector) self-register from their own installers; this
 # script is the curated add-on set for the third-party apps that can't. Run once after installing
 # demonlock (and again if you ever wipe demonlock's settings, which drops dynamic registrations).
 #

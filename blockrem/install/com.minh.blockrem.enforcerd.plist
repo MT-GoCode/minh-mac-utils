@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.blockrem.enforcerd</string>
+    <string>com.minh.blockrem.enforcerd</string>
     <key>ProgramArguments</key>
     <array>
         <string>/Applications/Blockrem.app/Contents/MacOS/blockrem</string>
