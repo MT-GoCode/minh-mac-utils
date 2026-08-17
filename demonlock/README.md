@@ -1,7 +1,5 @@
 # demonlock — user guide
 
-keep my demons at bay
-
 A conditional macOS locker. One root daemon watches **where you are, what time it is, and which
 Wi‑Fi is nearby**, evaluates a single **allow‑policy** you write, and when you're **out of policy**
 it shows a 10‑second countdown and then **force‑closes your GUI apps** (your SSH/tmux sessions
