@@ -129,10 +129,22 @@ PROFILES_DIR="$SRC/profiles"
 HARDENED="$PROFILES_DIR/NextDNS-hardened.mobileconfig"
 NOBROWSER="$PROFILES_DIR/no-browser-doh.mobileconfig"
 
-# No --profile-src? Offer to build the hardened profile now (blank = skip, use the stock profile).
-if [ -z "$PROFILE_SRC" ] && [ -e /dev/tty ]; then
-    printf "Path to the .mobileconfig you downloaded from https://apple.nextdns.io (blank to skip hardening): " > /dev/tty
+dns_installed()     { [ -f "/Library/Managed Preferences/com.apple.dnsSettings.managed.plist" ]; }
+browser_installed() { profiles show 2>/dev/null | grep -q 'com.minh.nextdnslockdown.nobrowserdoh'; }
+
+# The DoH resolver profile is REQUIRED — NextDNS IS the point; without it there's no encrypted resolver
+# and `arm` refuses. Already installed → keep it (re-harden only if you pass a new --profile-src). None
+# installed → you MUST supply the .mobileconfig from apple.nextdns.io. There is no "skip".
+if [ -z "$PROFILE_SRC" ] && ! dns_installed && [ -e /dev/tty ]; then
+    printf "Path to the .mobileconfig from https://apple.nextdns.io (REQUIRED — no DoH profile installed): " > /dev/tty
     read -r PROFILE_SRC < /dev/tty || true
+fi
+if [ -z "$PROFILE_SRC" ] && ! dns_installed; then
+    echo "✗ the NextDNS DoH resolver profile is required and none is installed." >&2
+    echo "  NextDNS is the whole point of this tool — refusing to finish a no-op install." >&2
+    echo "  Download yours from https://apple.nextdns.io, then re-run:" >&2
+    echo "    sudo ./nextdns-sidecar/install.sh --profile-src <file>" >&2
+    exit 1
 fi
 if [ -n "$PROFILE_SRC" ]; then
     PROFILE_SRC="${PROFILE_SRC/#\~/$TARGET_HOME}"
@@ -143,8 +155,6 @@ if [ -n "$PROFILE_SRC" ]; then
 fi
 
 echo ">> configuration profiles  (you approve these — macOS can't script it)"
-dns_installed()     { [ -f "/Library/Managed Preferences/com.apple.dnsSettings.managed.plist" ]; }
-browser_installed() { profiles show 2>/dev/null | grep -q 'com.minh.nextdnslockdown.nobrowserdoh'; }
 NEED_DNS=0; NEED_BROWSER=0
 dns_installed     && echo "   DoH resolver profile:  installed" || { echo "   DoH resolver profile:  NOT installed"; NEED_DNS=1; }
 browser_installed && echo "   browser-DoH profile:   installed" || { echo "   browser-DoH profile:   NOT installed"; NEED_BROWSER=1; }
