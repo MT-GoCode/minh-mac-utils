@@ -9,6 +9,45 @@ regain it only via demonlock's **delay-gated admin release valve** — no passwo
 the wait *is* the gate). Nothing secret is committed — installers scaffold the credential files on
 the target machine and you fill them in.
 
+## Reinstall / uninstall (quick reference)
+
+Run from a **normal Terminal, not a root shell** (the installers refuse `SUDO_USER=root`). Run `sudo -v`
+first so you enter your password once. Full step-by-step setup (permissions + secrets) is in
+[Fresh-machine setup](#fresh-machine-setup-in-order) below.
+
+**Uninstall everything:**
+```bash
+cd ~/code/minh-mac-utils
+sudo -v
+sudo nextdns-sidecar networklockdown disarm
+sudo demonlock disarm
+rac teardown
+sudo ./nextdns-sidecar/uninstall.sh
+sudo ./wtalk/uninstall.sh
+sudo ./msv2/uninstall.sh
+sudo ./stayup/uninstall.sh
+sudo ./remote-agent-connector/uninstall.sh
+./scripts/unset-paseo-daemon.sh
+rm -f ~/.local/bin/chrome-browser-fleet
+sudo ./demonlock/uninstall.sh
+```
+
+**Reinstall everything:**
+```bash
+cd ~/code/minh-mac-utils && git pull
+sudo -v
+sudo ./demonlock/install.sh
+sudo ./msv2/install.sh
+sudo ./stayup/install.sh
+sudo ./remote-agent-connector/install.sh
+./wtalk/setup.sh
+sudo ./wtalk/install.sh
+sudo ./nextdns-sidecar/install.sh --profile-src ~/Downloads/NextDNS-*.mobileconfig
+./agentic-browser-setup/install.sh
+./scripts/setup-paseo-daemon.sh
+sudo ./demonlock/register-recommended-spares.sh
+```
+
 ## The tools
 
 | Tool | What it does | Install | Root? |
