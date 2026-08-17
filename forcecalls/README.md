@@ -92,6 +92,7 @@ forcecalls remove <name|id>                                  # queued; lands aft
 forcecalls abort                                             # cancel every queued removal
 forcecalls testcall <+E.164|name>                            # dial now, exactly as a scheduled call would
 forcecalls presence                                          # are you active enough for a call to fire?
+forcecalls selftest                                          # assert the schedule math (no side effects)
 forcecalls help
 ```
 
