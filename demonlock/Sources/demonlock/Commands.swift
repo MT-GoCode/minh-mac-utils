@@ -1,4 +1,5 @@
 import Foundation
+import ApplicationServices   // AXIsProcessTrusted (perm-ask accessibility check)
 
 // MARK: - Gate
 
@@ -202,7 +203,33 @@ func runArm() {
     // grant targets the go-w, root-owned BUNDLE binary (not the /usr/local/bin wrapper, whose dir could
     // be user-writable → arbitrary root) [review H4]. Run as you → re-exec through `sudo -n`.
     if geteuid() != 0 {
-        let rc = Proc.run("/usr/bin/sudo", ["-n", Paths.binaryPath, "arm"])
+        // Readiness gate — runs here in the USER context (before the arg-exact passwordless re-exec, so
+        // --force never has to reach that grant). Read the world-readable published state.
+        let force = CommandLine.arguments.contains("--force")
+        let snap = StateStore.read()
+        let valveReady = snap?.releaseValve?.configured == true
+        let policySet  = !(snap?.policyString.isEmpty ?? true)
+        let locOK      = !(snap?.health.needsPermAsk ?? false)
+        var warns: [String] = []
+        if !policySet { warns.append("no policy set — you'll be BLOCKED the moment you arm (`sudo demonlock setpolicy '…'`)") }
+        if !locOK     { warns.append("Location not granted — the agent can't sense, so you fail-closed (`demonlock perm-ask`)") }
+        // The dangerous one: arm REVOKES your admin. With no release valve configured you'd have no
+        // delay-gated way back to sudo (only a spare admin account). Refuse unless --force.
+        if !valveReady && !force {
+            fail("""
+            ✗ refusing to arm: arm REVOKES your admin, and the release valve isn't configured — you'd have
+              NO delay-gated way back to sudo (only a spare admin account could recover you).
+              Configure it first:
+                sudo demonlock admin-release-valve set-gate-policy "IN_POLICY"
+                sudo demonlock admin-release-valve set-delay "30m"
+                sudo demonlock admin-release-valve set-max-request-duration "1h"
+            \(warns.isEmpty ? "" : "  Also: " + warns.joined(separator: "; ") + "\n")  Override (e.g. you keep a spare admin):  demonlock arm --force
+            """)
+        }
+        if !warns.isEmpty {
+            FileHandle.standardError.write(Data(("⚠️  arming anyway, but:\n  • " + warns.joined(separator: "\n  • ") + "\n").utf8))
+        }
+        let rc = Proc.run("/usr/bin/sudo", ["-n", Paths.binaryPath, "arm"])   // plain `arm` → passwordless grant intact
         if rc != 0 { fail("✗ couldn't arm without admin — the passwordless grant may be missing (reinstall), or run `sudo demonlock arm`.") }
         exit(0)
     }
@@ -779,16 +806,28 @@ func dropDelayMarker(_ path: String, payload: String = "") {
 // MARK: - perm-ask (user)
 
 func runPermAsk() {
-    print("Demonlock's agent needs Location permission (it runs as your user).")
-    if let h = StateStore.read()?.health {
-        print("  current: location=\(h.locState), needs-permission=\(h.needsPermAsk ? "YES" : "no")")
+    let h = StateStore.read()?.health
+    let locNeeded = h?.needsPermAsk ?? true        // unknown (agent not reporting) → ask
+    let axTrusted = AXIsProcessTrusted()           // same check settings-guard uses
+    if !locNeeded && axTrusted {
+        print("✓ Location and Accessibility are already granted — nothing to do.")
+        return
     }
-    print("Opening System Settings ▸ Privacy & Security ▸ Location Services — turn ON \"Demonlock\".")
-    Proc.run("/usr/bin/open", ["x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices"])
-    print("")
-    print("The settings-guard also needs ACCESSIBILITY (to slam FileVault / Device Management panes).")
-    print("Opening Privacy & Security ▸ Accessibility — turn ON \"Demonlock\" there too.")
-    Proc.run("/usr/bin/open", ["x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"])
+    print("Demonlock's agent needs these permissions (it runs as your user).")
+    if let h = h { print("  current: location=\(h.locState), needs-permission=\(h.needsPermAsk ? "YES" : "no"), accessibility=\(axTrusted ? "granted" : "NOT granted")") }
+    if locNeeded {
+        print("Opening System Settings ▸ Privacy & Security ▸ Location Services — turn ON \"Demonlock\".")
+        Proc.run("/usr/bin/open", ["x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices"])
+    } else {
+        print("Location: already granted ✓")
+    }
+    if !axTrusted {
+        print("The settings-guard also needs ACCESSIBILITY (to slam FileVault / Device Management panes).")
+        print("Opening Privacy & Security ▸ Accessibility — turn ON \"Demonlock\" there too.")
+        Proc.run("/usr/bin/open", ["x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"])
+    } else {
+        print("Accessibility: already granted ✓")
+    }
 }
 
 // MARK: - test-lockout (user) — do the lockout kill on demand, to verify it works
