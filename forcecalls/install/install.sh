@@ -21,6 +21,38 @@ SUPPORT="/Library/Application Support/Forcecalls"
 BIN=/usr/local/libexec/forcecalls
 cd "$HERE"
 
+# ── credentials (collected BEFORE anything is written) ──────────────────────────────────────────
+# Gathered up front, on purpose: a prompt that aborts must leave NO half-seeded root-owned directory
+# behind. Falls back to env vars so a non-interactive run (an agent, a script, CI) works instead of
+# dying on a read with no TTY.
+NEED_CREDS=yes
+if [ -f "$SUPPORT/creds.json" ] && [ "${1:-}" != "--reset-creds" ]; then NEED_CREDS=no; fi
+if [ "$NEED_CREDS" = yes ]; then
+    if [ -t 0 ]; then
+        echo "▸ SignalWire credentials — from your Space's API tab. The token is not echoed."
+        [ -n "${SW_SPACE:-}"    ] || read -r    -p "  Space (e.g. minh.signalwire.com): " SW_SPACE
+        [ -n "${SW_PROJECT:-}"  ] || read -r    -p "  Project ID: " SW_PROJECT
+        [ -n "${SW_TOKEN:-}"    ] || { read -r -s -p "  API token: " SW_TOKEN; echo; }
+        [ -n "${SW_CALLERID:-}" ] || read -r    -p "  Caller ID the other person sees (+E.164): " SW_CALLERID
+        [ -n "${SW_ENDPOINT:-}" ] || read -r    -p "  Your SIP endpoint (e.g. sip:me@minh.sip.signalwire.com): " SW_ENDPOINT
+    else
+        echo "▸ non-interactive install — reading credentials from the environment"
+    fi
+    MISSING=""
+    for v in SW_SPACE SW_PROJECT SW_TOKEN SW_CALLERID SW_ENDPOINT; do
+        [ -n "${!v:-}" ] || MISSING="$MISSING $v"
+    done
+    if [ -n "$MISSING" ]; then
+        echo "✗ missing credential(s):$MISSING"
+        echo "  run this from a terminal to be prompted, or pre-set them:"
+        echo "    sudo SW_SPACE=… SW_PROJECT=… SW_TOKEN=… SW_CALLERID=… SW_ENDPOINT=… ./install.sh"
+        echo "  nothing was installed."
+        exit 1
+    fi
+else
+    echo "▸ keeping existing credentials (re-run with --reset-creds to replace them)"
+fi
+
 # ── build ────────────────────────────────────────────────────────────────────────────────────────
 # Same signing strategy as the rest of minh-mac-utils: build from source only when you actually hold
 # a Developer ID cert (checked in the USER's keychain, since we're root); otherwise deploy the
@@ -76,21 +108,9 @@ cat > "$SUPPORT/settings.json" <<EOF
 }
 EOF
 
-# ── credentials (stdin, never committed) ─────────────────────────────────────────────────────────
-# Collected once here and written root-owned 0600. You can't read them back afterwards, so a forced
-# call can't be quietly defanged by editing the keys out — and nothing secret lives in the repo.
-if [ -f "$SUPPORT/creds.json" ] && [ "${1:-}" != "--reset-creds" ]; then
-    echo "▸ keeping existing credentials (re-run with --reset-creds to replace them)"
-else
-    echo "▸ SignalWire credentials — from your Space's API tab. The token is not echoed."
-    read -r -p "  Space (e.g. minh.signalwire.com): " SW_SPACE
-    read -r -p "  Project ID: " SW_PROJECT
-    read -r -s -p "  API token: " SW_TOKEN; echo
-    read -r -p "  Caller ID the other person sees (+E.164): " SW_CALLERID
-    read -r -p "  Your SIP endpoint (e.g. sip:me@minh.sip.signalwire.com): " SW_ENDPOINT
-    for v in SW_SPACE SW_PROJECT SW_TOKEN SW_CALLERID SW_ENDPOINT; do
-        [ -n "${!v}" ] || { echo "✗ $v can't be empty"; exit 1; }
-    done
+# Root-owned 0600, and you can't read it back — so a forced call can't be quietly defanged by
+# editing the keys out, and nothing secret ever lives in the repo.
+if [ "$NEED_CREDS" = yes ]; then
     umask 077
     cat > "$SUPPORT/creds.json" <<EOF
 {
