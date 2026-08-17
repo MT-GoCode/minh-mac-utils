@@ -85,33 +85,8 @@ final class AgentApp: NSObject, NSApplicationDelegate {
         dpSeeded = true
     }
 
-    /// A queued delayed change's panel section (only shown while one is pending).
-    private func delayedText(_ label: String, _ d: DelayedStatus?) -> String {
-        guard let d, d.pending else { return "" }
-        let left = d.applyAtEpoch.map { max(0, Int($0 - nowEpoch())) } ?? 0
-        var out = "\n\nDELAYED \(label.uppercased())\nQUEUED — lands in \(left/3600)h\(left%3600/60)m"
-        if let p = d.payloadPreview { out += "\n  \(p)" }
-        return out
-    }
-
-    /// The RELEASE VALVE section shown in the panel (phase + delay/duration + the window-policy tree).
-    private func releaseValveText(_ rv: RVStatus?) -> String {
-        guard let rv, rv.configured else { return "" }
-        func left(_ e: Double?) -> String {
-            e.map { let s = max(0, Int($0 - nowEpoch())); return "\(s/3600)h\(s%3600/60)m\(s%60)s" } ?? "?"
-        }
-        let line: String
-        switch rv.phase {
-        case "granted": line = "GRANTED — admin held, \(left(rv.grantExpiresEpoch)) left"
-        case "delay":   line = "REQUEST pending — in delay, eligible in \(left(rv.eligibleAtEpoch))"
-        case "waiting": line = "REQUEST pending — eligible, waiting for the window"
-        default:        line = "idle (no active request)"
-        }
-        var out = "\n\nRELEASE VALVE\n\(line)"
-        if let d = rv.delaySec, let u = rv.maxRequestDurationSec { out += "\n  delay \(Int(d/60))m · max grant \(Int(u/60))m" }
-        if let t = rv.windowTree { out += "\n  gate eval:\n" + t.asText(indent: 1) }
-        return out
-    }
+    // (The panel body is now the shared `statusBody(s)` — the panel-specific delayed/release-valve text
+    //  renderers were removed; transition alerts still use handleDelayedApplied / handleReleaseValve.)
 
     func applicationShouldTerminateAfterLastWindowClosed(_ s: NSApplication) -> Bool { false }
 
@@ -220,11 +195,8 @@ final class AgentApp: NSObject, NSApplicationDelegate {
         paint(color, big, s.reason)
         statusItem.button?.title = menuGlyph(s.phase)
 
-        let policy = "POLICY\n" + (s.tree?.asText() ?? "(no policy / no evaluation)")
-        let locMap = s.health.locationTrail.isEmpty ? "" : "\n\nLOCATION\n" + s.health.locationTrail.joined(separator: "\n")
-        treeView.string = policy + locMap + releaseValveText(s.releaseValve)
-            + delayedText("policy", s.delayedPolicy) + delayedText("zones", s.delayedZones)
-            + delayedText("gate-policy", s.delayedGatePolicy)
+        // Show the EXACT `demonlock status` text — one source of truth (statusBody, shared with the CLI).
+        treeView.string = statusBody(s)
         handleReleaseValve(s.releaseValve)
         handleDelayedApplied([("policy", s.delayedPolicy), ("zones", s.delayedZones), ("gate-policy", s.delayedGatePolicy)])
         let h = s.health

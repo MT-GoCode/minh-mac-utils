@@ -42,7 +42,7 @@ private func handleRequestFlags(_ first: String?, usage: String, abortMarker: St
 
 /// `release-valve --status`: print the valve's published state (or a hint if the daemon isn't up).
 private func printReleaseValveStatusCLI() {
-    if let rv = StateStore.read()?.releaseValve { printReleaseValve(rv) }
+    if let rv = StateStore.read()?.releaseValve { print(releaseValveLines(rv)) }
     else { print("release valve: no state yet — is the enforcer running?") }
 }
 
@@ -53,68 +53,77 @@ func runStatus() {
         print("demonlock: no state yet — the enforcer isn't running. Install it and `sudo demonlock arm`.")
         return
     }
+    print(statusBody(s))
+}
+
+/// The full `status` text for a snapshot — the SINGLE source of truth, rendered identically by the CLI
+/// `status` command and the GUI panel. (Each caller handles the "no state" case itself.)
+func statusBody(_ s: StateSnapshot) -> String {
+    var L: [String] = []
     let age = nowEpoch() - s.updatedEpoch
-    print("demonlock" + (age > 5 ? "  ⚠️  state is \(Int(age))s stale — enforcer may be stuck" : ""))
-    print("  enforced user : \(s.enforcedUser.isEmpty ? "(unset)" : s.enforcedUser)")
-    print("  armed         : \(s.armed ? "ARMED" : "DISARMED")")
-    print("  phase         : \(s.phase.uppercased())")
-    if let v = s.verdict { print("  verdict       : \(v.uppercased())") }
-    print("  reason        : \(s.reason)")
-    if let ssh = s.sshAddr { print("  \(ssh)") }
-    if let dl = s.countdownDeadlineEpoch { print("  countdown     : \(max(0, Int(dl - nowEpoch())))s remaining") }
+    L.append("demonlock" + (age > 5 ? "  ⚠️  state is \(Int(age))s stale — enforcer may be stuck" : ""))
+    L.append("  enforced user : \(s.enforcedUser.isEmpty ? "(unset)" : s.enforcedUser)")
+    L.append("  armed         : \(s.armed ? "ARMED" : "DISARMED")")
+    L.append("  phase         : \(s.phase.uppercased())")
+    if let v = s.verdict { L.append("  verdict       : \(v.uppercased())") }
+    L.append("  reason        : \(s.reason)")
+    if let ssh = s.sshAddr { L.append("  \(ssh)") }
+    if let dl = s.countdownDeadlineEpoch { L.append("  countdown     : \(max(0, Int(dl - nowEpoch())))s remaining") }
     if let sn = s.snoozeUntilEpoch {
         let left = max(0, Int(sn - nowEpoch()))
-        print("  snooze        : SNOOZED until \(TimeSpec.fmtWhen(sn))  " +
-              "(\(left / 3600)h \(left % 3600 / 60)m left — enforcement stood down)")
+        L.append("  snooze        : SNOOZED until \(TimeSpec.fmtWhen(sn))  (\(left / 3600)h \(left % 3600 / 60)m left — enforcement stood down)")
     }
-    print("  policy        : \(s.policyString.isEmpty ? "(none set)" : s.policyString)")
-    if let t = s.tree { print("\n  policy evaluation  (✓ true · ✗ false · · unknown):\n" + t.asText(indent: 2)) }
-    if !s.health.locationTrail.isEmpty { print("\n  location:\n" + s.health.locationTrail.joined(separator: "\n")) }
-    if let rv = s.releaseValve { printReleaseValve(rv) }
-    printDelayedStatus("policy", s.delayedPolicy)
-    printDelayedStatus("zones", s.delayedZones)
-    printDelayedStatus("gate-policy", s.delayedGatePolicy)
+    L.append("  policy        : \(s.policyString.isEmpty ? "(none set)" : s.policyString)")
+    if let t = s.tree { L.append("\n  policy evaluation  (✓ true · ✗ false · · unknown):\n" + t.asText(indent: 2)) }
+    if !s.health.locationTrail.isEmpty { L.append("\n  location:\n" + s.health.locationTrail.joined(separator: "\n")) }
+    if let rv = s.releaseValve { L.append(releaseValveLines(rv)) }
+    for (label, d) in [("policy", s.delayedPolicy), ("zones", s.delayedZones), ("gate-policy", s.delayedGatePolicy)] {
+        if let line = delayedStatusLine(label, d) { L.append(line) }
+    }
     if let sa = s.safeApps, !sa.pending.isEmpty {
-        print("  safe-apps     : \(sa.pending.count) pending registration(s) — `demonlock safe-apps show`")
+        L.append("  safe-apps     : \(sa.pending.count) pending registration(s) — `demonlock safe-apps show`")
     }
     if let sp = s.snoozePresets {
         if let n = sp.invocationName, let a = sp.invocationApplyAtEpoch {
-            print("  snooze-preset : '\(n)' invoked — stands down in \(TimeSpec.fmtLeft(a - nowEpoch()))")
+            L.append("  snooze-preset : '\(n)' invoked — stands down in \(TimeSpec.fmtLeft(a - nowEpoch()))")
         }
-        if !sp.pendingAdds.isEmpty { print("  snooze-preset : \(sp.pendingAdds.count) pending add(s) — `demonlock snooze-preset show`") }
+        if !sp.pendingAdds.isEmpty { L.append("  snooze-preset : \(sp.pendingAdds.count) pending add(s) — `demonlock snooze-preset show`") }
     }
     if let lb = s.lockbox {
         let unlocked = lb.entries.filter(\.unlocked).count
         let unlocking = lb.entries.filter { $0.unlockAtEpoch != nil }.count
-        if unlocked > 0 || unlocking > 0 { print("  lockbox       : \(unlocked) unlocked, \(unlocking) unlocking — `demonlock password-lockbox show`") }
+        if unlocked > 0 || unlocking > 0 { L.append("  lockbox       : \(unlocked) unlocked, \(unlocking) unlocking — `demonlock password-lockbox show`") }
     }
+    return L.joined(separator: "\n")
 }
 
-/// A queued delayed-change line in `status` (only shown when something is pending).
-private func printDelayedStatus(_ label: String, _ d: DelayedStatus?) {
-    guard let d, d.pending else { return }
+/// A queued delayed-change line (only present when something is pending).
+private func delayedStatusLine(_ label: String, _ d: DelayedStatus?) -> String? {
+    guard let d, d.pending else { return nil }
     let when = d.applyAtEpoch.map { TimeSpec.fmtWhen($0) } ?? "?"
     let left = d.applyAtEpoch.map { max(0, Int($0 - nowEpoch())) } ?? 0
-    print("  delayed \(label) : QUEUED — lands \(when)  (\(left/3600)h \(left%3600/60)m left)")
-    if let p = d.payloadPreview { print("                  \(p)") }
+    var out = "  delayed \(label) : QUEUED — lands \(when)  (\(left/3600)h \(left%3600/60)m left)"
+    if let p = d.payloadPreview { out += "\n                  \(p)" }
+    return out
 }
 
-/// Release-valve section of `status`.
-private func printReleaseValve(_ rv: RVStatus) {
+/// Release-valve section of the status text.
+func releaseValveLines(_ rv: RVStatus) -> String {
     func left(_ e: Double?) -> String { e.map { let s = max(0, Int($0 - nowEpoch())); return "\(s/3600)h\(s%3600/60)m\(s%60)s" } ?? "?" }
-    print("\n  release valve : ", terminator: "")
-    if !rv.configured { print("not configured (set gate-policy + delay + max-request-duration)"); return }
+    var out = "\n  release valve : "
+    if !rv.configured { return out + "not configured (set gate-policy + delay + max-request-duration)" }
     switch rv.phase {
-    case "granted":  print("GRANTED — admin held, \(left(rv.grantExpiresEpoch)) left, then auto-revoked")
-    case "delay":    print("REQUEST pending — in delay, eligible in \(left(rv.eligibleAtEpoch))")
-    case "waiting":  print("REQUEST pending — eligible now, gate \(rv.windowOpen ? "OPEN → granting" : "closed, waiting")")
-    default:         print("idle (no active request) — `demonlock admin-release-valve request \"<dur>\"`")
+    case "granted":  out += "GRANTED — admin held, \(left(rv.grantExpiresEpoch)) left, then auto-revoked"
+    case "delay":    out += "REQUEST pending — in delay, eligible in \(left(rv.eligibleAtEpoch))"
+    case "waiting":  out += "REQUEST pending — eligible now, gate \(rv.windowOpen ? "OPEN → granting" : "closed, waiting")"
+    default:         out += "idle (no active request) — `demonlock admin-release-valve request \"<dur>\"`"
     }
     if let d = rv.delaySec, let u = rv.maxRequestDurationSec {
-        print("                  delay \(Int(d/60))m · max grant \(Int(u/60))m" + (rv.requestedDurationSec.map { " · requested \(Int($0/60))m" } ?? ""))
+        out += "\n                  delay \(Int(d/60))m · max grant \(Int(u/60))m" + (rv.requestedDurationSec.map { " · requested \(Int($0/60))m" } ?? "")
     }
-    if let wp = rv.gatePolicy { print("                  gate-policy: \(wp)") }
-    if let t = rv.windowTree { print("\n  release-valve gate eval  (✓ true · ✗ false · · unknown):\n" + t.asText(indent: 2)) }
+    if let wp = rv.gatePolicy { out += "\n                  gate-policy: \(wp)" }
+    if let t = rv.windowTree { out += "\n\n  release-valve gate eval  (✓ true · ✗ false · · unknown):\n" + t.asText(indent: 2) }
+    return out
 }
 
 // MARK: - zones list (user, no GUI)
