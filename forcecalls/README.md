@@ -24,6 +24,50 @@ Uninstall: `sudo ./uninstall.sh` (add `--purge` to also delete the schedule and 
 The **endpoint** — baresip, the thing that rings on your Mac — installs separately from
 `endpoint/INSTALL.md`. Until it's registered, calls reach the other person and then fail to bridge.
 
+## Setting up SignalWire (once)
+
+Everything lives in one dashboard. Your space name becomes both URLs you need:
+`fuckitall.signalwire.com` for the dashboard, `fuckitall.sip.signalwire.com` for SIP.
+
+1. **API token** — `https://fuckitall.signalwire.com/credentials`. Create one and copy it
+   immediately; it is shown once. The Project ID on the same page is the Basic-auth username.
+2. **SIP credential** — `https://fuckitall.signalwire.com/resources/sips`. Pick a username and
+   password. That yields `sip:<username>@fuckitall.sip.signalwire.com`, which is your endpoint.
+   Leave the **call handler** on `default`: this endpoint only ever *receives* calls, so it never
+   needs PSTN dialing rights, and not having them limits the damage if the credential leaks.
+3. **Verified caller ID** — `https://fuckitall.signalwire.com/verified_caller_ids`. Add the number
+   you want the other person to see. SignalWire calls it and reads you a code. It is outbound-only
+   and does not touch your carrier service, so **you never have to rent a number** — no monthly
+   line on the bill, just per-minute.
+
+The same SIP username and password also go into `/etc/baresip/accounts` — see `endpoint/INSTALL.md`.
+
+### Installing with the values
+
+Interactive, which prompts for all five:
+
+```sh
+sudo ./install.sh
+```
+
+Or non-interactively, which is also the only way that works over SSH or from a script:
+
+```sh
+sudo SW_SPACE=fuckitall.signalwire.com \
+     SW_PROJECT=3cfa65a8-0c88-4333-a8c4-16a09fb46f72 \
+     SW_TOKEN=PT…                                     \
+     SW_CALLERID=+19495404623 \
+     SW_ENDPOINT=sip:minh@fuckitall.sip.signalwire.com \
+     ./install.sh
+```
+
+**The token is deliberately not written down here.** It is the one real secret of the five, and this
+repo's rule is that nothing secret is committed — it lives only in the root-owned `0600`
+`creds.json` that the installer writes. Replace it later with `sudo ./install.sh --reset-creds`.
+
+Caller ID must be bare E.164 — `+19495404623`, no spaces, parens, or dashes. SignalWire rejects
+anything else, and it fails at call time rather than at install.
+
 ## Commands
 
 Every command is **user-runnable — no sudo**:
