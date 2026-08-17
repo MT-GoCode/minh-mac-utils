@@ -14,6 +14,8 @@ case "abort":
 case "daemon":
     // launchd entry point — the root side. Never returns.
     Daemon.run()
+case "selftest":
+    SelfTest.run()
 case "help", "-h", "--help":
     Commands.help()
 case .some(let other):
