@@ -395,7 +395,7 @@ usage:
   demonlock snooze-preset delayed-add --name <n> --duration "<spec>" --delay "<dur>"   # lands after the add-delay
   demonlock snooze-preset delayed-add abort <name> | --all
   sudo demonlock snooze-preset add --name <n> --duration "<spec>" --delay "<dur>"      # immediate
-  sudo demonlock snooze-preset set-delay "<dur>"    # the delayed-add delay (baked-clamped)
+  sudo demonlock snooze-preset set-delay "<dur>"    # the delayed-add delay (must be 24h–168h)
   (<spec> is a snooze target: "for 90m" | "until 0500"; <dur> is the invoke delay, e.g. "1h")
 """
 
@@ -475,9 +475,9 @@ private func snoozePresetAbort(_ args: [String]) {
 private func snoozePresetSetDelay(_ durText: String) {
     requireRoot("snooze-preset set-delay")
     guard let secs = TimeSpec.parseDuration(durText), secs > 0 else { fail("✗ bad delay — e.g. \"48h\".") }
+    requireHours(secs, in: Bounds.snoozePresetAddDelay, label: "add-delay")
     Settings.mutate { $0.snoozePresetAddDelaySec = secs }
-    let eff = Int(Bounds.clamp(secs, Bounds.snoozePresetAddDelay) / 3600)
-    print("✓ snooze-preset add-delay set to \(Int(secs/3600))h (effective \(eff)h after the baked clamp).")
+    print("✓ snooze-preset add-delay set to \(Int(secs/3600))h.")
 }
 
 // MARK: - safe-apps
@@ -490,7 +490,7 @@ usage:
   demonlock safe-apps delayed-register <bundle-id> [--no-root-ownership --tid <TEAM>]   # lands after the delay (no sudo)
   demonlock safe-apps delayed-register abort <name> | --all
   demonlock safe-apps remove <name>            # immediate (removing tightens — no sudo)
-  sudo demonlock safe-apps set-delay "<dur>"   # delayed-register delay (clamped to the baked range)
+  sudo demonlock safe-apps set-delay "<dur>"   # delayed-register delay (must be 8h–168h)
   (root-owned needs ONLY the bundle id — its team is never checked. --no-root-ownership needs --tid.
    optional --name overrides the auto-derived handle; browsers + paseo desktop are blocklisted.)
 """
@@ -591,9 +591,9 @@ private func safeAppsAbort(_ args: [String]) {
 private func safeAppsSetDelay(_ durText: String) {
     requireRoot("safe-apps set-delay")
     guard let secs = TimeSpec.parseDuration(durText), secs > 0 else { fail("✗ bad delay — e.g. \"24h\", \"12h\".") }
+    requireHours(secs, in: Bounds.safeAppsDelay, label: "delay")
     Settings.mutate { $0.safeAppsDelaySec = secs }
-    let eff = Int(Bounds.clamp(secs, Bounds.safeAppsDelay) / 3600)
-    print("✓ safe-apps delayed-register delay set to \(Int(secs/3600))h (effective \(eff)h after the baked \(Int(Bounds.safeAppsDelay.lowerBound/3600))–\(Int(Bounds.safeAppsDelay.upperBound/3600))h clamp).")
+    print("✓ safe-apps delayed-register delay set to \(Int(secs/3600))h.")
 }
 
 // MARK: - admin-release-valve
@@ -687,21 +687,27 @@ private func rvSetGatePolicy(_ expr: String) {
     rvPrintConfig(cfg)
 }
 
+/// Reject an out-of-range bounded delay/duration at SET time (hard error, does NOT store). The use-site
+/// Bounds.clamp stays as defense-in-depth so a hand-edited settings file still can't go out of range.
+private func requireHours(_ secs: Double, in r: ClosedRange<Double>, label: String) {
+    guard r.contains(secs) else { fail("✗ \(label) out of range — must be \(Int(r.lowerBound/3600))–\(Int(r.upperBound/3600))h.") }
+}
+
 private func rvSetDelay(_ durText: String) {
     requireRoot("admin-release-valve set-delay")
     guard let secs = TimeSpec.parseDuration(durText), secs >= 0 else { fail("✗ bad delay — e.g. \"1h\", \"90m\".") }
+    guard secs >= Bounds.rvRequestDelayMin else { fail("✗ delay below the \(Int(Bounds.rvRequestDelayMin/60))m floor — use ≥ \(Int(Bounds.rvRequestDelayMin/60))m.") }
     var cfg = ReleaseValveConfig.load(); cfg.delaySec = secs
     do { try cfg.save() } catch { fail("✗ couldn't write config: \(error)") }
-    if secs < Bounds.rvRequestDelayMin { print("  note: below the \(Int(Bounds.rvRequestDelayMin/60))m floor — the floor is enforced at request time.") }
     rvPrintConfig(cfg)
 }
 
 private func rvSetMaxDuration(_ durText: String) {
     requireRoot("admin-release-valve set-max-request-duration")
     guard let secs = TimeSpec.parseDuration(durText), secs > 0 else { fail("✗ bad duration — e.g. \"1h\", \"30m\".") }
+    guard secs <= Bounds.rvMaxRequestDurationCeil else { fail("✗ duration above the \(Int(Bounds.rvMaxRequestDurationCeil/3600))h ceiling — use ≤ \(Int(Bounds.rvMaxRequestDurationCeil/3600))h.") }
     var cfg = ReleaseValveConfig.load(); cfg.maxRequestDurationSec = secs
     do { try cfg.save() } catch { fail("✗ couldn't write config: \(error)") }
-    if secs > Bounds.rvMaxRequestDurationCeil { print("  note: above the \(Int(Bounds.rvMaxRequestDurationCeil/3600))h ceiling — the ceiling is enforced at request time.") }
     rvPrintConfig(cfg)
 }
 
@@ -720,8 +726,9 @@ private func rvDelayGatePolicy(_ arg: String) {
         requireRoot("admin-release-valve delay-set-gate-policy set-delay")
         let dur = String(s.dropFirst("set-delay".count)).trimmingCharacters(in: .whitespaces)
         guard let secs = TimeSpec.parseDuration(dur), secs > 0 else { fail("✗ bad delay — e.g. \"36h\".") }
+        requireHours(secs, in: Bounds.gatePolicyDelay, label: "gate-policy delay")
         Settings.mutate { $0.gatePolicyDelaySec = secs }
-        print("✓ gate-policy delay set to \(Int(secs/3600))h (clamped to \(Int(Bounds.gatePolicyDelay.lowerBound/3600))–\(Int(Bounds.gatePolicyDelay.upperBound/3600))h).")
+        print("✓ gate-policy delay set to \(Int(secs/3600))h.")
         return
     }
     do { try PolicyEngine.validate(s, zones: ZoneStore.load(), allowInPolicy: true) } catch { fail("✗ invalid gate policy: \(error)") }
@@ -748,7 +755,7 @@ usage (no sudo — the change lands after a fixed delay, no sudo needed then eit
                                         #   36h; validated now AND again at apply). Re-queueing resets it.
   demonlock delay-set-policy --status     # show what's queued and when it lands
   demonlock delay-set-policy --abort      # cancel a queued change
-  sudo demonlock delay-set-policy set-delay "<dur>"   # tune the landing delay (clamped 12h–168h)
+  sudo demonlock delay-set-policy set-delay "<dur>"   # tune the landing delay (must be 12h–168h)
   demonlock delay-set-policy --help       # this help   (--status / --abort / --help also work bare)
 """
 
@@ -756,8 +763,9 @@ func runDelaySetPolicy(_ args: [String]) {
     if args.first == "set-delay" {
         requireRoot("delay-set-policy set-delay")
         guard let secs = TimeSpec.parseDuration(args.dropFirst().joined(separator: " ")), secs > 0 else { fail("✗ bad delay — e.g. \"36h\".") }
+        requireHours(secs, in: Bounds.policyDelay, label: "delay")
         Settings.mutate { $0.policyDelaySec = secs }
-        print("✓ delay-set-policy delay set to \(Int(Bounds.clamp(secs, Bounds.policyDelay)/3600))h (clamped to \(Int(Bounds.policyDelay.lowerBound/3600))–\(Int(Bounds.policyDelay.upperBound/3600))h).")
+        print("✓ delay-set-policy delay set to \(Int(secs/3600))h.")
         return
     }
     if handleRequestFlags(args.first, usage: dspUsage, abortMarker: Paths.dspAbortMarker,
@@ -792,7 +800,7 @@ private let dzUsage = """
 usage (no sudo — a zones change is CREATED from the map's "Save in …h" button; here you view / cancel it):
   demonlock delayzones --status   # show a queued zones change and when it lands
   demonlock delayzones --abort    # cancel a queued zones change
-  sudo demonlock delayzones set-delay "<dur>"   # tune the delayed zone-change delay (clamped 12h–168h)
+  sudo demonlock delayzones set-delay "<dur>"   # tune the delayed zone-change delay (must be 12h–168h)
   demonlock delayzones --help     # this help   (--status / --abort / --help also work bare)
 """
 
@@ -813,8 +821,9 @@ func runDelayZones(_ args: [String]) {
     if args.first == "set-delay" {
         requireRoot("delayzones set-delay")
         guard let secs = TimeSpec.parseDuration(args.dropFirst().joined(separator: " ")), secs > 0 else { fail("✗ bad delay — e.g. \"36h\".") }
+        requireHours(secs, in: Bounds.zonesDelay, label: "delay")
         Settings.mutate { $0.zonesDelaySec = secs }
-        print("✓ delayzones delay set to \(Int(Bounds.clamp(secs, Bounds.zonesDelay)/3600))h (clamped to \(Int(Bounds.zonesDelay.lowerBound/3600))–\(Int(Bounds.zonesDelay.upperBound/3600))h).")
+        print("✓ delayzones delay set to \(Int(secs/3600))h.")
         return
     }
     if handleRequestFlags(args.first, usage: dzUsage, abortMarker: Paths.dzAbortMarker,
