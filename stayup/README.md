@@ -9,21 +9,21 @@ bolt        awake with lid closed — ON
 bolt.slash  normal sleep
 ```
 
-Menu: current state · Turn On/Off · power source + battery % · **Auto-off when unplugged** ·
-Quit. CLI: `stayup on|off|status`.
+Menu: current state · Turn On/Off · Quit. CLI: `stayup on|off|status`. Nothing else — it's just
+a reader and a switch for the one setting.
 
 ## Why it's predictable (the Amphetamine complaint)
 
 - **The menu always shows the system's real state**, re-read every 3s from `pmset`. There's
   no cached belief to drift: toggle it from a terminal or another tool and the menu follows.
-- **No timers, no durations, no silent expiry.** It's on until you turn it off.
+- **No timers, no durations, no silent expiry, no automatic behavior.** It's on until you
+  turn it off.
 - **The setting survives reboots** (macOS power management owns it, not this app), so the
   menu-bar icon is the honest reminder that it's still on. Quitting the app does *not* turn
   it off — and the app says so rather than pretending otherwise. `stayup off` or uninstall
   restores normal sleep.
-- **One automatic behavior, and it only ever tightens:** "Auto-off when unplugged" (on by
-  default) turns it off the moment you're on battery — the single case where a closed-lid
-  awake Mac cooks itself in a bag.
+
+> No battery guard: it will keep the Mac awake on battery too. Don't leave it ON in a closed bag.
 
 ## Install
 
