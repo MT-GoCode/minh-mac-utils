@@ -130,6 +130,7 @@ enum ReleaseValve {
             if nowSec >= (st.eligibleAt ?? .infinity), windowTri == .t, let u = username,
                !ReleaseValveState.load().isIdle {
                 _ = Admin.grant(u)
+                flushSelfServeQueues()
                 st.grantedAt = nowSec
                 st.grantExpiresAt = nowSec + (st.requestedDurationSec ?? 0)
                 ReleaseValveState.write(st)
@@ -148,6 +149,24 @@ enum ReleaseValve {
                         grantExpiresEpoch: st.grantExpiresAt, requestedDurationSec: st.requestedDurationSec,
                         gatePolicy: cfg.gatePolicy, windowTree: windowTree, windowOpen: windowTri == .t,
                         delaySec: cfg.effectiveDelay, maxRequestDurationSec: cfg.effectiveMaxDuration)
+    }
+
+    /// On a fresh admin GRANT, cancel every no-sudo self-serve QUEUE: the delayed policy + zones changes,
+    /// pending safe-app registrations, and pending lockbox unlocks. Those queues are the commitment-device
+    /// path you use WITHOUT admin; once you hold admin you make changes deliberately with sudo, so stale
+    /// queued loosenings shouldn't silently land later. Only pending queues are cleared — already-applied
+    /// config, registered spares, and currently-unlocked secrets are untouched.
+    private static func flushSelfServeQueues() {
+        var cleared: [String] = []
+        var pol = DelayedState.load(Paths.delayedPolicyFile)
+        if pol.pending != nil { pol.pending = nil; pol.save(Paths.delayedPolicyFile); cleared.append("delay-set-policy") }
+        var zon = DelayedState.load(Paths.delayedZonesFile)
+        if zon.pending != nil { zon.pending = nil; zon.save(Paths.delayedZonesFile); cleared.append("delayzones") }
+        var sa = SafeApps.Registry.load()
+        if !sa.pending.isEmpty { sa.pending.removeAll(); sa.save(); cleared.append("safe-apps") }
+        var lb = Lockbox.LBState.load()
+        if !lb.pending.isEmpty { lb.pending.removeAll(); lb.save(); cleared.append("lockbox-unlocks") }
+        if !cleared.isEmpty { logStderr("release-valve: grant flushed queued self-serve changes: \(cleared.joined(separator: ", "))") }
     }
 
     /// Revoke any live grant and clear all state. Called by `arm` and `nosudo` (both root). Idempotent.
