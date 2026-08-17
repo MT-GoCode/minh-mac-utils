@@ -284,6 +284,7 @@ usage:
   demonlock password-lockbox unlock <name>      # after the entry's delay it becomes copyable (no sudo)
   demonlock password-lockbox abort <name>       # cancel a pending unlock / relock now
   demonlock password-lockbox copy <name>        # if unlocked: copy to clipboard (concealed) + relock
+  demonlock password-lockbox remove <name>      # delete the entry entirely (no sudo; removing tightens)
   demonlock password-lockbox add --name <n> --delay "<dur>"        # then paste the secret twice (no sudo)
   (this holds arbitrary secrets — NOT the admin password; admin is only via the release valve)
 """
@@ -295,6 +296,7 @@ func runLockbox(_ args: [String]) {
     case "show", "list", "status", "--status": lockboxShow()
     case "unlock": lockboxMark(Paths.lbUnlockMarker, rest.first, "unlock")
     case "abort":  lockboxMark(Paths.lbAbortMarker, rest.first, "abort")
+    case "remove": lockboxMark(Paths.lbRemoveMarker, rest.first, "remove")
     case "copy":   lockboxCopy(rest.first)
     case "add":    lockboxAdd(rest)
     case "help", "--help", "-h": print(lockboxUsage)
@@ -742,17 +744,25 @@ private func rvPrintConfig(_ cfg: ReleaseValveConfig) {
 
 private let dspUsage = """
 usage (no sudo — the change lands after a fixed delay, no sudo needed then either):
-  demonlock delay-set-policy "<policy>"   # queue a new allow-policy; applies in 36h (validated now AND
-                                        #   again at apply time). Re-queueing resets the 36h.
+  demonlock delay-set-policy "<policy>"   # queue a new allow-policy; applies after the delay (default
+                                        #   36h; validated now AND again at apply). Re-queueing resets it.
   demonlock delay-set-policy --status     # show what's queued and when it lands
   demonlock delay-set-policy --abort      # cancel a queued change
+  sudo demonlock delay-set-policy set-delay "<dur>"   # tune the landing delay (clamped 12h–168h)
   demonlock delay-set-policy --help       # this help   (--status / --abort / --help also work bare)
 """
 
 func runDelaySetPolicy(_ args: [String]) {
+    if args.first == "set-delay" {
+        requireRoot("delay-set-policy set-delay")
+        guard let secs = TimeSpec.parseDuration(args.dropFirst().joined(separator: " ")), secs > 0 else { fail("✗ bad delay — e.g. \"36h\".") }
+        Settings.mutate { $0.policyDelaySec = secs }
+        print("✓ delay-set-policy delay set to \(Int(Bounds.clamp(secs, Bounds.policyDelay)/3600))h (clamped to \(Int(Bounds.policyDelay.lowerBound/3600))–\(Int(Bounds.policyDelay.upperBound/3600))h).")
+        return
+    }
     if handleRequestFlags(args.first, usage: dspUsage, abortMarker: Paths.dspAbortMarker,
                           status: printDelayedPolicyStatus) { return }
-    let delayH = Int(DelayedChange.policyDelaySec / 3600)
+    let delayH = Int(Bounds.clamp(Settings.load().policyDelaySec, Bounds.policyDelay) / 3600)
     let p = args.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
     if p.isEmpty { print(dspUsage); return }
     if p.hasPrefix("--") { fail("✗ unknown option '\(args[0])'.\n" + dspUsage) }
@@ -767,7 +777,7 @@ func runDelaySetPolicy(_ args: [String]) {
 
 /// Print the queued delayed-policy state (from the published snapshot, else the on-disk pending file).
 private func printDelayedPolicyStatus() {
-    let delayH = Int(DelayedChange.policyDelaySec / 3600)
+    let delayH = Int(Bounds.clamp(Settings.load().policyDelaySec, Bounds.policyDelay) / 3600)
     if let pc = DelayedState.load(Paths.delayedPolicyFile).pending {
         let left = max(0, Int(pc.applyAt - nowEpoch()))
         print("delayed policy: QUEUED — lands \(TimeSpec.fmtWhen(pc.applyAt))" +
@@ -779,9 +789,10 @@ private func printDelayedPolicyStatus() {
 }
 
 private let dzUsage = """
-usage (no sudo — a zones change is CREATED from the map's "Save in 36h"; here you view / cancel it):
+usage (no sudo — a zones change is CREATED from the map's "Save in …h" button; here you view / cancel it):
   demonlock delayzones --status   # show a queued zones change and when it lands
   demonlock delayzones --abort    # cancel a queued zones change
+  sudo demonlock delayzones set-delay "<dur>"   # tune the delayed zone-change delay (clamped 12h–168h)
   demonlock delayzones --help     # this help   (--status / --abort / --help also work bare)
 """
 
@@ -791,13 +802,21 @@ private func printDelayZonesStatus() {
         print("delayed zones: QUEUED — lands \(TimeSpec.fmtWhen(pc.applyAt))  (\(left/3600)h \(left%3600/60)m left)")
         print("  cancel with `demonlock delayzones --abort`")
     } else {
-        print("delayed zones: none queued.  Queue one from the map (`demonlock zones` → add → \"Save in 36h\").")
+        let dh = Int(Bounds.clamp(Settings.load().zonesDelaySec, Bounds.zonesDelay) / 3600)
+        print("delayed zones: none queued.  Queue one from the map (`demonlock zones` → add → \"Save in \(dh)h\").")
     }
 }
 
 /// delayzones (NO sudo): a queued zones change is CREATED from the map ("Save in 36h"); here you can
 /// only view or cancel it. Bare `delayzones` shows status; unknown args → usage.
 func runDelayZones(_ args: [String]) {
+    if args.first == "set-delay" {
+        requireRoot("delayzones set-delay")
+        guard let secs = TimeSpec.parseDuration(args.dropFirst().joined(separator: " ")), secs > 0 else { fail("✗ bad delay — e.g. \"36h\".") }
+        Settings.mutate { $0.zonesDelaySec = secs }
+        print("✓ delayzones delay set to \(Int(Bounds.clamp(secs, Bounds.zonesDelay)/3600))h (clamped to \(Int(Bounds.zonesDelay.lowerBound/3600))–\(Int(Bounds.zonesDelay.upperBound/3600))h).")
+        return
+    }
     if handleRequestFlags(args.first, usage: dzUsage, abortMarker: Paths.dzAbortMarker,
                           status: printDelayZonesStatus) { return }
     if let a = args.first { fail("✗ unknown argument '\(a)'.\n" + dzUsage) }

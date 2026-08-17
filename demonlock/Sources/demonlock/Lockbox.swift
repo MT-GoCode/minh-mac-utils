@@ -47,7 +47,7 @@ enum Lockbox {
         return nil
     }
 
-    /// One daemon tick: consume markers (add/unlock/abort/copy), apply due unlocks, auto-relock. All
+    /// One daemon tick: consume markers (add/unlock/abort/remove/copy), apply due unlocks, auto-relock. All
     /// markers owner-checked via MarkerIO; secrets never transit a world-readable path. Returns status.
     @discardableResult
     static func tick(now: Double, enforcedUID: uid_t?) -> Status {
@@ -77,6 +77,12 @@ enum Lockbox {
             // abort: cancel a pending unlock AND relock if unlocked.
             if let data = MarkerIO.consume(Paths.lbAbortMarker, enforcedUID: euid) {
                 let name = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                st.pending.removeValue(forKey: name); st.unlockedUntil.removeValue(forKey: name); st.save()
+            }
+            // remove (tightening): delete the entry from the vault entirely + clear any lock state.
+            if let data = MarkerIO.consume(Paths.lbRemoveMarker, enforcedUID: euid) {
+                let name = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if entries.contains(where: { $0.name == name }) { entries.removeAll { $0.name == name }; LockboxStore.save(entries) }
                 st.pending.removeValue(forKey: name); st.unlockedUntil.removeValue(forKey: name); st.save()
             }
             // copy: if unlocked, write the secret to a fresh 0600 user-owned outbox, then relock now.

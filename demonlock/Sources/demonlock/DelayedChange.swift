@@ -8,8 +8,8 @@ import Foundation
 ///
 /// Same split of trust as the release valve: the pending record is root-owned; the request/abort
 /// markers are non-root (dropped in the user-owned inbox), and the daemon stamps the real request
-/// time — so the delay can't be backdated. The 36h wait IS the commitment device: impulse-you can
-/// queue a loosening, but only calm-you-36h-from-now actually gets it.
+/// time — so the delay can't be backdated. The wait IS the commitment device: impulse-you can queue a
+/// loosening, but only calm-you-after-the-delay actually gets it. Tunable per slot via `set-delay`.
 
 // Pending queued change (root-owned). Absent ⇒ nothing queued.
 struct PendingChange: Codable {
@@ -38,9 +38,6 @@ struct DelayedStatus: Codable {
 }
 
 enum DelayedChange {
-    static let policyDelaySec: Double = 36 * 3600
-    static let zonesDelaySec:  Double = 36 * 3600
-
     /// Drive one delayed-change slot for a single tick: consume its markers (abort first, then
     /// request), then apply a pending change once its time has arrived. `validate` gates a queued
     /// payload at BOTH queue time and apply time (zones/policy could have changed under it); `apply`

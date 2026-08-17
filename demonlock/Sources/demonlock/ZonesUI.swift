@@ -192,7 +192,7 @@ final class ZonesController: NSObject, NSApplicationDelegate, MKMapViewDelegate,
         case .delayed:
             if saveWithDelay(current) {
                 nameField.stringValue = ""; cancelDraw()
-                instr.stringValue = "⏳ queued \"\(name)\" — lands in 36h (no admin). `demonlock status` to watch · `demonlock delayzones --abort` to cancel."
+                instr.stringValue = "⏳ queued \"\(name)\" — lands in \(zonesDelayH)h (no admin). `demonlock status` to watch · `demonlock delayzones --abort` to cancel."
             } else {
                 instr.stringValue = "Couldn't queue the change (is demonlock installed?)."
             }
@@ -203,15 +203,18 @@ final class ZonesController: NSObject, NSApplicationDelegate, MKMapViewDelegate,
 
     private enum SaveMode { case immediate, delayed, cancel }
 
-    /// Adding a zone LOOSENS the policy, so it's gated: do it NOW with admin, or queue it for 36h
-    /// (no admin — the daemon installs it after the delay, the same commitment-device idea as the
-    /// release valve / `delay-set-policy`).
+    /// The delayed zone-change landing delay, in hours (tunable via `sudo demonlock delayzones set-delay`).
+    private var zonesDelayH: Int { Int(Bounds.clamp(Settings.load().zonesDelaySec, Bounds.zonesDelay) / 3600) }
+
+    /// Adding a zone LOOSENS the policy, so it's gated: do it NOW with admin, or queue it for the delay
+    /// (no admin — the daemon installs it later, the same commitment-device idea as the release valve /
+    /// `delay-set-policy`).
     private func askSaveMode(_ name: String) -> SaveMode {
         let a = NSAlert()
         a.messageText = "Add zone “\(name)”?"
-        a.informativeText = "Adding a zone loosens the policy.\n\n• Save now — needs admin (you'll be asked to authenticate).\n• Save in 36h — no admin; the change lands automatically after 36 hours."
+        a.informativeText = "Adding a zone loosens the policy.\n\n• Save now — needs admin (you'll be asked to authenticate).\n• Save in \(zonesDelayH)h — no admin; the change lands automatically after \(zonesDelayH) hours."
         a.addButton(withTitle: "Save now (admin)")
-        a.addButton(withTitle: "Save in 36h")
+        a.addButton(withTitle: "Save in \(zonesDelayH)h")
         a.addButton(withTitle: "Cancel")
         switch a.runModal() {
         case .alertFirstButtonReturn:  return .immediate
@@ -232,7 +235,7 @@ final class ZonesController: NSObject, NSApplicationDelegate, MKMapViewDelegate,
             if saveWithAdmin(remaining) { reload(); instr.stringValue = "✓ deleted \"\(name)\"" }
             else { instr.stringValue = "Delete cancelled — needs admin." }
         case .delayed:
-            if saveWithDelay(remaining) { instr.stringValue = "⏳ queued deletion of \"\(name)\" — lands in 36h. `demonlock delayzones --abort` to cancel." }
+            if saveWithDelay(remaining) { instr.stringValue = "⏳ queued deletion of \"\(name)\" — lands in \(zonesDelayH)h. `demonlock delayzones --abort` to cancel." }
             else { instr.stringValue = "Couldn't queue the change (is demonlock installed?)." }
         case .cancel:
             instr.stringValue = "Delete cancelled."
@@ -242,9 +245,9 @@ final class ZonesController: NSObject, NSApplicationDelegate, MKMapViewDelegate,
     private func askDeleteMode(_ name: String) -> SaveMode {
         let a = NSAlert()
         a.messageText = "Delete zone “\(name)”?"
-        a.informativeText = "Deleting a zone can LOOSEN the policy (a zone used under NOT).\n\n• Delete now — needs admin.\n• Delete in 36h — no admin; the change lands automatically."
+        a.informativeText = "Deleting a zone can LOOSEN the policy (a zone used under NOT).\n\n• Delete now — needs admin.\n• Delete in \(zonesDelayH)h — no admin; the change lands automatically."
         a.addButton(withTitle: "Delete now (admin)")
-        a.addButton(withTitle: "Delete in 36h")
+        a.addButton(withTitle: "Delete in \(zonesDelayH)h")
         a.addButton(withTitle: "Cancel")
         switch a.runModal() {
         case .alertFirstButtonReturn:  return .immediate

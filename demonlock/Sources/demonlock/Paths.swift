@@ -67,6 +67,7 @@ enum Paths {
     static let lbAbortMarker    = rvInboxDir + "/lockbox-abort"         // contents = name
     static let lbCopyMarker     = rvInboxDir + "/lockbox-copy"          // contents = name
     static let lbAddMarker      = rvInboxDir + "/lockbox-add"           // contents = {name,secret,delaySec} JSON
+    static let lbRemoveMarker   = rvInboxDir + "/lockbox-remove"        // contents = name
     static let lbOutboxFile     = rvInboxDir + "/lockbox-out"           // daemon→CLI one-shot secret (0600 user-owned)
 
     static let socketPath      = "/var/run/demonlock.sock"

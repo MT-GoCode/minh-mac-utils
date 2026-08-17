@@ -302,6 +302,7 @@ copy lands on the clipboard as a **concealed** type so clipboard managers don't 
 | `password-lockbox unlock <name>` | start the per‑entry delay |
 | `password-lockbox abort <name>` | cancel a pending unlock / relock now |
 | `password-lockbox copy <name>` | if unlocked: copy (concealed) + relock |
+| `password-lockbox remove <name>` | delete the entry entirely (removing tightens — no sudo) |
 
 **Delay:** per‑entry, floored at **1h** (no ceiling — you set each one). Unlocked‑but‑never‑copied
 secrets auto‑relock after **15 min**. Caps: 4096 bytes/secret, 64 entries.
@@ -317,16 +318,18 @@ PASSWORD LOCKBOX
 
 ### delayed policy / zones changes
 
-**What:** the no‑sudo way to change the **policy** or **zones** — queue it, and it lands after a
-fixed **36h**. The wait is the commitment: impulse‑you can queue a loosening; only calm‑you‑36h‑later
-gets it. Re‑queuing only pushes the landing *later*, never sooner.
+**What:** the no‑sudo way to change the **policy** or **zones** — queue it, and it lands after a set
+delay (**default 36h**, tunable per slot). The wait is the commitment: impulse‑you can queue a
+loosening; only calm‑you‑later gets it. Re‑queuing only pushes the landing *later*, never sooner.
 
 | Command | sudo | |
 |---|---|---|
 | `demonlock delay-set-policy "<policy>"` | no | queue a new allow‑policy (validated now and at landing) |
 | `demonlock delay-set-policy --status \| --abort` | no | view / cancel the queued policy |
+| `sudo demonlock delay-set-policy set-delay "<dur>"` | **yes** | tune the policy landing delay (12h–168h) |
 | `demonlock delayzones --status \| --abort` | no | view / cancel a queued zones change |
-| (map) **Save in 36h** | no | how a zones change is *created* (from `demonlock zones`) |
+| `sudo demonlock delayzones set-delay "<dur>"` | **yes** | tune the zones landing delay (12h–168h) |
+| (map) **Save in …h** | no | how a zones change is *created* (from `demonlock zones`) |
 
 Immediate `sudo demonlock setpolicy` is the sudo path; `delay-set-policy` is the no‑sudo one. Adding a
 zone loosens the policy, and deleting one isn't monotone either, so the **zones map** offers *Save
