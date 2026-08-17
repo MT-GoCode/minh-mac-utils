@@ -56,5 +56,4 @@ else
     echo "       sudo demonlock safe-apps register com.minh.remote-agent-connector"
 fi
 
-echo "▸ verifying demonlock will spare it"
-bash "$HERE/../verify-spare.sh" /Applications/RemoteAgentConnector.app com.minh.remote-agent-connector
+echo "  registered as a demonlock spare — verify it survives a lockout:  demonlock test-lockout"

@@ -158,12 +158,6 @@ launchctl bootstrap "gui/$USER_UID" /Library/LaunchAgents/com.demonlock.agent.pl
 
 echo
 
-echo "▸ verifying demonlock is in the spare list"
-if "$DL_BIN" safe-apps show 2>/dev/null | grep -q "com.demonlock"; then
-    echo "  ✓ com.demonlock is spared (root-owned, Regime A)"
-else
-    echo "  ⚠️  com.demonlock not found in the spare list — check the build"
-fi
 echo "✓ installed — currently DISARMED. Next steps:"
 echo "    demonlock scan                 # walk your office, capture BSSIDs (run WITHOUT sudo)"
 echo "    demonlock zones                # add/delete zones (admin now, or delayed) on a map"

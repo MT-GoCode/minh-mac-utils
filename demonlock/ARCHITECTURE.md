@@ -317,7 +317,8 @@ sudo demonlock safe-apps set-delay "24h"                    # delayed-register d
 
 **Root-owned needs ONLY the bundle id** — Regime A never reads the team. `--no-root-ownership` (Regime B)
 needs `--tid <TEAM>`; own-team apps can't use it. Optional `--name` overrides the auto-derived handle.
-`demonlock safe-apps show` is the single source of truth — `verify-spare.sh` queries it.
+`demonlock safe-apps show` is the single source of truth for the effective list; to confirm an app will
+actually survive a lockout, run `demonlock test-lockout` (it applies the real `spareVerified` to the live apps).
 
 ### To whitelist a new app of yours
 

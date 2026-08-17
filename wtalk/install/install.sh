@@ -134,9 +134,8 @@ else
     echo "       sudo demonlock safe-apps register com.wtalk.daemon"
 fi
 
-echo "▸ verifying demonlock will spare it"
-bash "$HERE/../verify-spare.sh" /Applications/wtalk.app com.wtalk.daemon
-echo "✓ installed $DEST  (root:wheel, sealed — demonlock can now safely spare it)"
+echo "✓ installed $DEST  (root:wheel, sealed, registered as a demonlock spare)."
+echo "  Verify it survives a lockout:  demonlock test-lockout"
 echo "  Next steps:"
 echo "    1. Add your Gemini key:   \$EDITOR $DATA/.env   (GEMINI_API_KEY=…), then:  wtalk restart"
 echo "       (https://aistudio.google.com/apikey — without it, cleanup pastes the RAW transcript)"
