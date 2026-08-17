@@ -21,6 +21,28 @@ SUPPORT="/Library/Application Support/Forcecalls"
 BIN=/usr/local/libexec/forcecalls
 cd "$HERE"
 
+# ── preflight ────────────────────────────────────────────────────────────────────────────────────
+# Everything this install needs, checked up front. A missing prerequisite discovered halfway through
+# leaves a half-installed system, which is exactly the failure this script already had once.
+MISSING_TOOLS=""
+sudo -u "$USER_NAME" command -v brew >/dev/null 2>&1 || MISSING_TOOLS="$MISSING_TOOLS homebrew"
+command -v nc >/dev/null 2>&1 || MISSING_TOOLS="$MISSING_TOOLS netcat(nc)"
+if ! xcode-select -p >/dev/null 2>&1 && [ ! -d "$APP_DIR/dist/Forcecalls.app" ]; then
+    MISSING_TOOLS="$MISSING_TOOLS xcode-command-line-tools"
+fi
+if [ -n "$MISSING_TOOLS" ]; then
+    echo "✗ missing prerequisite(s):$MISSING_TOOLS"
+    echo "  Homebrew:  /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+    echo "  Xcode CLT: xcode-select --install"
+    echo "  nothing was installed."
+    exit 1
+fi
+if sudo -u "$USER_NAME" command -v baresip >/dev/null 2>&1; then
+    dl_ok "baresip present"
+else
+    echo "  · baresip not installed yet — the endpoint step will brew-install it"
+fi
+
 # ── credentials (collected BEFORE anything is written) ──────────────────────────────────────────
 # Gathered up front, on purpose: a prompt that aborts must leave NO half-seeded root-owned directory
 # behind. Falls back to env vars so a non-interactive run (an agent, a script, CI) works instead of
@@ -34,23 +56,28 @@ if [ "$NEED_CREDS" = yes ]; then
         [ -n "${SW_PROJECT:-}"  ] || read -r    -p "  Project ID: " SW_PROJECT
         [ -n "${SW_TOKEN:-}"    ] || { read -r -s -p "  API token: " SW_TOKEN; echo; }
         [ -n "${SW_CALLERID:-}" ] || read -r    -p "  Caller ID the other person sees (+E.164): " SW_CALLERID
-        [ -n "${SW_ENDPOINT:-}" ] || read -r    -p "  Your SIP endpoint (e.g. sip:me@minh.sip.signalwire.com): " SW_ENDPOINT
+        [ -n "${SW_ENDPOINT:-}" ] || read -r    -p "  Your SIP endpoint (copy from the New SIP Credential dialog): " SW_ENDPOINT
+        [ -n "${SIP_PASS:-}"    ] || { read -r -s -p "  Password for that SIP credential: " SIP_PASS; echo; }
     else
         echo "▸ non-interactive install — reading credentials from the environment"
     fi
     MISSING=""
-    for v in SW_SPACE SW_PROJECT SW_TOKEN SW_CALLERID SW_ENDPOINT; do
+    for v in SW_SPACE SW_PROJECT SW_TOKEN SW_CALLERID SW_ENDPOINT SIP_PASS; do
         [ -n "${!v:-}" ] || MISSING="$MISSING $v"
     done
     if [ -n "$MISSING" ]; then
         echo "✗ missing credential(s):$MISSING"
         echo "  run this from a terminal to be prompted, or pre-set them:"
-        echo "    sudo SW_SPACE=… SW_PROJECT=… SW_TOKEN=… SW_CALLERID=… SW_ENDPOINT=… ./install.sh"
+        echo "    sudo SW_SPACE=… SW_PROJECT=… SW_TOKEN=… SW_CALLERID=… SW_ENDPOINT=… SIP_PASS=… ./install.sh"
         echo "  nothing was installed."
         exit 1
     fi
 else
     echo "▸ keeping existing credentials (re-run with --reset-creds to replace them)"
+    if [ -z "${SIP_PASS:-}" ]; then
+        if [ -t 0 ]; then read -r -s -p "  Password for your SIP credential (for the endpoint): " SIP_PASS; echo
+        else echo "✗ set SIP_PASS= — the endpoint needs it even when the API creds are unchanged."; exit 1; fi
+    fi
 fi
 
 # ── build ────────────────────────────────────────────────────────────────────────────────────────
@@ -162,6 +189,13 @@ launchctl bootstrap "gui/$USER_UID" /Library/LaunchAgents/com.minh.forcecalls.ag
 dl_register_spare forcecalls "$BUNDLE_ID" "$TEAM_ID" \
     || dl_warn "spare registration failed — do it by hand: sudo demonlock safe-apps register $BUNDLE_ID"
 
+# ── endpoint ─────────────────────────────────────────────────────────────────────────────────────
+# Not optional: without it a forced call reaches the other person and has nothing to bridge to. It
+# reads the username and domain back out of the creds.json written above.
+echo
+echo "▸ installing the endpoint (baresip)"
+SIP_PASS="$SIP_PASS" bash "$APP_DIR/endpoint/install.sh"
+
 echo
 echo "✓ installed. Everything below is user-runnable — NO sudo:"
 echo "    forcecalls add --name mom --destination +15559998888 --schedule *2045"
@@ -169,6 +203,3 @@ echo "    forcecalls show"
 echo
 echo "Removal is delay-gated (default 12h): 'forcecalls remove mom' queues it, 'forcecalls abort'"
 echo "cancels. Only install/uninstall need sudo — that's what makes a forced call stick."
-echo
-echo "The endpoint (baresip) is separate — see endpoint/README.md, or run: sudo ./endpoint/install.sh. Until it's registered, calls will"
-echo "reach the other person and then fail to bridge to you."

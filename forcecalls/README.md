@@ -12,17 +12,22 @@ Think "every night at 8:45 PM I call my mom, and impulse-me can't quietly delete
 ## Install
 
 ```sh
-sudo ./install.sh              # builds + signs as you, deploys, prompts for SignalWire creds
+sudo ./install.sh    # one command: prerequisites, build+sign, daemon, agent, and the baresip endpoint
 ```
+
+It checks its prerequisites first (Homebrew, Xcode CLT or a prebuilt `dist/`, `nc`) and refuses
+before touching anything if one is missing — a half-installed system is worse than no install. It
+brew-installs baresip if absent, and finishes by verifying SIP registration and the control channel.
 
 Credentials are collected **on stdin during install** and written root-owned `0600`. Nothing secret
 is committed, and you can't read them back afterwards — so a forced call can't be defanged by
 editing the keys out. Replace them later with `sudo ./install.sh --reset-creds`.
 
-Uninstall: `sudo ./uninstall.sh` (add `--purge` to also delete the schedule and credentials).
+Uninstall: `sudo ./uninstall.sh` removes the endpoint too (add `--purge` to also delete the schedule and credentials).
 
-The **endpoint** — baresip, the thing that rings on your Mac — installs separately from
-`endpoint/README.md`. Until it's registered, calls reach the other person and then fail to bridge.
+The **endpoint** — baresip, the thing that rings on your Mac — is installed by the same script; it
+is not optional, since without it a call reaches the other person and has nothing to bridge to.
+`endpoint/README.md` documents it, and `endpoint/install.sh` can be re-run on its own.
 
 ## Setting up SignalWire (once)
 
