@@ -203,12 +203,12 @@ Wi‑Fi check pins BSSIDs.
 
 ## Commands & settings
 
-**User (no sudo):** `status` · `zones` (`view-zones`/`edit-zones` alias it; `zones list` prints
+**User (no sudo):** `status` · `zones` (`zones list` prints
 names) · `scan` · `perm-ask` · `arm` (tightens — passwordless via sudoers; also drops admin + closes
 the release valve) · `nosudo` (drop admin now) · `test-lockout` (see below) · `settings-guard` (+
 `dump`) · `admin-release-valve …` · `safe-apps …` · `snooze-preset …` · `password-lockbox …` ·
 `delay-set-policy "<expr>"` (queue a policy; lands after the delay — `--status`/`--abort`;
-`delaysetpolicy` still aliases it) · `delayzones --status`/`--abort` (view/cancel a zones change
+`delay-set-policy` still aliases it) · `delayzones --status`/`--abort` (view/cancel a zones change
 queued from the map) · `help`.
 
 **Sudo:** `setpolicy` · `disarm` · `snooze "<spec>"` (flexible stand-down: `"for <duration>"` in
@@ -430,7 +430,7 @@ no longer parses.
 ```bash
 demonlock delay-set-policy '(LOCATED_IN_ANY(["office"])) AND TIME_IS_ANY([MTWRF0700-2000])'
                                     # queue a NEW allow-policy; lands after the delay (no sudo now OR then)
-demonlock delay-set-policy --status # what's queued + when it lands   (delaysetpolicy still aliases it)
+demonlock delay-set-policy --status # what's queued + when it lands   (delay-set-policy still aliases it)
 demonlock delay-set-policy --abort  # cancel it
 ```
 

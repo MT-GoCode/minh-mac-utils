@@ -1,7 +1,7 @@
 import Foundation
 
 /// A DELAYED CHANGE — a non-sudo self-serve edit that lands after a fixed delay. You queue a new
-/// policy (`demonlock delaysetpolicy`) or a new zones set (the map's "Save in 36h" button); the daemon
+/// policy (`demonlock delay-set-policy`) or a new zones set (the map's "Save in 36h" button); the daemon
 /// stamps the request time ITSELF, waits out the delay, then applies it. No timers — all state is on
 /// disk and driven by the enforcer tick, and it applies regardless of arm / snooze / who's logged in
 /// (it's a scheduled config change, not enforcement).

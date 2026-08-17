@@ -205,7 +205,7 @@ final class ZonesController: NSObject, NSApplicationDelegate, MKMapViewDelegate,
 
     /// Adding a zone LOOSENS the policy, so it's gated: do it NOW with admin, or queue it for 36h
     /// (no admin — the daemon installs it after the delay, the same commitment-device idea as the
-    /// release valve / `delaysetpolicy`).
+    /// release valve / `delay-set-policy`).
     private func askSaveMode(_ name: String) -> SaveMode {
         let a = NSAlert()
         a.messageText = "Add zone “\(name)”?"

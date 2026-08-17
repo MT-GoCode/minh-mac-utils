@@ -153,7 +153,7 @@ Every command falls into one of three buckets. This is the core of the whole des
 |---|---|---|
 | **Tighten** (makes enforcement stricter) | **no sudo** | `arm`, `nosudo`, `safe-apps remove`, `snooze-preset invoke`, any `abort` |
 | **Loosen now** | **sudo** | `setpolicy`, `disarm`, `snooze`, `safe-apps register`, `snooze-preset add` |
-| **Loosen later** (no sudo, but waits out a baked delay) | **the delay** | `delaysetpolicy`, `safe-apps delayed-register`, `snooze-preset delayed-add`, `admin-release-valve request` |
+| **Loosen later** (no sudo, but waits out a baked delay) | **the delay** | `delay-set-policy`, `safe-apps delayed-register`, `snooze-preset delayed-add`, `admin-release-valve request` |
 
 Since you run day‑to‑day with **no admin** (`nosudo`), "loosen now" is off the table — every
 loosening goes through the delay. Those delay floors/ceilings are **compiled into the binary**
@@ -202,7 +202,7 @@ The floating **panel** (drawn by the agent) mirrors this: `● ALLOWED` (green) 
 | `demonlock status` | no | the full dashboard above |
 | `demonlock scan` | no (refuses root) | live Wi‑Fi scan; on Ctrl+C prints a paste‑ready `FOUND_IN_NEARBY_BSSID([...])` and saves `~/demonlock-bssids.txt` |
 | `demonlock zones` | no (refuses root) | map to add/delete zones — each asks **Save now (admin)** or **Save in 36h** |
-| `demonlock zones list` | no | text list of zones (also `list-zones`) |
+| `demonlock zones list` | no | text list of zones |
 | `demonlock perm-ask` | no | opens the Location + Accessibility panes to grant "Demonlock" |
 | `sudo demonlock setpolicy '<expr>'` | yes | set + validate the allow‑policy |
 | `sudo demonlock arm` / `disarm` | passwordless / yes | enforcement on / off |
@@ -323,12 +323,12 @@ gets it. Re‑queuing only pushes the landing *later*, never sooner.
 
 | Command | sudo | |
 |---|---|---|
-| `demonlock delaysetpolicy "<policy>"` | no | queue a new allow‑policy (validated now and at landing) |
-| `demonlock delaysetpolicy --status \| --abort` | no | view / cancel the queued policy |
+| `demonlock delay-set-policy "<policy>"` | no | queue a new allow‑policy (validated now and at landing) |
+| `demonlock delay-set-policy --status \| --abort` | no | view / cancel the queued policy |
 | `demonlock delayzones --status \| --abort` | no | view / cancel a queued zones change |
 | (map) **Save in 36h** | no | how a zones change is *created* (from `demonlock zones`) |
 
-Immediate `sudo demonlock setpolicy` is the sudo path; `delaysetpolicy` is the no‑sudo one. Adding a
+Immediate `sudo demonlock setpolicy` is the sudo path; `delay-set-policy` is the no‑sudo one. Adding a
 zone loosens the policy, and deleting one isn't monotone either, so the **zones map** offers *Save
 now (admin)* or *Save in 36h* for both. Queued items show up in `demonlock status`:
 ```
@@ -416,7 +416,7 @@ sudo demonlock arm · sudo demonlock disarm · demonlock nosudo
 sudo demonlock snooze "for 90m" | "until 0730" · demonlock test-lockout [--go]
 
 # no-sudo loosen-later
-demonlock delaysetpolicy "<policy>" [--status|--abort]
+demonlock delay-set-policy "<policy>" [--status|--abort]
 demonlock delayzones --status|--abort
 demonlock safe-apps show|delayed-register <bid>|remove <name>|delayed-register abort <name>|--all
 demonlock snooze-preset show|invoke <name>|delayed-add …|remove <name>|abort

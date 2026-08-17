@@ -154,7 +154,7 @@ enum PolicyEngine {
         }
         if !missing.isEmpty {
             let uniq = Set(missing).sorted().map { "\"\($0)\"" }.joined(separator: ", ")
-            throw PolicyError(message: "policy references unknown zone(s): \(uniq). Create them with `demonlock edit-zones` first.")
+            throw PolicyError(message: "policy references unknown zone(s): \(uniq). Create them with `demonlock zones` first.")
         }
         return p
     }

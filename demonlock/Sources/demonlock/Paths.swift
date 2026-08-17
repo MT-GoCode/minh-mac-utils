@@ -31,8 +31,8 @@ enum Paths {
     // Root-owned pending state; the request/abort markers live in the same user-owned inbox as the
     // release valve (the request marker's CONTENTS are the payload; the daemon stamps the real time).
     static let delayedPolicyFile   = supportDir + "/delayed-policy.json"     // {pending, lastAppliedAt}
-    static let dspRequestMarker    = rvInboxDir + "/delaysetpolicy"          // CONTENTS = the new policy text
-    static let dspAbortMarker      = rvInboxDir + "/delaysetpolicy-abort"
+    static let dspRequestMarker    = rvInboxDir + "/delay-set-policy"          // CONTENTS = the new policy text
+    static let dspAbortMarker      = rvInboxDir + "/delay-set-policy-abort"
     static let delayedZonesFile    = supportDir + "/delayed-zones.json"      // {pending, lastAppliedAt}
     static let dzRequestMarker     = rvInboxDir + "/delayzones"              // CONTENTS = the new zones.json
     static let dzAbortMarker       = rvInboxDir + "/delayzones-abort"

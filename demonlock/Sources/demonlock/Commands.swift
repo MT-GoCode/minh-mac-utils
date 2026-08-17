@@ -19,7 +19,7 @@ private func fail(_ msg: String) -> Never {
 // MARK: - shared CLI contract for the no-sudo request commands
 
 /// Uniform `--help` / `--status` / `--abort` handling — accepted BARE or `--`-prefixed — shared by
-/// every no-sudo request command (release-valve, delaysetpolicy, delayzones, igotshitdueatmidnight).
+/// every no-sudo request command (release-valve, delay-set-policy, delayzones, igotshitdueatmidnight).
 /// Returns true when it consumed the arg (the caller should `return`); false to fall through to that
 /// command's own verb (its request / enqueue / --set-*). Reserving these words as subcommands stops a
 /// bare `status`/`help` from being mis-parsed as a payload (the bug that queued "status"/"help").
@@ -730,15 +730,15 @@ private func rvPrintConfig(_ cfg: ReleaseValveConfig) {
                            "  ⚠️  still missing a field; request won't work until all three are set.")
 }
 
-// MARK: - delaysetpolicy (NO sudo — queues a policy that lands after 36h)
+// MARK: - delay-set-policy (NO sudo — queues a policy that lands after 36h)
 
 private let dspUsage = """
 usage (no sudo — the change lands after a fixed delay, no sudo needed then either):
-  demonlock delaysetpolicy "<policy>"   # queue a new allow-policy; applies in 36h (validated now AND
+  demonlock delay-set-policy "<policy>"   # queue a new allow-policy; applies in 36h (validated now AND
                                         #   again at apply time). Re-queueing resets the 36h.
-  demonlock delaysetpolicy --status     # show what's queued and when it lands
-  demonlock delaysetpolicy --abort      # cancel a queued change
-  demonlock delaysetpolicy --help       # this help   (--status / --abort / --help also work bare)
+  demonlock delay-set-policy --status     # show what's queued and when it lands
+  demonlock delay-set-policy --abort      # cancel a queued change
+  demonlock delay-set-policy --help       # this help   (--status / --abort / --help also work bare)
 """
 
 func runDelaySetPolicy(_ args: [String]) {
@@ -754,7 +754,7 @@ func runDelaySetPolicy(_ args: [String]) {
     }
     dropDelayMarker(Paths.dspRequestMarker, payload: p)
     print("✓ queued — this policy applies in \(delayH)h (re-validated then). It takes effect with NO sudo.")
-    print("  Watch it: `demonlock status`  ·  cancel: `demonlock delaysetpolicy --abort`")
+    print("  Watch it: `demonlock status`  ·  cancel: `demonlock delay-set-policy --abort`")
 }
 
 /// Print the queued delayed-policy state (from the published snapshot, else the on-disk pending file).
@@ -766,7 +766,7 @@ private func printDelayedPolicyStatus() {
               "  (\(left/3600)h \(left%3600/60)m left)")
         print("  \(pc.payload)")
     } else {
-        print("delayed policy: none queued.  Queue one with `demonlock delaysetpolicy \"<policy>\"` (lands in \(delayH)h).")
+        print("delayed policy: none queued.  Queue one with `demonlock delay-set-policy \"<policy>\"` (lands in \(delayH)h).")
     }
 }
 
@@ -859,7 +859,7 @@ func printHelp() {
     USER COMMANDS (no sudo):
       status              Arm state, phase, verdict, reason, policy, zones, health + every subsystem
       zones               Map of your zones. Add/Delete a zone — each asks: now (admin) or in 36h.
-      zones list          Print zone names + shapes (no map) — `list-zones` also works
+      zones list          Print zone names + shapes (no map)
       scan                Continuously scan nearby Wi-Fi (SSID + BSSID) until Ctrl+C
       perm-ask            (Re)grant the Location permission the agent needs
       arm                 Turn enforcement ON (also drops admin + closes the release valve)

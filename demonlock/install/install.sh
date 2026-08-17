@@ -124,8 +124,8 @@ chown -R root:wheel "$SUPPORT"
 chmod 755 "$SUPPORT" "$SUPPORT/logs"
 chmod 644 "$SUPPORT"/settings.json "$SUPPORT"/armed "$SUPPORT"/snooze "$SUPPORT"/zones.json 2>/dev/null || true
 [ -f "$SUPPORT/policy.txt" ] && chmod 644 "$SUPPORT/policy.txt"
-# Self-serve inbox: USER-owned so the no-sudo requests — `release-valve --request`/`abort`,
-# `delaysetpolicy`, and the map's "Save in 36h" (delayzones) — can drop a marker without sudo (the
+# Self-serve inbox: USER-owned so the no-sudo requests — `admin-release-valve request`/`abort`,
+# `delay-set-policy`, and the map's "Save in 36h" (delayzones) — can drop a marker without sudo (the
 # daemon stamps the real request time, so the delay can't be backdated). The pending state + config
 # stay root-owned in $SUPPORT (root/daemon-written), world-readable for `status`.
 mkdir -p "$SUPPORT/rv"

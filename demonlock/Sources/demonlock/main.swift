@@ -8,29 +8,27 @@ switch cmd {
 case "enforcerd":                          Enforcer().run()
 case "agent":                              runAgent()
 
-// user commands
+// user commands (one canonical name each — no aliases)
 case "status":                             runStatus()
 case "scan":                               runScan()
-case "zones", "view-zones", "edit-zones":  argv.dropFirst().contains("list") ? runZoneList() : runZones()
-case "list-zones":                         runZoneList()
+case "zones":                              argv.dropFirst().contains("list") ? runZoneList() : runZones()
 case "perm-ask":                           runPermAsk()
 case "test-lockout":                       runTestLockout(Array(argv.dropFirst()))
 
 // no sudo — self-serve delayed changes (land after 36h)
-case "delaysetpolicy", "delay-set-policy": runDelaySetPolicy(Array(argv.dropFirst()))
+case "delay-set-policy":                   runDelaySetPolicy(Array(argv.dropFirst()))
 case "delayzones":                         runDelayZones(Array(argv.dropFirst()))
 
 // sudo commands
 case "setpolicy":                          runSetPolicy(argv.dropFirst().joined(separator: " "))
 case "snooze":                             runSnooze(argv.dropFirst().joined(separator: " "))
-case "release-valve", "rv",
-     "admin-release-valve", "arv":         runReleaseValve(Array(argv.dropFirst()))
+case "admin-release-valve":                runReleaseValve(Array(argv.dropFirst()))
 case "arm":                                runArm()
 case "nosudo":                             runNoSudo()
 case "disarm":                             runDisarm()
-case "safe-apps", "safeapps":              runSafeApps(Array(argv.dropFirst()))
-case "snooze-preset", "snooze-presets":    runSnoozePreset(Array(argv.dropFirst()))
-case "password-lockbox", "lockbox":        runLockbox(Array(argv.dropFirst()))
+case "safe-apps":                          runSafeApps(Array(argv.dropFirst()))
+case "snooze-preset":                      runSnoozePreset(Array(argv.dropFirst()))
+case "password-lockbox":                   runLockbox(Array(argv.dropFirst()))
 case "settings-guard":
     switch argv.dropFirst().first {
     case "dump": SettingsGuard.dump()
