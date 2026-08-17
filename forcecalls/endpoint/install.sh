@@ -128,6 +128,16 @@ else
     dl_warn "a wrong SIP password shows up here as a 401. re-run with the right one."
 fi
 
+# The module set is easy to get wrong and fails silently: a missing account.so means no account is
+# ever loaded, a missing menu.so means no auto-answer. Prove the control channel answers a real
+# command rather than assuming the config is sane.
+CTL='{"command":"listcalls","params":"","token":"fc"}'
+if printf '%d:%s,' "${#CTL}" "$CTL" | nc -w2 127.0.0.1 4444 2>/dev/null | grep -q '"ok":true'; then
+    dl_ok "ctrl_tcp responds — command set loaded"
+else
+    dl_warn "ctrl_tcp not answering commands — check the module list in /etc/baresip/config"
+fi
+
 echo
 echo "✓ endpoint installed."
 echo "  verify it survives being killed (do this BEFORE you drop sudo):"

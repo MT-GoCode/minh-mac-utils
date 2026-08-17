@@ -1,9 +1,19 @@
-# /etc/baresip/config  — root:wheel 644
+# /etc/baresip/config — root:wheel 644. module_path is rewritten by install.sh from your Homebrew
+# prefix, so don't hardcode it here.
 module_path            /opt/homebrew/lib/baresip/modules
+
+# account.so reads /etc/baresip/accounts. WITHOUT IT no account is ever loaded and baresip sits
+# there registered to nothing — silently, with no error in the log.
+module                 account.so
+# menu.so registers the command set (listcalls/hangup/mute…) AND implements answermode=auto, which
+# is the entire point of this endpoint. Without it there are no commands and no auto-answer.
+module                 menu.so
 module                 ctrl_tcp.so
 module                 coreaudio.so
+# g711 is what the PSTN carries anyway; opus.so isn't shipped in the Homebrew build, and listing a
+# module that doesn't exist is a load error.
 module                 g711.so
-module                 opus.so
+module                 l16.so
 module                 stun.so
 module                 turn.so
 module                 ice.so
@@ -13,7 +23,7 @@ audio_source           coreaudio,default
 audio_alert            coreaudio,default
 
 sip_listen             0.0.0.0:5062
-call_accept            yes
 
-# ctrl_tcp: JSON-over-netstring control channel, localhost only
+# ctrl_tcp: JSON-over-netstring control channel, localhost only. The Dock agent polls it to know
+# when a call is live; `forcecalls` itself never uses it.
 ctrl_tcp_listen        127.0.0.1:4444

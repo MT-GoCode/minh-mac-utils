@@ -33,7 +33,7 @@ enum Baresip {
             if skipped < slowRetryEvery { return nil }
             skipped = 0
         }
-        let r = send(cmd, timeout: timeout)
+        let r = exchange(cmd, timeout: timeout)
         consecutiveFailures = (r == nil) ? consecutiveFailures + 1 : 0
         return r
     }
@@ -42,7 +42,7 @@ enum Baresip {
     /// failure doesn't disable the control channel until the next launch.
     static func resetBackoff() { consecutiveFailures = 0; skipped = 0 }
 
-    private static func send(_ cmd: String, timeout: Double) -> String? {
+    private static func exchange(_ cmd: String, timeout: Double) -> String? {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
         defer { close(fd) }
