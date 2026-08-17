@@ -34,7 +34,6 @@ enum Admin {
     static func revoke(_ user: String) -> Bool {
         let wasAdmin = isAdmin(user)
         let rc = wasAdmin ? Proc.run(dseditgroup, ["-o", "edit", "-d", user, "-t", "user", "admin"]) : 0
-        try? FileManager.default.removeItem(atPath: "/etc/sudoers.d/sudome-\(user)")
         clearSudoCache()
         return rc == 0
     }

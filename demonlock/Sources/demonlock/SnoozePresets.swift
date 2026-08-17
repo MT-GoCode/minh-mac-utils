@@ -42,7 +42,6 @@ enum SnoozePresets {
     struct Status: Codable {
         var invocationName: String?
         var invocationApplyAtEpoch: Double?
-        var invocationTargetEpoch: Double?
         var pendingAdds: [AddView] = []
     }
     struct AddView: Codable { var name: String; var applyAtEpoch: Double }
@@ -126,7 +125,6 @@ enum SnoozePresets {
 
         return Status(invocationName: st.invocation?.name,
                       invocationApplyAtEpoch: st.invocation?.applyAt,
-                      invocationTargetEpoch: st.invocation?.targetAt,
                       pendingAdds: st.adds.values.sorted { $0.preset.name < $1.preset.name }
                         .map { AddView(name: $0.preset.name, applyAtEpoch: $0.applyAt) })
     }

@@ -50,11 +50,6 @@ struct Zone: Codable, Equatable {
 enum ZoneStore {
     static func load(from path: String = Paths.zonesFile) -> [Zone] { loadJSON(path) ?? [] }
 
-    static func save(_ zones: [Zone], to path: String = Paths.zonesFile) throws {
-        let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try enc.encode(zones).write(to: URL(fileURLWithPath: path), options: .atomic)
-    }
-
     /// Names of all zones containing the point (exact geometry).
     static func containing(lat: Double, lon: Double, zones: [Zone]) -> [String] {
         zones.filter { $0.contains(lat: lat, lon: lon) }.map(\.name)

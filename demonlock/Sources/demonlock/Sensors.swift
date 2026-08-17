@@ -215,11 +215,11 @@ final class SensorFeeder: NSObject, CLLocationManagerDelegate {
     /// PIDs of the user's GUI apps for the enforcer's LOCKED kill list. We SIGKILL every foreground
     /// (`.regular`) app — including Apple ones like Safari — PLUS third-party menubar (`.accessory`)
     /// apps, so a distraction repackaged as LSUIElement can't dodge the lockout. NEVER killed: an app
-    /// in `settings.spareApps` whose LIVE code signature is VERIFIED (Apple-rooted + that bundle id +
+    /// in the effective safe-apps list whose LIVE code signature is VERIFIED (Apple-rooted + that bundle id +
     /// that Team ID — so a distraction that merely spoofs a whitelisted bundle id from another signer
     /// is still killed; Team ID survives app auto-updates); Apple's own `.accessory` items (`com.apple.*`);
     /// nil-bundle helpers; and this agent itself (spared by PID, so the sensor survives the lockout).
-    /// spareApps is reloaded each feed (editing settings.json takes effect live). feed() runs on main.
+    /// the safe-apps list is reloaded each feed (a register/remove takes effect live). feed() runs on main.
     private func currentGuiPids() -> [Int32] {
         SensorFeeder.guiKillTargets(excludingPID: getpid()).map(\.pid)
     }

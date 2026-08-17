@@ -5,7 +5,7 @@ import MapKit
 
 // One program for viewing + managing zones. Runs as your user (root has no Location).
 // Adding a zone LOOSENS the policy → escalates via the admin prompt.
-// Deleting a zone TIGHTENS it → safe; goes through the passwordless `_zonedel` sudoers grant.
+// Deleting a zone can LOOSEN the policy (a name used under NOT) → gated like adding: admin now, or delayed.
 // No in-place modification of existing zones.
 
 private enum DrawMode { case idle, circle, polygon }
@@ -275,11 +275,6 @@ final class ZonesController: NSObject, NSApplicationDelegate, MKMapViewDelegate,
         return (try? json.write(toFile: Paths.dzRequestMarker, atomically: true, encoding: .utf8)) != nil
     }
 
-    /// Deleting tightens the policy → safe; passwordless via the `_zonedel` sudoers grant.
-    private func deleteWithSudo(_ name: String) -> Bool {
-        Proc.run("/usr/bin/sudo", ["-n", Paths.cliWrapper, "_zonedel", name]) == 0
-    }
-
     // MARK: rendering
 
     private func reload() { zones = ZoneStore.load(); table.reloadData(); renderAll() }
@@ -440,15 +435,3 @@ func runZones() {
     app.run()
 }
 
-/// Hidden, root-only (via the passwordless sudoers grant): delete a zone by name. Safe — only removes.
-func runZoneDelete(_ name: String) {
-    if geteuid() != 0 {
-        FileHandle.standardError.write(Data("_zonedel is internal (used via sudo).\n".utf8)); exit(1)
-    }
-    var zs = ZoneStore.load()
-    let before = zs.count
-    zs.removeAll { $0.name == name }
-    guard zs.count < before else { print("no zone named \"\(name)\""); return }
-    do { try ZoneStore.save(zs); chmod(Paths.zonesFile, 0o644); print("deleted \"\(name)\"") }
-    catch { FileHandle.standardError.write(Data("save failed: \(error)\n".utf8)); exit(1) }
-}

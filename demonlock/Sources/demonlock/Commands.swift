@@ -19,7 +19,7 @@ private func fail(_ msg: String) -> Never {
 // MARK: - shared CLI contract for the no-sudo request commands
 
 /// Uniform `--help` / `--status` / `--abort` handling — accepted BARE or `--`-prefixed — shared by
-/// every no-sudo request command (release-valve, delay-set-policy, delayzones, igotshitdueatmidnight).
+/// every no-sudo request command (delay-set-policy, delayzones).
 /// Returns true when it consumed the arg (the caller should `return`); false to fall through to that
 /// command's own verb (its request / enqueue / --set-*). Reserving these words as subcommands stops a
 /// bare `status`/`help` from being mis-parsed as a payload (the bug that queued "status"/"help").
@@ -183,9 +183,8 @@ private func applySnooze(until target: Date) {
 
 private let snoozeMaxHours = Bounds.snoozeDurationMax / 3600   // baked ceiling (Settings.swift)
 
-/// Stand down enforcement until a target time, like `snoozetonight` but flexible: `for <duration>`
-/// (d/h/m/s) or `until <[day]HHMM>`. Capped at 18 hours. Reuses `nextHHMM` (shared with
-/// `snoozetonight`) and the same `SnoozeStore` the daemon already honors + auto-clears (`arm` also
+/// Stand down enforcement until a target time: `for <duration>` (d/h/m/s) or `until <[day]HHMM>`.
+/// Capped at 18 hours. Writes the `SnoozeStore` the daemon already honors + auto-clears (`arm` also
 /// clears it). All times local.
 func runSnooze(_ spec: String) {
     requireRoot("snooze")

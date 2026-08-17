@@ -21,7 +21,7 @@ enum Paths {
     // Release valve. Config + lifecycle state are root-owned (only `--set-*`/the daemon write them);
     // the inbox is a USER-owned subdir so `--request`/`abort` can drop a marker without sudo (the
     // daemon stamps the real request time itself, so the delay can't be backdated).
-    static let rvConfigFile    = supportDir + "/releasevalve.json"   // {windowPolicy, delaySec, durationSec}
+    static let rvConfigFile    = supportDir + "/releasevalve.json"   // {gatePolicy, delaySec, maxRequestDurationSec}
     static let rvStateFile     = supportDir + "/rv-state.json"       // {requestedAt, eligibleAt, grantedAt, grantExpiresAt}
     static let rvInboxDir      = supportDir + "/rv"
     static let rvRequestMarker = rvInboxDir + "/request"

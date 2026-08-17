@@ -130,7 +130,7 @@ enum PolicyEngine {
         }
     }
 
-    /// For `setpolicy` / `set-window-policy`: parse and confirm every referenced zone exists. `IN_POLICY`
+    /// For `setpolicy` / the release-valve gate-policy: parse and confirm every referenced zone exists. `IN_POLICY`
     /// is only meaningful in the release-valve window policy, so it's rejected unless `allowInPolicy`.
     /// Throws PolicyError on any problem.
     @discardableResult

@@ -207,8 +207,8 @@ Wi‑Fi check pins BSSIDs.
 names) · `scan` · `perm-ask` · `arm` (tightens — passwordless via sudoers; also drops admin + closes
 the release valve) · `nosudo` (drop admin now) · `test-lockout` (see below) · `settings-guard` (+
 `dump`) · `admin-release-valve …` · `safe-apps …` · `snooze-preset …` · `password-lockbox …` ·
-`delay-set-policy "<expr>"` (queue a policy; lands after the delay — `--status`/`--abort`;
-`delay-set-policy` still aliases it) · `delayzones --status`/`--abort` (view/cancel a zones change
+`delay-set-policy "<expr>"` (queue a policy; lands after the delay — `--status`/`--abort`) ·
+`delayzones --status`/`--abort` (view/cancel a zones change
 queued from the map) · `help`.
 
 **Sudo:** `setpolicy` · `disarm` · `snooze "<spec>"` (flexible stand-down: `"for <duration>"` in
@@ -345,7 +345,6 @@ the request time itself, waits out the delay, and — the first tick the **gate 
 true — grants admin for your requested duration, then revokes. **The request delay is the real gate**
 (you can't backdate it — the marker lands in the user-owned `rv/` inbox but the *root daemon* clocks
 it); the auto-revoke after the duration is anti-accident, not containment (see the admin model above).
-Old aliases `release-valve` / `rv` still route here.
 
 ```bash
 # configure (sudo; each sets one field):
@@ -430,7 +429,7 @@ no longer parses.
 ```bash
 demonlock delay-set-policy '(LOCATED_IN_ANY(["office"])) AND TIME_IS_ANY([MTWRF0700-2000])'
                                     # queue a NEW allow-policy; lands after the delay (no sudo now OR then)
-demonlock delay-set-policy --status # what's queued + when it lands   (delay-set-policy still aliases it)
+demonlock delay-set-policy --status # what's queued + when it lands
 demonlock delay-set-policy --abort  # cancel it
 ```
 

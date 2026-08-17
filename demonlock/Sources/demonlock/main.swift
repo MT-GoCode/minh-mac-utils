@@ -37,7 +37,6 @@ case "settings-guard":
 
 // internal
 case "_policytest":                        runPolicyTest()
-case "_zonedel":                           runZoneDelete(argv.dropFirst().joined(separator: " "))
 
 case "help", "--help", "-h":               printHelp()
 

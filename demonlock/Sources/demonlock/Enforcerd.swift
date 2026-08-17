@@ -425,7 +425,7 @@ final class Enforcer {
             lockbox: lockboxStatus))
     }
 
-    /// Resolve a uid to its login name (for `sudome --give/--take-from-user`). nil if unknown.
+    /// Resolve a uid to its login name (for Admin grant/revoke, which need a name not a uid). nil if unknown.
     private func usernameForUID(_ uid: uid_t) -> String? {
         guard let pw = getpwuid(uid) else { return nil }
         return String(cString: pw.pointee.pw_name)
