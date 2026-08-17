@@ -4,16 +4,19 @@
 # Run:  sudo ./install.sh [--reset-creds]
 set -euo pipefail
 
-[ "$(id -u)" -eq 0 ] || { echo "run with sudo:  sudo ./install.sh"; exit 1; }
-: "${SUDO_USER:?must be run via sudo (need SUDO_USER to know whose inbox to trust)}"
-# Refuse a ROOT shell: SUDO_USER=root would seed enforcedUser=root, so the daemon would trust markers
-# from root's inbox instead of yours — i.e. no forced call you could ever manage. The agent also runs
-# in YOUR gui session and signs against YOUR login keychain.
-[ "$SUDO_USER" != root ] || { echo "✗ don't run this from a root shell (SUDO_USER=root). Exit it, then: sudo ./install.sh"; exit 1; }
+# Bespoke installer (like demonlock / wtalk / nextdns-sidecar): the stdin credential prompt, the
+# root daemon + GUI agent pair, and the root-owned-except-the-inbox layout don't fit the gui-app
+# manifest. Still sources the shared lib for the common primitives — notably dl_register_spare,
+# since demonlock ships no base spare list and each app registers itself at install.
+APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+source "$APP_DIR/../scripts/install-lib.sh"
+dl_require_root
 
+BUNDLE_ID=com.forcecalls
+TEAM_ID=BULCQM9J2V
 USER_NAME="$SUDO_USER"
 USER_UID="$(id -u "$USER_NAME")"
-HERE="$(cd "$(dirname "$0")/.." && pwd)"
+HERE="$APP_DIR"
 SUPPORT="/Library/Application Support/Forcecalls"
 BIN=/usr/local/libexec/forcecalls
 cd "$HERE"
@@ -133,15 +136,11 @@ launchctl bootstrap system /Library/LaunchDaemons/com.forcecalls.daemon.plist 2>
 launchctl bootstrap "gui/$USER_UID" /Library/LaunchAgents/com.forcecalls.agent.plist 2>/dev/null \
     || launchctl kickstart -k "gui/$USER_UID/com.forcecalls.agent" 2>/dev/null || true
 
-# A demonlock lockout force-closes .regular apps — which the agent becomes for the duration of a
-# call. Spare it, or a lockout at 8:45 PM would kill the window mid-conversation.
-DL=/Applications/Demonlock.app/Contents/MacOS/demonlock
-if [ -x "$DL" ]; then
-  "$DL" safe-apps register com.forcecalls \
-    || echo "  ⚠️  demonlock register failed — spare it manually: sudo demonlock safe-apps register com.forcecalls"
-else
-  echo "  (demonlock not installed — if you add it later:  sudo demonlock safe-apps register com.forcecalls)"
-fi
+# A demonlock lockout force-closes .regular apps — and the agent becomes .regular for the duration
+# of a call. Spare it, or a lockout at 8:45 PM would kill the window mid-conversation. Root-owned in
+# /Applications, so this takes the plain Regime A path (bundle only, no --no-root-ownership).
+dl_register_spare forcecalls "$BUNDLE_ID" "$TEAM_ID" \
+    || dl_warn "spare registration failed — do it by hand: sudo demonlock safe-apps register $BUNDLE_ID"
 
 echo
 echo "✓ installed. Everything below is user-runnable — NO sudo:"
