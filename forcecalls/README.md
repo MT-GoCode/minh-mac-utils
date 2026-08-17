@@ -33,6 +33,7 @@ forcecalls show                                              # calls, next fire,
 forcecalls add --name <name> --destination <+E.164> --schedule <DAYS|*><HHMM>
 forcecalls remove <name|id>                                  # queued; lands after the delay
 forcecalls abort                                             # cancel every queued removal
+forcecalls testcall <+E.164|name>                            # dial now, exactly as a scheduled call would
 forcecalls help
 ```
 
@@ -48,6 +49,19 @@ forcecalls add --name gran --destination +15553334444 --schedule MWF1900  # Mon/
 ```
 
 All times are **local**, resolved live in the current timezone.
+
+### Trying it before 8:45 PM
+
+`testcall` takes the exact same path a scheduled fire takes — same leg order, same LaML, same
+endpoint — so if it works, the real thing works. It just skips the schedule and isn't recorded
+against any forced call.
+
+```sh
+forcecalls testcall +15559998888    # a raw number
+forcecalls testcall mom             # or the name of a forced call you already added
+```
+
+The outcome lands in `forcecalls show` under `(testcall)`.
 
 ### Removal is the whole point
 

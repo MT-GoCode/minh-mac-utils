@@ -1,5 +1,9 @@
 import Foundation
 
+/// Results of a `testcall` file under this reserved key, which can't collide with a real call id
+/// (those are stringified Ints).
+let kTestKey = "test"
+
 /// What the CLI asks for, as it travels through a marker.
 struct AddRequest: Codable {
     var name: String
@@ -100,6 +104,24 @@ enum Daemon {
                     st.pendingRemovals.append(PendingRemoval(callID: id, name: call.name,
                                                             requestedAt: now, applyAt: now + s.removeDelaySec))
                     logStderr("remove: '\(call.name)' queued — lands in \(fmtLeft(s.removeDelaySec))")
+
+                case "testcall":
+                    // Deliberately the SAME call path as a scheduled fire — same leg order, same
+                    // LaML, same endpoint — so a passing test means the real thing works. It just
+                    // skips the schedule and isn't recorded against any forced call.
+                    guard let dest = try? validateDestination(m.body) else {
+                        logStderr("testcall: rejected invalid destination '\(m.body)'"); continue
+                    }
+                    guard let creds = Creds.load() else {
+                        st.lastResult[kTestKey] = "FAILED no credentials — reinstall to set them"
+                        st.lastResultAt[kTestKey] = nowEpoch()
+                        logStderr("testcall: no credentials at \(Paths.credsFile)")
+                        continue
+                    }
+                    let tr = SignalWire.placeCall(creds: creds, destination: dest)
+                    st.lastResult[kTestKey] = (tr.ok ? "ok " : "FAILED ") + tr.detail
+                    st.lastResultAt[kTestKey] = nowEpoch()
+                    logStderr("testcall -> \(dest): \(tr.ok ? "ok" : "FAILED") \(tr.detail)")
 
                 case "abort":
                     if st.pendingRemovals.isEmpty {

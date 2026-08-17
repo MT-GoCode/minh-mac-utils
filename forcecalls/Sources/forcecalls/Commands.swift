@@ -40,9 +40,14 @@ enum Commands {
             let when = st.lastResultAt[String(c.id)].map { fmtWhen($0, "MMM d HH:mm") } ?? "?"
             return "  \(pad(c.name, nameW + 2))\(when)  \(r)"
         }
-        if !results.isEmpty {
+        var attempts = results
+        if let r = st.lastResult[kTestKey] {
+            let when = st.lastResultAt[kTestKey].map { fmtWhen($0, "MMM d HH:mm") } ?? "?"
+            attempts.append("  \(pad("(testcall)", nameW + 2))\(when)  \(r)")
+        }
+        if !attempts.isEmpty {
             print("\nlast attempt:")
-            results.forEach { print($0) }
+            attempts.forEach { print($0) }
         }
     }
 
@@ -102,6 +107,26 @@ enum Commands {
         }
     }
 
+    // MARK: testcall
+
+    /// Dial right now, exactly the way 8:45 PM would. Accepts a raw number or the name of a forced
+    /// call, so you can rehearse the real thing without waiting for it.
+    static func testcall(_ args: [String]) {
+        let positional = args.filter { !$0.hasPrefix("--") }
+        guard let target = positional.first else {
+            die("testcall: give a number or a forced-call name — forcecalls testcall +15559998888")
+        }
+        let dest: String
+        if let known = CallStore.load().first(where: { $0.name == target }) {
+            dest = known.destination
+        } else {
+            do { dest = try validateDestination(target) } catch { die("testcall: \(error)") }
+        }
+        do { try MarkerIO.drop(kind: "testcall", body: dest) } catch { die("testcall: \(error)") }
+        print("calling \(dest) now — their phone rings first, then your endpoint auto-answers.")
+        print("outcome shows up in: forcecalls show")
+    }
+
     // MARK: help
 
     static func help() {
@@ -115,6 +140,7 @@ enum Commands {
           forcecalls add --name <name> --destination <+E.164> --schedule <DAYS|*><HHMM>
           forcecalls remove <name|id>      queued; lands after the removal delay
           forcecalls abort                 cancel every queued removal
+          forcecalls testcall <number|name>  dial now, exactly as a scheduled call would
           forcecalls help
 
         SCHEDULE — days are M T W R F S U (R=Thu, U=Sun) or * for every day, then 4-digit HHMM:

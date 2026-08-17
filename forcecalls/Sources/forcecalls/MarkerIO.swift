@@ -13,11 +13,11 @@ import Foundation
 enum MarkerIO {
 
     struct Marker {
-        var kind: String   // "add" | "remove" | "abort"
+        var kind: String   // "add" | "remove" | "abort" | "testcall"
         var body: String
     }
 
-    static let kinds = ["add", "remove", "abort"]
+    static let kinds = ["add", "remove", "abort", "testcall"]
 
     static func drainAll(enforcedUID: uid_t) -> [Marker] {
         let fm = FileManager.default
@@ -59,8 +59,18 @@ enum MarkerIO {
     /// CLI side: drop a marker under a unique, time-ordered name so two requests in one tick can
     /// neither clobber each other nor be replayed out of order.
     static func drop(kind: String, body: String) throws {
-        guard FileManager.default.fileExists(atPath: Paths.inboxDir) else {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: Paths.inboxDir) else {
             throw ForceError(message: "forcecalls isn't installed (no \(Paths.inboxDir)) — run: sudo ./install.sh")
+        }
+        // An inbox that exists but isn't yours means a partial or stale install: the installer is
+        // what chowns it to the enforced user. Say so, rather than surfacing a bare "permission
+        // denied" that reads like a bug in the CLI.
+        guard fm.isWritableFile(atPath: Paths.inboxDir) else {
+            throw ForceError(message: """
+                the inbox at \(Paths.inboxDir) isn't writable by you — the install didn't finish.
+                re-run: sudo ./install.sh
+                """)
         }
         let name = String(format: "%013.0f-%@.%@", nowEpoch() * 1000, String(UUID().uuidString.prefix(8)), kind)
         do { try body.write(toFile: Paths.inboxDir + "/" + name, atomically: true, encoding: .utf8) }

@@ -9,6 +9,8 @@ case "add":
     Commands.add(Array(argv.dropFirst()))
 case "remove", "rm":
     Commands.remove(Array(argv.dropFirst()))
+case "testcall", "test":
+    Commands.testcall(Array(argv.dropFirst()))
 case "abort":
     Commands.abort()
 case "daemon":
