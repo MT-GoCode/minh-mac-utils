@@ -26,23 +26,31 @@ The **endpoint** — baresip, the thing that rings on your Mac — installs sepa
 
 ## Setting up SignalWire (once)
 
-Everything lives in one dashboard. Your space name becomes both URLs you need:
-`fuckitall.signalwire.com` for the dashboard, `fuckitall.sip.signalwire.com` for SIP.
+Three things to create in your Space. **Read every value off the dashboard — none of them are
+guessable, and one of them looks like it should be.**
 
-1. **API token** — `https://fuckitall.signalwire.com/credentials`. Create one and copy it
-   immediately; it is shown once. The Project ID on the same page is the Basic-auth username.
-2. **SIP credential** — `https://fuckitall.signalwire.com/resources/sips`. Pick a username and
-   password. That yields `sip:<username>@fuckitall.sip.signalwire.com`, which is your endpoint.
-   Leave the **call handler** on `default`: this endpoint only ever *receives* calls, so it never
-   needs PSTN dialing rights, and not having them limits the damage if the credential leaks.
-3. **Verified caller ID** — `https://fuckitall.signalwire.com/verified_caller_ids`. Add the number
+1. **API token** — Dashboard ▸ **API**. Create a token and copy it immediately; it is shown once.
+   The **Project ID** on the same page is the Basic-auth username that goes with it.
+
+2. **SIP credential** — Dashboard ▸ **Resources** ▸ Add ▸ **SIP Credential**. Type a username into
+   the **URI** box. The dialog prints the domain right next to it, and that domain is *not* simply
+   `<space>.sip.signalwire.com` — it carries a suffix derived from your project ID:
+
+   ```
+   <username>@<space>-<suffix>.sip.signalwire.com
+   ```
+
+   Copy what the dialog shows. Leave **Send As** and **Caller ID** blank — they apply only when a
+   credential dials out to PSTN, and this one only ever *receives* calls; withholding PSTN rights
+   also caps the damage if it leaks. Encryption stays default. Set a password further down the form
+   and keep it: `endpoint/install.sh` asks for it.
+
+3. **Verified caller ID** — Dashboard ▸ **Phone Numbers** ▸ **Verified Caller ID**. Add the number
    you want the other person to see. SignalWire calls it and reads you a code. It is outbound-only
-   and does not touch your carrier service, so **you never have to rent a number** — no monthly
-   line on the bill, just per-minute.
+   and doesn't touch your carrier service, so **you never rent a number** — no monthly line, just
+   per-minute.
 
-The same SIP username and password also go into `/etc/baresip/accounts` — see `endpoint/README.md`.
-
-### Installing with the values
+### Installing
 
 Interactive, which prompts for all five:
 
@@ -50,23 +58,23 @@ Interactive, which prompts for all five:
 sudo ./install.sh
 ```
 
-Or non-interactively, which is also the only way that works over SSH or from a script:
+Non-interactive — also the only form that works over SSH or from a script:
 
 ```sh
-sudo SW_SPACE=fuckitall.signalwire.com \
-     SW_PROJECT=3cfa65a8-0c88-4333-a8c4-16a09fb46f72 \
-     SW_TOKEN=PT…                                     \
-     SW_CALLERID=+19495404623 \
-     SW_ENDPOINT=sip:minh@fuckitall.sip.signalwire.com \
+sudo SW_SPACE=<space>.signalwire.com \
+     SW_PROJECT=<project-id> \
+     SW_TOKEN=<api-token> \
+     SW_CALLERID=+15551234567 \
+     SW_ENDPOINT=sip:<username>@<space>-<suffix>.sip.signalwire.com \
      ./install.sh
 ```
 
-**The token is deliberately not written down here.** It is the one real secret of the five, and this
-repo's rule is that nothing secret is committed — it lives only in the root-owned `0600`
-`creds.json` that the installer writes. Replace it later with `sudo ./install.sh --reset-creds`.
+Add `--reset-creds` to replace credentials that are already installed.
 
-Caller ID must be bare E.164 — `+19495404623`, no spaces, parens, or dashes. SignalWire rejects
+Caller ID must be bare E.164 — `+15551234567`, no spaces, parens, or dashes. SignalWire rejects
 anything else, and it fails at call time rather than at install.
+
+Nothing here is committed: all five land in the root-owned `0600` `creds.json` the installer writes.
 
 ## Commands
 
