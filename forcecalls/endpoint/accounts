@@ -1,4 +1,4 @@
 # /etc/baresip/accounts — root:wheel 600
 # answermode=auto  -> picks up without you touching anything
 # regint=60        -> re-register every 60s so the binding never goes stale
-<sip:USERNAME@YOURDOMAIN.sip.twilio.com>;auth_user=USERNAME;auth_pass=PASSWORD;answermode=auto;regint=60;medianat=ice;stunserver=stun:global.stun.twilio.com:3478
+<sip:USERNAME@YOURSPACE.sip.signalwire.com>;auth_user=USERNAME;auth_pass=PASSWORD;answermode=auto;regint=60;medianat=ice;stunserver=stun:stun.l.google.com:19302
