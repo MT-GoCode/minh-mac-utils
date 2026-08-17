@@ -11,5 +11,6 @@ if [ -n "${SUDO_USER:-}" ]; then launchctl bootout "gui/$(id -u "$SUDO_USER")/$A
 rm -f "/Library/LaunchDaemons/$WD_LABEL.plist" "/Library/LaunchAgents/$AGENT_LABEL.plist"
 rm -f /usr/local/libexec/forcecalls-endpoint-watchdog.sh
 rm -rf /etc/baresip
+dseditgroup -o delete -n . _forcecalls 2>/dev/null || true
 pkill baresip 2>/dev/null || true
 echo "  ✓ endpoint removed (baresip itself left installed — brew uninstall baresip to drop it)"

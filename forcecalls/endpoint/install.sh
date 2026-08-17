@@ -83,11 +83,24 @@ cp "$WD_LABEL.plist" "/Library/LaunchDaemons/$WD_LABEL.plist"
 chown -R root:wheel /etc/baresip
 chown root:wheel "/Library/LaunchAgents/$AGENT_LABEL.plist" "/Library/LaunchDaemons/$WD_LABEL.plist"
 chmod 644 /etc/baresip/config "/Library/LaunchAgents/$AGENT_LABEL.plist" "/Library/LaunchDaemons/$WD_LABEL.plist"
-# 0640 root:staff, NOT 0600 root:wheel. baresip runs as a LaunchAgent in YOUR gui session, so it
-# reads this file as you — 0600 root-only meant no account was ever loaded and registration silently
-# never happened. You can read the password; you still can't WRITE the file, which is the part that
-# matters: answermode=auto and the account itself are out of your reach.
-chgrp staff /etc/baresip/accounts
+# accounts holds the SIP password, and baresip runs as a LaunchAgent in YOUR gui session — so it
+# reads the file as you. Root-only 0600 meant no account ever loaded and registration silently never
+# happened; that was the original bug here.
+#
+# But NOT root:staff either: every local account on macOS is in staff, so that would hand the SIP
+# password to any other user on the box — enough to register as this endpoint and receive the calls.
+# Instead: a dedicated group whose only member is the enforced user. Root still owns the file, so
+# you can read the password but cannot WRITE it — answermode=auto and the account itself stay out of
+# reach without sudo, which is the property that actually enforces anything.
+FC_GROUP=_forcecalls
+if ! dseditgroup -o read "$FC_GROUP" >/dev/null 2>&1; then
+    dseditgroup -o create -n . "$FC_GROUP" || { echo "✗ couldn't create group $FC_GROUP"; exit 1; }
+    dl_ok "created group $FC_GROUP"
+fi
+dseditgroup -o edit -a "$USER_NAME" -t user "$FC_GROUP" 2>/dev/null || true
+dseditgroup -o checkmember -m "$USER_NAME" "$FC_GROUP" >/dev/null 2>&1 \
+    || { echo "✗ $USER_NAME is not a member of $FC_GROUP — refusing to leave an unreadable accounts file"; exit 1; }
+chgrp "$FC_GROUP" /etc/baresip/accounts
 chmod 640 /etc/baresip/accounts
 : > /var/log/baresip.log && chown "$USER_NAME" /var/log/baresip.log   # truncate: the check below greps it
 
