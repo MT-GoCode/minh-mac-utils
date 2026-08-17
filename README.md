@@ -26,6 +26,7 @@ sudo ./nextdns-sidecar/uninstall.sh
 sudo ./wtalk/uninstall.sh
 sudo ./msv2/uninstall.sh
 sudo ./stayup/uninstall.sh
+sudo ./blockrem/uninstall.sh
 sudo ./remote-agent-connector/uninstall.sh
 ./scripts/unset-paseo-daemon.sh
 rm -f ~/.local/bin/chrome-browser-fleet
@@ -39,6 +40,7 @@ sudo -v
 sudo ./demonlock/install.sh
 sudo ./msv2/install.sh
 sudo ./stayup/install.sh
+sudo ./blockrem/install.sh
 sudo ./remote-agent-connector/install.sh
 ./wtalk/setup.sh
 sudo ./wtalk/install.sh
@@ -58,6 +60,7 @@ sudo ./demonlock/register-recommended-spares.sh
 | **wtalk** | push-to-talk dictation daemon (Parakeet transcribe + Gemini cleanup); PyInstaller-frozen, sealed, root-owned | `sudo ./wtalk/install.sh` | yes |
 | **msv2** | desktop groups that scope ⌘⇥ + a hold-⌘⌥ overview; never moves windows; `msv2` CLI | `sudo ./msv2/install.sh` | yes |
 | **stayup** | menu-bar toggle for staying awake with the lid closed (`pmset disablesleep`); `stayup` CLI | `sudo ./stayup/install.sh` | yes |
+| **blockrem** | scheduled **un-quittable screen blocks** for forced breaks — a root daemon revives a grey full-screen cover + input freeze at each alarm; **fail-open** (a bug always lifts it); managing alarms is no-sudo | `sudo ./blockrem/install.sh` | yes |
 | **agentic-browser-setup** | installs `chrome-browser-fleet`: spins up isolated Chrome windows on their own CDP ports for agent browser automation | `./agentic-browser-setup/install.sh` | no |
 
 **Paseo daemon (`scripts/`).** `scripts/setup-paseo-daemon.sh` hands the third-party Paseo daemon to
