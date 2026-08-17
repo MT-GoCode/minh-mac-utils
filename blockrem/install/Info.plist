@@ -2,7 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleIdentifier</key>           <string>com.blockrem</string>
+    <key>CFBundleIdentifier</key>           <string>com.minh.blockrem</string>
     <key>CFBundleName</key>                 <string>Blockrem</string>
     <key>CFBundleExecutable</key>           <string>blockrem</string>
     <key>CFBundlePackageType</key>          <string>APPL</string>

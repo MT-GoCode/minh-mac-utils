@@ -60,10 +60,10 @@ leaves the original deadline standing rather than restarting (or shortening) it.
 
 ## How it works
 
-- **Root daemon** (`com.forcecalls.daemon`, LaunchDaemon) — owns `calls.json`, ticks every 5s,
+- **Root daemon** (`com.minh.forcecalls.daemon`, LaunchDaemon) — owns `calls.json`, ticks every 5s,
   replays your inbox markers in order, lands due removals, and places calls whose occurrence is due.
   It lives in the `system` domain, so you can't stop it without sudo.
-- **GUI agent** (`com.forcecalls.agent`, LaunchAgent, `LSUIElement`) — invisible until a call is
+- **GUI agent** (`com.minh.forcecalls.agent`, LaunchAgent, `LSUIElement`) — invisible until a call is
   live, then flips to `.regular`, takes a Dock tile, and opens a window with the duration and a mute
   button. Closing the window or clicking the Dock icon only shows/hides it. There is deliberately
   **no hang-up button**.

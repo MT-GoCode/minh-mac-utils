@@ -3,20 +3,21 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.forcecalls.agent</string>
+    <string>com.minh.demonlock.enforcerd</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Applications/Forcecalls.app/Contents/MacOS/forcecalls-agent</string>
+        <string>/Applications/Demonlock.app/Contents/MacOS/demonlock</string>
+        <string>enforcerd</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>ThrottleInterval</key>
-    <integer>5</integer>
+    <integer>2</integer>
     <key>StandardOutPath</key>
-    <string>/tmp/forcecalls-agent.log</string>
+    <string>/Library/Application Support/Demonlock/logs/enforcerd.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/forcecalls-agent.log</string>
+    <string>/Library/Application Support/Demonlock/logs/enforcerd.log</string>
 </dict>
 </plist>

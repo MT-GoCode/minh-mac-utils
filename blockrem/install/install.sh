@@ -78,37 +78,37 @@ chmod 755 "$SUPPORT/data"
 chmod 644 "$SUPPORT/data/schedule.json" "$SUPPORT/data/snooze"
 
 echo "▸ installing launchd jobs"
-cp install/com.blockrem.enforcerd.plist /Library/LaunchDaemons/
-cp install/com.blockrem.agent.plist     /Library/LaunchAgents/
-chown root:wheel /Library/LaunchDaemons/com.blockrem.enforcerd.plist /Library/LaunchAgents/com.blockrem.agent.plist
-chmod 644        /Library/LaunchDaemons/com.blockrem.enforcerd.plist /Library/LaunchAgents/com.blockrem.agent.plist
+cp install/com.minh.blockrem.enforcerd.plist /Library/LaunchDaemons/
+cp install/com.minh.blockrem.agent.plist     /Library/LaunchAgents/
+chown root:wheel /Library/LaunchDaemons/com.minh.blockrem.enforcerd.plist /Library/LaunchAgents/com.minh.blockrem.agent.plist
+chmod 644        /Library/LaunchDaemons/com.minh.blockrem.enforcerd.plist /Library/LaunchAgents/com.minh.blockrem.agent.plist
 # Point the agent log at the user's own Library/Logs, not world-writable /tmp (another local account
 # could pre-create /tmp/blockrem-agent.log as a symlink).
 USER_HOME="$(eval echo "~$USER_NAME")"
 mkdir -p "$USER_HOME/Library/Logs" 2>/dev/null || true
 chown "$USER_NAME" "$USER_HOME/Library/Logs" 2>/dev/null || true
 /usr/bin/sed -i '' "s#/tmp/blockrem-agent.log#$USER_HOME/Library/Logs/blockrem-agent.log#g" \
-    /Library/LaunchAgents/com.blockrem.agent.plist
+    /Library/LaunchAgents/com.minh.blockrem.agent.plist
 
 echo "▸ (re)loading services"
-launchctl bootout system/com.blockrem.enforcerd 2>/dev/null || true
-launchctl bootout "gui/$USER_UID/com.blockrem.agent" 2>/dev/null || true
+launchctl bootout system/com.minh.blockrem.enforcerd 2>/dev/null || true
+launchctl bootout "gui/$USER_UID/com.minh.blockrem.agent" 2>/dev/null || true
 sleep 2
-launchctl bootstrap system /Library/LaunchDaemons/com.blockrem.enforcerd.plist 2>/dev/null \
-    || launchctl kickstart -k system/com.blockrem.enforcerd 2>/dev/null || true
-launchctl bootstrap "gui/$USER_UID" /Library/LaunchAgents/com.blockrem.agent.plist 2>/dev/null \
-    || launchctl kickstart -k "gui/$USER_UID/com.blockrem.agent" 2>/dev/null || true
+launchctl bootstrap system /Library/LaunchDaemons/com.minh.blockrem.enforcerd.plist 2>/dev/null \
+    || launchctl kickstart -k system/com.minh.blockrem.enforcerd 2>/dev/null || true
+launchctl bootstrap "gui/$USER_UID" /Library/LaunchAgents/com.minh.blockrem.agent.plist 2>/dev/null \
+    || launchctl kickstart -k "gui/$USER_UID/com.minh.blockrem.agent" 2>/dev/null || true
 
-# blockrem's agent (com.blockrem, an LSUIElement accessory) would be force-closed by a demonlock lockout
+# blockrem's agent (com.minh.blockrem, an LSUIElement accessory) would be force-closed by a demonlock lockout
 # — register it as a demonlock spare (root-owned Regime A) so it survives. demonlock ships no base list,
 # so each app registers into it.
 DL=/Applications/Demonlock.app/Contents/MacOS/demonlock
 if [ -x "$DL" ]; then
-  "$DL" safe-apps register com.blockrem \
-    || echo "  ⚠️  demonlock register failed — spare it manually: sudo demonlock safe-apps register com.blockrem"
+  "$DL" safe-apps register com.minh.blockrem \
+    || echo "  ⚠️  demonlock register failed — spare it manually: sudo demonlock safe-apps register com.minh.blockrem"
   echo "  registered as a demonlock spare — verify with:  demonlock test-lockout"
 else
-  echo "  (demonlock not installed — if you add it later:  sudo demonlock safe-apps register com.blockrem)"
+  echo "  (demonlock not installed — if you add it later:  sudo demonlock safe-apps register com.minh.blockrem)"
 fi
 
 echo

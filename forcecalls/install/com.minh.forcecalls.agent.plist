@@ -3,11 +3,10 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.forcecalls.daemon</string>
+    <string>com.minh.forcecalls.agent</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/libexec/forcecalls</string>
-        <string>daemon</string>
+        <string>/Applications/Forcecalls.app/Contents/MacOS/forcecalls-agent</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -16,8 +15,8 @@
     <key>ThrottleInterval</key>
     <integer>5</integer>
     <key>StandardOutPath</key>
-    <string>/Library/Application Support/Forcecalls/logs/daemon.log</string>
+    <string>/tmp/forcecalls-agent.log</string>
     <key>StandardErrorPath</key>
-    <string>/Library/Application Support/Forcecalls/logs/daemon.log</string>
+    <string>/tmp/forcecalls-agent.log</string>
 </dict>
 </plist>

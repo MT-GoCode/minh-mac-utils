@@ -2,9 +2,9 @@ import Foundation
 
 /// Single source of truth for every on-disk path, launchd label, and identifier.
 enum Paths {
-    static let bundleID        = "com.demonlock"
-    static let enforcerdLabel  = "com.demonlock.enforcerd"
-    static let agentLabel      = "com.demonlock.agent"
+    static let bundleID        = "com.minh.demonlock"
+    static let enforcerdLabel  = "com.minh.demonlock.enforcerd"
+    static let agentLabel      = "com.minh.demonlock.agent"
 
     static let supportDir      = "/Library/Application Support/Demonlock"
     static let policyFile      = supportDir + "/policy.txt"
@@ -76,6 +76,6 @@ enum Paths {
     static let binaryPath      = appPath + "/Contents/MacOS/demonlock"
     static let cliWrapper      = "/usr/local/bin/demonlock"
 
-    static let enforcerdPlist  = "/Library/LaunchDaemons/com.demonlock.enforcerd.plist"
-    static let agentPlist      = "/Library/LaunchAgents/com.demonlock.agent.plist"
+    static let enforcerdPlist  = "/Library/LaunchDaemons/com.minh.demonlock.enforcerd.plist"
+    static let agentPlist      = "/Library/LaunchAgents/com.minh.demonlock.agent.plist"
 }

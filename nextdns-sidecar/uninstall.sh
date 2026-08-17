@@ -9,7 +9,7 @@ PURGE=0; [ "${1:-}" = --purge ] && PURGE=1
 ETC="/usr/local/etc/nextdns-sidecar"
 APP="/Library/Application Support/NextDNSSidecar"
 BIN="/usr/local/bin"
-LABEL="com.nextdns-sidecar.enforcerd"
+LABEL="com.minh.nextdns-sidecar.enforcerd"
 PLIST="/Library/LaunchDaemons/${LABEL}.plist"
 
 echo ">> disarming + tearing down pf"

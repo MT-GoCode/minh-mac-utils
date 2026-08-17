@@ -14,7 +14,7 @@ struct GroupView: Identifiable {
     let windows: [Win]
 }
 
-// msv2 never moves a window. A "desktop" is a GROUP — a filter over ⌘⇥: the switcher
+// multistreamviewer never moves a window. A "desktop" is a GROUP — a filter over ⌘⇥: the switcher
 // only offers windows in the same group as the one you're on. The engine stores groups,
 // window→group, and the current group; everything else is derived from the live window
 // list each tick. Nothing here can strand, shift, or mangle a window — the worst
@@ -249,7 +249,7 @@ final class Engine {
         // A mass disappearance is a degraded snapshot (permission flap, mid-reconfig),
         // not the user closing everything. Don't act on it.
         if lastRawCount >= 5, raw.count * 5 < lastRawCount * 2 {
-            NSLog("msv2: window list collapsed (%d → %d), skipping tick",
+            NSLog("multistreamviewer: window list collapsed (%d → %d), skipping tick",
                   lastRawCount, raw.count)
             return
         }
@@ -307,7 +307,7 @@ final class Engine {
 
     private static var stateDir: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("msv2")
+            .appendingPathComponent("multistreamviewer")
     }
     private static var stateFile: URL { stateDir.appendingPathComponent("state.json") }
 

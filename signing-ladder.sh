@@ -1,6 +1,6 @@
 #!/bin/bash
 # Shared code-signing ladder (identity picker) for the macOS .app builders (demonlock, wtalk,
-# msv2, stayup, remote-agent-connector). Echoes the chosen identity on STDOUT (a clean single
+# multistreamviewer, stayup, remote-agent-connector). Echoes the chosen identity on STDOUT (a clean single
 # line the caller captures); logs the human-readable choice to STDERR.
 #
 # On Apple Silicon every binary/.app must be signed to run at all. Order, best first:

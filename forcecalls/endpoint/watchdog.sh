@@ -1,7 +1,7 @@
 #!/bin/bash
 # Re-bootstrap the baresip agent if it has been booted out of the console user's session.
 # ponytail: 10s poll, not an event subscription. Fine — worst case is 10s of freedom.
-LABEL=com.minh.baresip
+LABEL=com.minh.forcecalls.endpoint
 PLIST=/Library/LaunchAgents/$LABEL.plist
 while :; do
   UID_=$(stat -f%u /dev/console)

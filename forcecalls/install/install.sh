@@ -12,7 +12,7 @@ APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "$APP_DIR/../scripts/install-lib.sh"
 dl_require_root
 
-BUNDLE_ID=com.forcecalls
+BUNDLE_ID=com.minh.forcecalls
 TEAM_ID=BULCQM9J2V
 USER_NAME="$SUDO_USER"
 USER_UID="$(id -u "$USER_NAME")"
@@ -115,10 +115,10 @@ chmod 700 "$SUPPORT/inbox"
 
 # ── launchd ──────────────────────────────────────────────────────────────────────────────────────
 echo "▸ installing + loading the daemon and agent"
-cp install/com.forcecalls.daemon.plist /Library/LaunchDaemons/
-cp install/com.forcecalls.agent.plist  /Library/LaunchAgents/
-chown root:wheel /Library/LaunchDaemons/com.forcecalls.daemon.plist /Library/LaunchAgents/com.forcecalls.agent.plist
-chmod 644        /Library/LaunchDaemons/com.forcecalls.daemon.plist /Library/LaunchAgents/com.forcecalls.agent.plist
+cp install/com.minh.forcecalls.daemon.plist /Library/LaunchDaemons/
+cp install/com.minh.forcecalls.agent.plist  /Library/LaunchAgents/
+chown root:wheel /Library/LaunchDaemons/com.minh.forcecalls.daemon.plist /Library/LaunchAgents/com.minh.forcecalls.agent.plist
+chmod 644        /Library/LaunchDaemons/com.minh.forcecalls.daemon.plist /Library/LaunchAgents/com.minh.forcecalls.agent.plist
 
 # Point the agent log at the user's own Library/Logs, not world-writable /tmp (another local account
 # could pre-create the path as a symlink).
@@ -126,15 +126,15 @@ USER_HOME="$(eval echo "~$USER_NAME")"
 mkdir -p "$USER_HOME/Library/Logs" 2>/dev/null || true
 chown "$USER_NAME" "$USER_HOME/Library/Logs" 2>/dev/null || true
 /usr/bin/sed -i '' "s#/tmp/forcecalls-agent.log#$USER_HOME/Library/Logs/forcecalls-agent.log#g" \
-    /Library/LaunchAgents/com.forcecalls.agent.plist
+    /Library/LaunchAgents/com.minh.forcecalls.agent.plist
 
-launchctl bootout system/com.forcecalls.daemon 2>/dev/null || true
-launchctl bootout "gui/$USER_UID/com.forcecalls.agent" 2>/dev/null || true
+launchctl bootout system/com.minh.forcecalls.daemon 2>/dev/null || true
+launchctl bootout "gui/$USER_UID/com.minh.forcecalls.agent" 2>/dev/null || true
 sleep 1
-launchctl bootstrap system /Library/LaunchDaemons/com.forcecalls.daemon.plist 2>/dev/null \
-    || launchctl kickstart -k system/com.forcecalls.daemon 2>/dev/null || true
-launchctl bootstrap "gui/$USER_UID" /Library/LaunchAgents/com.forcecalls.agent.plist 2>/dev/null \
-    || launchctl kickstart -k "gui/$USER_UID/com.forcecalls.agent" 2>/dev/null || true
+launchctl bootstrap system /Library/LaunchDaemons/com.minh.forcecalls.daemon.plist 2>/dev/null \
+    || launchctl kickstart -k system/com.minh.forcecalls.daemon 2>/dev/null || true
+launchctl bootstrap "gui/$USER_UID" /Library/LaunchAgents/com.minh.forcecalls.agent.plist 2>/dev/null \
+    || launchctl kickstart -k "gui/$USER_UID/com.minh.forcecalls.agent" 2>/dev/null || true
 
 # A demonlock lockout force-closes .regular apps — and the agent becomes .regular for the duration
 # of a call. Spare it, or a lockout at 8:45 PM would kill the window mid-conversation. Root-owned in

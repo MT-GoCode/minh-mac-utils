@@ -75,7 +75,7 @@ struct Settings: Codable {
 
     // safe-apps: user-managed spare list layered over SafeApps.defaults. `safeAppsUser` are additions
     // (by bid, they override a default); `safeAppsRemoved` are bids tombstoned out of the defaults
-    // (never com.demonlock). The effective list is SafeApps.effective(). Reloaded each feed. NOTE: spares
+    // (never com.minh.demonlock). The effective list is SafeApps.effective(). Reloaded each feed. NOTE: spares
     // only the per-app kill; the agent-dead NUCLEAR `killall -9 WindowServer` takes ALL GUI regardless.
     var safeAppsUser: [SafeApp]
     var safeAppsRemoved: [String]

@@ -111,7 +111,7 @@ policy. **BSSID** (AP hardware MAC) is used over the SSID name because names are
    grant is **gone** (zone delete isn't monotone → now admin-or-delayed). Also removes any retired
    setuid `sudome` binary + `/usr/local/etc/sudome`.
 5. Points the agent log at `~/Library/Logs/demonlock-agent.log` (not world-writable `/tmp`),
-   `bootstrap`s `enforcerd` into `system` and `agent` into `gui/$SUDO_UID`, verifies `com.demonlock`
+   `bootstrap`s `enforcerd` into `system` and `agent` into `gui/$SUDO_UID`, verifies `com.minh.demonlock`
    is in the spare list, and runs `perm-ask` (opens the **Location** *and* **Accessibility** panes —
    one click each, once per machine).
 
@@ -121,8 +121,8 @@ policy. **BSSID** (AP hardware MAC) is used over the SSID name because names are
 |---|---|---|---|
 | `/Applications/Demonlock.app` | root:wheel | 755 | the signed binary (both roles) |
 | `/usr/local/bin/demonlock` | root:wheel | 755 | CLI wrapper → app binary |
-| `/Library/LaunchDaemons/com.demonlock.enforcerd.plist` | root:wheel | 644 | root daemon (RunAtLoad+KeepAlive) |
-| `/Library/LaunchAgents/com.demonlock.agent.plist` | root:wheel | 644 | GUI agent (RunAtLoad+KeepAlive) |
+| `/Library/LaunchDaemons/com.minh.demonlock.enforcerd.plist` | root:wheel | 644 | root daemon (RunAtLoad+KeepAlive) |
+| `/Library/LaunchAgents/com.minh.demonlock.agent.plist` | root:wheel | 644 | GUI agent (RunAtLoad+KeepAlive) |
 | `…/Demonlock/policy.txt` `zones.json` `settings.json` `armed` `snooze` `state.json` `heldfix.json` | root:wheel | 644 | config + state — world-readable so `status` works, **root-only writable = the lock** |
 | `…/Demonlock/` subsystem state: `releasevalve.json` `rv-state.json` `delayed-{policy,zones,gatepolicy}.json` `safe-apps-pending.json` `snooze-presets.json` `lockbox-state.json` | root:wheel | 644 | request→delay→apply pending state for each subsystem (never secrets) |
 | `…/Demonlock/lockbox.json` | root:wheel | **600** | the password-lockbox secret vault — root-only, never group/other-readable |
@@ -291,17 +291,17 @@ in `Sensors.swift`):
 - **`rootOwned: false` → Regime B** (third-party, e.g. Raycast): spared only if **Apple-rooted with the
   vendor's Team ID** (`anchor apple generic` + that bid + that Team OU). **Refused for our own team** —
   an own-team app *must* be root-owned (we hold the `BULCQM9J2V` key, so a Regime-B fallthrough would
-  let a browser renamed `com.demonlock` be spared).
+  let a browser renamed `com.minh.demonlock` be spared).
 
 **Baked blocklist (`register` refuses):** every browser bundle id (Chrome/Safari/Firefox/Edge/Brave/
 Arc/Opera/Vivaldi/Yandex, incl. beta/dev channels) and `sh.paseo.desktop` — sparing any of them would
 defeat the whole point. (The Paseo daemon helper `sh.paseo.desktop.helper` is a *different* bundle id,
-so it can still be spared — the GUI dies, the daemon lives.) `com.demonlock` is **unremovable** (losing
+so it can still be spared — the GUI dies, the daemon lives.) `com.minh.demonlock` is **unremovable** (losing
 it → the agent dies on lockout → nuclear WindowServer loop).
 
-**The compiled default spare list is just `com.demonlock` itself** — demonlock is standalone and coupled
+**The compiled default spare list is just `com.minh.demonlock` itself** — demonlock is standalone and coupled
 to nothing. Everything else registers INTO it over time: your own apps (`wtalk`/`remote-agent-connector`/
-`msv2`/`stayup`, Regime A) from their own installers, the paseo daemon (Regime B) from
+`multistreamviewer`/`stayup`, Regime A) from their own installers, the paseo daemon (Regime B) from
 `setup-paseo-daemon.sh`, and third-party utils (`alttab`/`raycast`/`shottr`/`amphetamine`/`betterdisplay`/
 `scroll-reverser`/`karabiner-*`, Regime B) via `register-recommended-spares.sh`.
 
@@ -324,7 +324,7 @@ actually survive a lockout, run `demonlock test-lockout` (it applies the real `s
 
 A brand-new own app is **killed** unless you do BOTH: install it **root-owned** in `/Applications`
 (sudo — a `~/Applications` copy is user-owned ⇒ fails the owner check), and register it root-owned
-(`sudo demonlock safe-apps register <bundle-id>`, or the installer's tail does it for you). A self-made `com.demonlock` impostor you can write to is user-owned ⇒ killed; the genuine
+(`sudo demonlock safe-apps register <bundle-id>`, or the installer's tail does it for you). A self-made `com.minh.demonlock` impostor you can write to is user-owned ⇒ killed; the genuine
 one is root-owned and tamper-evident (editing it breaks the signature ⇒ also killed).
 
 ## test-lockout

@@ -8,12 +8,12 @@ USER_NAME="${SUDO_USER:-$(stat -f %Su /dev/console)}"
 USER_UID="$(id -u "$USER_NAME")"
 
 echo "▸ unloading services"
-launchctl bootout "gui/$USER_UID/com.demonlock.agent" 2>/dev/null || true
-launchctl bootout system/com.demonlock.enforcerd 2>/dev/null || true
+launchctl bootout "gui/$USER_UID/com.minh.demonlock.agent" 2>/dev/null || true
+launchctl bootout system/com.minh.demonlock.enforcerd 2>/dev/null || true
 
 echo "▸ removing files"
-rm -f /Library/LaunchDaemons/com.demonlock.enforcerd.plist
-rm -f /Library/LaunchAgents/com.demonlock.agent.plist
+rm -f /Library/LaunchDaemons/com.minh.demonlock.enforcerd.plist
+rm -f /Library/LaunchAgents/com.minh.demonlock.agent.plist
 rm -rf /Applications/Demonlock.app
 rm -f /usr/local/bin/demonlock
 rm -f /etc/sudoers.d/demonlock

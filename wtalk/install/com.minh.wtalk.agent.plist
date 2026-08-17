@@ -8,7 +8,7 @@
      nowplaying-cli, karabiner_cli live there). -->
 <plist version="1.0">
 <dict>
-    <key>Label</key>            <string>com.wtalk.agent</string>
+    <key>Label</key>            <string>com.minh.wtalk.agent</string>
     <key>ProgramArguments</key>
     <array>
         <string>__APP_EXE__</string>

@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.demonlock.agent</string>
+    <string>com.minh.demonlock.agent</string>
     <key>ProgramArguments</key>
     <array>
         <string>/Applications/Demonlock.app/Contents/MacOS/demonlock</string>

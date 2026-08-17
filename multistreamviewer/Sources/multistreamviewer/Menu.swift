@@ -18,7 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Switcher.karabinerVar(0)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = NSImage(
-            systemSymbolName: "square.stack", accessibilityDescription: "msv2")
+            systemSymbolName: "square.stack", accessibilityDescription: "multistreamviewer")
         statusItem.button?.imagePosition = .imageLeading
         let menu = NSMenu()
         menu.delegate = self
@@ -27,7 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // ALWAYS run. Tracking desktops needs no permission at all (the window list is
         // public); only the hotkey tap and raising windows need Accessibility, and
-        // thumbnails need Screen Recording. So msv2 is fully usable from the menu and
+        // thumbnails need Screen Recording. So multistreamviewer is fully usable from the menu and
         // the overview even with nothing granted — and it lights up the moment you do.
         Engine.shared.start()
         Hotkeys.shared.start()
@@ -54,7 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(withTitle: "⚠ Hotkeys off — Accessibility not granted",
                          action: nil, keyEquivalent: "")
             add(menu, "Request Permissions…", #selector(requestPermissions))
-            add(menu, "Repair: reset msv2's grant & re-ask", #selector(repairPermissions))
+            add(menu, "Repair: reset multistreamviewer's grant & re-ask", #selector(repairPermissions))
             menu.addItem(.separator())
         }
         for g in Engine.shared.view() {
@@ -79,7 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                          action: nil, keyEquivalent: "")
         }
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit msv2",
+        menu.addItem(withTitle: "Quit multistreamviewer",
                      action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     }
 
@@ -113,7 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func repairPermissions() {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
-        p.arguments = ["reset", "Accessibility", "com.minh.msv2"]
+        p.arguments = ["reset", "Accessibility", "com.minh.multistreamviewer"]
         try? p.run()
         p.waitUntilExit()
         AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)

@@ -46,9 +46,9 @@ fi
 
 # --- stop anything already running, nuke any old user-owned install ------------------------
 echo "▸ stopping any running wtalk + clearing old-era remnants"
-sudo -u "$USER_NAME" launchctl bootout "gui/$USER_UID/com.wtalk.agent" 2>/dev/null || true
+sudo -u "$USER_NAME" launchctl bootout "gui/$USER_UID/com.minh.wtalk.agent" 2>/dev/null || true
 pkill -x wtalk 2>/dev/null || true
-rm -f "$USER_HOME/Library/LaunchAgents/com.wtalk.agent.plist"   # pre-sudo era (user-owned plist)
+rm -f "$USER_HOME/Library/LaunchAgents/com.minh.wtalk.agent.plist"   # pre-sudo era (user-owned plist)
 rm -f "$USER_HOME/.local/bin/wtalk"                             # drop any stale ~/.local/bin/wtalk (recreated as a compat symlink below)
 rm -rf "$HERE/wtalk.app.old"
 
@@ -104,34 +104,34 @@ echo "▸ requesting permissions (approve BOTH dialogs as 'wtalk' if they appear
 sudo -u "$USER_NAME" "$APP_EXE" --prime-perms >/dev/null 2>&1 || true
 
 # --- install + bootstrap the LaunchAgent (root-owned plist in /Library/LaunchAgents) -------
-echo "▸ installing LaunchAgent com.wtalk.agent"
+echo "▸ installing LaunchAgent com.minh.wtalk.agent"
 FF="$(sudo -u "$USER_NAME" bash -lc 'command -v ffmpeg' 2>/dev/null || true)"
 KARABIN="/Library/Application Support/org.pqrs/Karabiner-Elements/bin"
 AGENT_PATH="$(printf '%s' \
   "${FF:+$(dirname "$FF"):}$USER_HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$KARABIN:/usr/bin:/bin:/usr/sbin:/sbin")"
-PLIST="/Library/LaunchAgents/com.wtalk.agent.plist"
+PLIST="/Library/LaunchAgents/com.minh.wtalk.agent.plist"
 sed -e "s#__APP_EXE__#$APP_EXE#g" \
     -e "s#__HOME__#$USER_HOME#g" \
     -e "s#__PATH__#$AGENT_PATH#g" \
-    install/com.wtalk.agent.plist > "$PLIST"
+    install/com.minh.wtalk.agent.plist > "$PLIST"
 chown root:wheel "$PLIST"; chmod 644 "$PLIST"
 
 echo "▸ (re)loading the agent into gui/$USER_UID"
-sudo -u "$USER_NAME" launchctl bootout "gui/$USER_UID/com.wtalk.agent" 2>/dev/null || true
+sudo -u "$USER_NAME" launchctl bootout "gui/$USER_UID/com.minh.wtalk.agent" 2>/dev/null || true
 sleep 1
 sudo -u "$USER_NAME" launchctl bootstrap "gui/$USER_UID" "$PLIST" 2>/dev/null \
-    || sudo -u "$USER_NAME" launchctl kickstart -k "gui/$USER_UID/com.wtalk.agent" 2>/dev/null || true
+    || sudo -u "$USER_NAME" launchctl kickstart -k "gui/$USER_UID/com.minh.wtalk.agent" 2>/dev/null || true
 
 echo
 
 echo "▸ registering wtalk as a demonlock spare (demonlock ships no base list)"
 DL=/Applications/Demonlock.app/Contents/MacOS/demonlock
 if [ -x "$DL" ]; then
-    "$DL" safe-apps register com.wtalk.daemon \
-      || echo "  ⚠️  register failed — spare it manually: sudo demonlock safe-apps register com.wtalk.daemon"
+    "$DL" safe-apps register com.minh.wtalk \
+      || echo "  ⚠️  register failed — spare it manually: sudo demonlock safe-apps register com.minh.wtalk"
 else
     echo "  ⚠️  demonlock not installed yet — after installing it, run:"
-    echo "       sudo demonlock safe-apps register com.wtalk.daemon"
+    echo "       sudo demonlock safe-apps register com.minh.wtalk"
 fi
 
 echo "✓ installed $DEST  (root:wheel, sealed, registered as a demonlock spare)."

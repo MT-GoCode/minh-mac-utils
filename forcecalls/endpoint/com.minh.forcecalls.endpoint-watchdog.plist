@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>Label</key><string>com.minh.baresip-watchdog</string>
+  <key>Label</key><string>com.minh.forcecalls.endpoint-watchdog</string>
   <key>ProgramArguments</key>
-  <array><string>/bin/bash</string><string>/usr/local/libexec/baresip-watchdog.sh</string></array>
+  <array><string>/bin/bash</string><string>/usr/local/libexec/forcecalls-endpoint-watchdog.sh</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
 </dict></plist>

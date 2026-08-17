@@ -7,7 +7,7 @@ import Foundation
 /// markers in a USER-owned `inbox/`. Tightening (add) lands immediately; loosening (remove) is
 /// delay-gated — the wait is the commitment device.
 enum Paths {
-    static let daemonLabel = "com.forcecalls.daemon"
+    static let daemonLabel = "com.minh.forcecalls.daemon"
 
     static let supportDir  = "/Library/Application Support/Forcecalls"  // root-owned
     static let credsFile   = supportDir + "/creds.json"     // root:wheel 600 — SignalWire keys
@@ -22,5 +22,5 @@ enum Paths {
 
     static let binaryPath  = "/usr/local/libexec/forcecalls"
     static let cliWrapper  = "/usr/local/bin/forcecalls"
-    static let daemonPlist = "/Library/LaunchDaemons/com.forcecalls.daemon.plist"
+    static let daemonPlist = "/Library/LaunchDaemons/com.minh.forcecalls.daemon.plist"
 }

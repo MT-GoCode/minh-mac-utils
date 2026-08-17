@@ -19,7 +19,7 @@ enum Paths {
     static let mDelayAdd   = inboxDir + "/delay-add"             // contents = domains to allow after the delay
     static let mAbort      = inboxDir + "/abort"                 // contents = domain(s) or "--all"
 
-    static let label        = "com.nextdns-sidecar.enforcerd"
+    static let label        = "com.minh.nextdns-sidecar.enforcerd"
     static let profilePlist = "/Library/Managed Preferences/com.apple.dnsSettings.managed.plist"
 }
 

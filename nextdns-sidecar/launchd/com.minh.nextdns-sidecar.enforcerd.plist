@@ -4,7 +4,7 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>com.nextdns-sidecar.enforcerd</string>
+	<string>com.minh.nextdns-sidecar.enforcerd</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/usr/local/bin/nextdns-sidecar</string>

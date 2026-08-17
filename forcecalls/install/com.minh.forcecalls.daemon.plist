@@ -3,21 +3,21 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.demonlock.enforcerd</string>
+    <string>com.minh.forcecalls.daemon</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Applications/Demonlock.app/Contents/MacOS/demonlock</string>
-        <string>enforcerd</string>
+        <string>/usr/local/libexec/forcecalls</string>
+        <string>daemon</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>ThrottleInterval</key>
-    <integer>2</integer>
+    <integer>5</integer>
     <key>StandardOutPath</key>
-    <string>/Library/Application Support/Demonlock/logs/enforcerd.log</string>
+    <string>/Library/Application Support/Forcecalls/logs/daemon.log</string>
     <key>StandardErrorPath</key>
-    <string>/Library/Application Support/Demonlock/logs/enforcerd.log</string>
+    <string>/Library/Application Support/Forcecalls/logs/daemon.log</string>
 </dict>
 </plist>

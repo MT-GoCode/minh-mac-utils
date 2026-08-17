@@ -10,12 +10,12 @@ USER_HOME="$(/usr/bin/dscl . -read "/Users/$USER_NAME" NFSHomeDirectory | awk '{
 [ -n "$USER_HOME" ] || USER_HOME="/Users/$USER_NAME"
 
 echo "▸ stopping + unloading the agent"
-sudo -u "$USER_NAME" launchctl bootout "gui/$USER_UID/com.wtalk.agent" 2>/dev/null || true
+sudo -u "$USER_NAME" launchctl bootout "gui/$USER_UID/com.minh.wtalk.agent" 2>/dev/null || true
 pkill -x wtalk 2>/dev/null || true
 
 echo "▸ removing files"
-rm -f  /Library/LaunchAgents/com.wtalk.agent.plist
-rm -f  "$USER_HOME/Library/LaunchAgents/com.wtalk.agent.plist"   # old user-owned plist, if any
+rm -f  /Library/LaunchAgents/com.minh.wtalk.agent.plist
+rm -f  "$USER_HOME/Library/LaunchAgents/com.minh.wtalk.agent.plist"   # old user-owned plist, if any
 rm -rf /Applications/wtalk.app
 rm -f  /usr/local/bin/wtalk
 rm -f  "$USER_HOME/.local/bin/wtalk"                             # old dev-era PATH symlink, if any
@@ -28,5 +28,5 @@ else
 fi
 
 echo "✓ uninstalled"
-echo "  (optional) revoke perms:  tccutil reset Microphone com.wtalk.daemon;"
-echo "                            tccutil reset Accessibility com.wtalk.daemon"
+echo "  (optional) revoke perms:  tccutil reset Microphone com.minh.wtalk;"
+echo "                            tccutil reset Accessibility com.minh.wtalk"

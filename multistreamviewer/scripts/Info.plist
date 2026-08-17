@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleExecutable</key>
-	<string>msv2</string>
+	<string>multistreamviewer</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.minh.msv2</string>
+	<string>com.minh.multistreamviewer</string>
 	<key>CFBundleName</key>
-	<string>msv2</string>
+	<string>multistreamviewer</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

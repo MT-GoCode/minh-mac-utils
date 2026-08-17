@@ -7,9 +7,9 @@ set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo "run with sudo:  sudo ./uninstall.sh"; exit 1; }
 SUPPORT="/Library/Application Support/Forcecalls"
 
-launchctl bootout system/com.forcecalls.daemon 2>/dev/null || true
-[ -n "${SUDO_USER:-}" ] && launchctl bootout "gui/$(id -u "$SUDO_USER")/com.forcecalls.agent" 2>/dev/null || true
-rm -f /Library/LaunchDaemons/com.forcecalls.daemon.plist /Library/LaunchAgents/com.forcecalls.agent.plist
+launchctl bootout system/com.minh.forcecalls.daemon 2>/dev/null || true
+[ -n "${SUDO_USER:-}" ] && launchctl bootout "gui/$(id -u "$SUDO_USER")/com.minh.forcecalls.agent" 2>/dev/null || true
+rm -f /Library/LaunchDaemons/com.minh.forcecalls.daemon.plist /Library/LaunchAgents/com.minh.forcecalls.agent.plist
 rm -f /usr/local/bin/forcecalls /usr/local/libexec/forcecalls
 rm -rf /Applications/Forcecalls.app
 echo "  ✓ daemon, agent, app + binaries removed"

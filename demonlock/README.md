@@ -1,5 +1,7 @@
 # demonlock — user guide
 
+keep my demons at bay
+
 A conditional macOS locker. One root daemon watches **where you are, what time it is, and which
 Wi‑Fi is nearby**, evaluates a single **allow‑policy** you write, and when you're **out of policy**
 it shows a 10‑second countdown and then **force‑closes your GUI apps** (your SSH/tmux sessions
@@ -224,7 +226,7 @@ baked delay.** Each `show` renders an aligned table (`(none)` when empty).
 
 ### safe-apps
 
-**What:** the whitelist of apps *spared* from the lockout kill. Only `com.demonlock` is baked in and
+**What:** the whitelist of apps *spared* from the lockout kill. Only `com.minh.demonlock` is baked in and
 unremovable; everything else you register. Two regimes: **A** = a root‑owned bundle (team never
 checked — survives losing your Developer ID); **B** = `--no-root-ownership` third‑party app, needs
 its real 10‑char Apple **Team ID** (refused for your own team). Browsers + `sh.paseo.desktop` are a
@@ -247,7 +249,7 @@ permanent blocklist — never spareable.
 SAFE APPS — spared from the lockout kill
   name       bundle id          team        root-req
   ─────────  ─────────────────  ──────────  ────────
-  demonlock  com.demonlock      SY64MV22J9  yes
+  demonlock  com.minh.demonlock      SY64MV22J9  yes
   raycast    com.raycast.macos  RN2XY7GK9M  no
 
 PENDING REGISTRATIONS — land after 24h

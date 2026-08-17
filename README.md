@@ -24,7 +24,7 @@ sudo demonlock disarm
 rac teardown
 sudo ./nextdns-sidecar/uninstall.sh
 sudo ./wtalk/uninstall.sh
-sudo ./msv2/uninstall.sh
+sudo ./multistreamviewer/uninstall.sh
 sudo ./stayup/uninstall.sh
 sudo ./blockrem/uninstall.sh
 sudo ./forcecalls/uninstall.sh
@@ -39,7 +39,7 @@ sudo ./demonlock/uninstall.sh
 cd ~/code/minh-mac-utils && git pull
 sudo -v
 sudo ./demonlock/install.sh
-sudo ./msv2/install.sh
+sudo ./multistreamviewer/install.sh
 sudo ./stayup/install.sh
 sudo ./blockrem/install.sh
 sudo ./forcecalls/install.sh
@@ -60,7 +60,7 @@ sudo ./demonlock/register-recommended-spares.sh
 | **nextdns-sidecar** | NextDNS list manager **+** DNS-bypass `pf` lockdown in one root daemon (`domains block`=no-sudo, `add`=sudo, `delay-add`=no-sudo/lands in 12h; `networklockdown arm/disarm`). Merges the old `nextdns-discipline` + `nextdns-lockdown`. | `sudo ./nextdns-sidecar/install.sh` | yes |
 | **remote-agent-connector** | reverse-SSH connector + `rac` CLI so a remote agent can act **as you**: a real terminal, plus GUI/keychain via `rac exec`. Nothing listens inbound. | `sudo ./remote-agent-connector/install.sh` | yes |
 | **wtalk** | push-to-talk dictation daemon (Parakeet transcribe + Gemini cleanup); PyInstaller-frozen, sealed, root-owned | `sudo ./wtalk/install.sh` | yes |
-| **msv2** | desktop groups that scope ⌘⇥ + a hold-⌘⌥ overview; never moves windows; `msv2` CLI | `sudo ./msv2/install.sh` | yes |
+| **multistreamviewer** | desktop groups that scope ⌘⇥ + a hold-⌘⌥ overview; never moves windows; `multistreamviewer` CLI | `sudo ./multistreamviewer/install.sh` | yes |
 | **stayup** | menu-bar toggle for staying awake with the lid closed (`pmset disablesleep`); `stayup` CLI | `sudo ./stayup/install.sh` | yes |
 | **blockrem** | scheduled **un-quittable screen blocks** for forced breaks — a root daemon revives a grey full-screen cover + input freeze at each alarm; **fail-open** (a bug always lifts it); managing alarms is no-sudo | `sudo ./blockrem/install.sh` | yes |
 | **forcecalls** | scheduled phone calls you must **wait out** to cancel — a root daemon dials the other person via SignalWire, then bridges to a local baresip endpoint that auto-answers; `add` is instant, `remove` is delay-gated (12h), managing calls is no-sudo | `sudo ./forcecalls/install.sh` | yes |
@@ -88,7 +88,7 @@ paused; no-op if nowplaying-cli isn't installed).
 ## Fresh-machine setup (in order)
 
 ### 1. Base prerequisites (you have admin)
-- **Xcode Command Line Tools:** `xcode-select --install` — needed to build the Swift apps (demonlock, nextdns-sidecar, remote-agent-connector, msv2, stayup). *(demonlock can skip this: it ships a prebuilt signed `dist/`.)*
+- **Xcode Command Line Tools:** `xcode-select --install` — needed to build the Swift apps (demonlock, nextdns-sidecar, remote-agent-connector, multistreamviewer, stayup). *(demonlock can skip this: it ships a prebuilt signed `dist/`.)*
 - **Homebrew**, then `brew install ffmpeg` — for wtalk.
 - **uv:** `curl -LsSf https://astral.sh/uv/install.sh | sh` — for wtalk.
 - **Karabiner-Elements** — to bind wtalk's push-to-talk key.
@@ -101,7 +101,7 @@ paused; no-op if nowplaying-cli isn't installed).
 1. **demonlock** — `sudo ./demonlock/install.sh` → `demonlock perm-ask` (grant **Location → Always** *and* **Accessibility**, the latter for settings-guard) → `demonlock scan` / `demonlock zones` / `sudo demonlock setpolicy '…'` → `sudo demonlock arm`. Configure the admin release valve (`sudo demonlock admin-release-valve set-gate-policy/set-delay/set-max-request-duration`) so you can get sudo back without holding a password.
 2. **nextdns-sidecar** — `sudo ./nextdns-sidecar/install.sh --profile-src ~/Downloads/NextDNS-*.mobileconfig` (enter your Profile ID + API key; it hardens that profile and prints the two `open` lines — approve both in Settings ▸ Device Management) → confirm with `nextdns-sidecar networklockdown status` → `nextdns-sidecar networklockdown arm`. (`nextdns-test <domain>` checks whether a domain is blocked.)
 3. **wtalk** — `cd wtalk && ./setup.sh` (venv+deps+ffmpeg) → `sudo ./install.sh` (PyInstaller-freeze, sign, deploy **root-owned** to `/Applications`, seed `~/.wtalk`) → put your Gemini key in `~/.wtalk/.env` → `wtalk restart` → bind a key in Karabiner to `/usr/local/bin/wtalk toggle` → grant **Microphone + Accessibility**.
-4. **msv2 / stayup** — `sudo ./msv2/install.sh`, `sudo ./stayup/install.sh` (each builds, signs, deploys root-owned, and registers itself as a demonlock spare).
+4. **multistreamviewer / stayup** — `sudo ./multistreamviewer/install.sh`, `sudo ./stayup/install.sh` (each builds, signs, deploys root-owned, and registers itself as a demonlock spare).
 5. **forcecalls** *(optional)* — `sudo ./forcecalls/install.sh` (prompts for your SignalWire space, project ID, API token, caller ID, and SIP endpoint) → install the endpoint from `forcecalls/endpoint/INSTALL.md` (baresip, auto-answer, root-owned + watchdog) → `forcecalls add --name mom --destination +1… --schedule *2045`.
 6. **remote-agent-connector** *(optional)* — `sudo ./remote-agent-connector/install.sh`, then Dock ▸ Get Permissions and `rac setup`.
 7. **agentic-browser-setup** *(optional, no sudo)* — `./agentic-browser-setup/install.sh`.
@@ -129,7 +129,7 @@ valve, which edits the `admin` group directly.)
 wtalk. macOS won't let a script grant these; you click them once per machine (`demonlock perm-ask`
 opens both demonlock panes).
 
-## Code signing (demonlock, wtalk, msv2, stayup, remote-agent-connector)
+## Code signing (demonlock, wtalk, multistreamviewer, stayup, remote-agent-connector)
 Only the tools that build macOS `.app`s sign anything (nextdns-sidecar ships a plain CLI binary — no
 signing; the bash tools don't sign). They all call the **same** ladder, `signing-ladder.sh`, which
 chooses best-first and prints the choice at install:

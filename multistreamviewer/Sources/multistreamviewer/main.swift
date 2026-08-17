@@ -1,9 +1,9 @@
 import AppKit
 
 // CLI verbs post Darwin notifications to the running app:
-//   msv2 [run] | new | next | gather | switch <N|next> | send <N>
+//   multistreamviewer [run] | new | next | gather | switch <N|next> | send <N>
 enum Notify {
-    static let prefix = "com.minh.msv2."
+    static let prefix = "com.minh.multistreamviewer."
     static func prefixed(_ s: String) -> String { prefix + s }
 }
 
@@ -21,9 +21,9 @@ func die(_ msg: String) -> Never {
 func runApp() -> Never {
     // Single instance: two taps would double-consume ⌘⇥. A lock file we can't open
     // (e.g. left root-owned) must not block startup — degrade to no lock.
-    let lockFD = open("/tmp/msv2-\(getuid()).lock", O_CREAT | O_RDWR, 0o644)
+    let lockFD = open("/tmp/multistreamviewer-\(getuid()).lock", O_CREAT | O_RDWR, 0o644)
     if lockFD >= 0, flock(lockFD, LOCK_EX | LOCK_NB) != 0 {
-        die("msv2: already running")
+        die("multistreamviewer: already running")
     }
     // NOTE: permissions are NOT checked here. A menu-bar app launched from Finder has no
     // stderr, so exiting on a missing grant looks like "nothing happened" and leaves no
@@ -74,7 +74,7 @@ let args = CommandLine.arguments.dropFirst()
 if let cmd = args.first {
     func intArg(_ what: String) -> Int {
         guard let a = args.dropFirst().first, let n = Int(a), (1...32).contains(n)
-        else { die("usage: msv2 \(what) <1-32>") }
+        else { die("usage: multistreamviewer \(what) <1-32>") }
         return n
     }
     switch cmd {
@@ -94,7 +94,7 @@ if let cmd = args.first {
         // same as any AX read.
         MainActor.assumeIsolated { print(WindowTruth.debugDump()) }
     default:
-        die("usage: msv2 [run|show|hide|toggle|settings|new|gather|next|switch <N|next>|send <N>|windows]")
+        die("usage: multistreamviewer [run|show|hide|toggle|settings|new|gather|next|switch <N|next>|send <N>|windows]")
     }
     exit(0)
 } else {

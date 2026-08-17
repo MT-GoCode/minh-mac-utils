@@ -133,28 +133,28 @@ chown "$USER_NAME" "$SUPPORT/rv"
 chmod 755 "$SUPPORT/rv"
 
 echo "▸ installing launchd jobs"
-cp install/com.demonlock.enforcerd.plist /Library/LaunchDaemons/
-cp install/com.demonlock.agent.plist     /Library/LaunchAgents/
-chown root:wheel /Library/LaunchDaemons/com.demonlock.enforcerd.plist /Library/LaunchAgents/com.demonlock.agent.plist
-chmod 644        /Library/LaunchDaemons/com.demonlock.enforcerd.plist /Library/LaunchAgents/com.demonlock.agent.plist
+cp install/com.minh.demonlock.enforcerd.plist /Library/LaunchDaemons/
+cp install/com.minh.demonlock.agent.plist     /Library/LaunchAgents/
+chown root:wheel /Library/LaunchDaemons/com.minh.demonlock.enforcerd.plist /Library/LaunchAgents/com.minh.demonlock.agent.plist
+chmod 644        /Library/LaunchDaemons/com.minh.demonlock.enforcerd.plist /Library/LaunchAgents/com.minh.demonlock.agent.plist
 # Point the agent log at the user's own Library/Logs, not world-writable /tmp (another local account
 # could pre-create /tmp/demonlock-agent.log as a symlink, and the log leaks location/BSSIDs). [review L3]
 USER_HOME="$(eval echo "~$USER_NAME")"
 mkdir -p "$USER_HOME/Library/Logs" 2>/dev/null || true
 chown "$USER_NAME" "$USER_HOME/Library/Logs" 2>/dev/null || true
 /usr/bin/sed -i '' "s#/tmp/demonlock-agent.log#$USER_HOME/Library/Logs/demonlock-agent.log#g" \
-    /Library/LaunchAgents/com.demonlock.agent.plist
+    /Library/LaunchAgents/com.minh.demonlock.agent.plist
 
 echo "▸ (re)loading services"
 # Boot both out first, pause so the old instances fully exit, then bootstrap (with a
 # kickstart fallback if a job is somehow still registered) — avoids the bootstrap I/O race.
-launchctl bootout system/com.demonlock.enforcerd 2>/dev/null || true
-launchctl bootout "gui/$USER_UID/com.demonlock.agent" 2>/dev/null || true
+launchctl bootout system/com.minh.demonlock.enforcerd 2>/dev/null || true
+launchctl bootout "gui/$USER_UID/com.minh.demonlock.agent" 2>/dev/null || true
 sleep 2
-launchctl bootstrap system /Library/LaunchDaemons/com.demonlock.enforcerd.plist 2>/dev/null \
-    || launchctl kickstart -k system/com.demonlock.enforcerd 2>/dev/null || true
-launchctl bootstrap "gui/$USER_UID" /Library/LaunchAgents/com.demonlock.agent.plist 2>/dev/null \
-    || launchctl kickstart -k "gui/$USER_UID/com.demonlock.agent" 2>/dev/null || true
+launchctl bootstrap system /Library/LaunchDaemons/com.minh.demonlock.enforcerd.plist 2>/dev/null \
+    || launchctl kickstart -k system/com.minh.demonlock.enforcerd 2>/dev/null || true
+launchctl bootstrap "gui/$USER_UID" /Library/LaunchAgents/com.minh.demonlock.agent.plist 2>/dev/null \
+    || launchctl kickstart -k "gui/$USER_UID/com.minh.demonlock.agent" 2>/dev/null || true
 
 echo
 

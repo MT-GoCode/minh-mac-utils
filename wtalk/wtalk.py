@@ -40,7 +40,7 @@ from datetime import datetime  # noqa: E402
 
 import config  # noqa: E402  (stdlib-only; safe + cheap to import for `status`)
 
-_LABEL = "com.wtalk.agent"
+_LABEL = "com.minh.wtalk.agent"
 _UID = os.getuid()
 _DOMAIN = f"gui/{_UID}"
 

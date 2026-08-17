@@ -49,7 +49,7 @@ private final class ScanController: NSObject, CLLocationManagerDelegate {
             emit("""
             AUTH: DENIED — macOS will redact every BSSID, so this can't work.
             Fix: System Settings ▸ Privacy & Security ▸ Location Services ▸ enable Demonlock, then rerun.
-            (Or reset with: tccutil reset Location com.demonlock)
+            (Or reset with: tccutil reset Location com.minh.demonlock)
 
             """)
         @unknown default: break
