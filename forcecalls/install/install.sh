@@ -170,5 +170,5 @@ echo
 echo "Removal is delay-gated (default 12h): 'forcecalls remove mom' queues it, 'forcecalls abort'"
 echo "cancels. Only install/uninstall need sudo — that's what makes a forced call stick."
 echo
-echo "The endpoint (baresip) is separate — see endpoint/INSTALL.md. Until it's registered, calls will"
+echo "The endpoint (baresip) is separate — see endpoint/README.md, or run: sudo ./endpoint/install.sh. Until it's registered, calls will"
 echo "reach the other person and then fail to bridge to you."

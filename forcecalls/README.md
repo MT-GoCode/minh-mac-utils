@@ -22,7 +22,7 @@ editing the keys out. Replace them later with `sudo ./install.sh --reset-creds`.
 Uninstall: `sudo ./uninstall.sh` (add `--purge` to also delete the schedule and credentials).
 
 The **endpoint** — baresip, the thing that rings on your Mac — installs separately from
-`endpoint/INSTALL.md`. Until it's registered, calls reach the other person and then fail to bridge.
+`endpoint/README.md`. Until it's registered, calls reach the other person and then fail to bridge.
 
 ## Setting up SignalWire (once)
 
@@ -40,7 +40,7 @@ Everything lives in one dashboard. Your space name becomes both URLs you need:
    and does not touch your carrier service, so **you never have to rent a number** — no monthly
    line on the bill, just per-minute.
 
-The same SIP username and password also go into `/etc/baresip/accounts` — see `endpoint/INSTALL.md`.
+The same SIP username and password also go into `/etc/baresip/accounts` — see `endpoint/README.md`.
 
 ### Installing with the values
 
