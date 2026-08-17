@@ -12,6 +12,12 @@ enum Lockdown {
     static func pfEnabled()      -> Bool { Proc.capture(pfctl, ["-s", "info"]).contains("Status: Enabled") }
     static func pfOursLoaded()   -> Bool { Proc.capture(pfctl, ["-sr"]).contains(marker) }
     static func profilePresent() -> Bool { FileManager.default.fileExists(atPath: Paths.profilePlist) }
+    /// The no-browser-doh profile installed? It forces Secure-DNS OFF for all common browsers in one
+    /// profile; Chrome's managed pref (always a payload, world-readable) is the non-root signal it's on.
+    static func browserProfilePresent() -> Bool {
+        Proc.capture("/usr/bin/defaults", ["read", "/Library/Managed Preferences/com.google.Chrome", "DnsOverHttpsMode"])
+            .trimmingCharacters(in: .whitespacesAndNewlines) == "off"
+    }
 
     // ---- pf ruleset assert / restore ----
 
@@ -112,6 +118,8 @@ enum Lockdown {
         } else {
             print("  DoH profile:  \(red)MISSING\(rst)  (no encrypted resolver — arm is refused)")
         }
+        print("  browser DoH:  " + (browserProfilePresent() ? "locked (no-browser-doh installed)"
+                                     : "\(red)OPEN — no-browser-doh NOT installed\(rst)  (arm is refused)"))
         print("  resolution:   " + (resolvesSystem() ? "working" : "NOT resolving"))
         let daemon = !Proc.capture("/bin/launchctl", ["print", "system/\(Paths.label)"]).isEmpty
         print("  daemon:       " + (daemon ? "loaded" : "NOT loaded"))

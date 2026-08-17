@@ -184,6 +184,13 @@ func cmdArm() {
           `nextdns-sidecar networklockdown status`, then re-run `nextdns-sidecar networklockdown arm`.
         """)
     }
+    if !Lockdown.browserProfilePresent() {
+        fail("""
+        ✗ refusing to arm: the no-browser-doh profile isn't installed — browsers could still reach their
+          own DoH and bypass NextDNS. Install no-browser-doh.mobileconfig (System Settings ▸ General ▸
+          Device Management), confirm with `nextdns-sidecar networklockdown status`, then re-run arm.
+        """)
+    }
     if !Lockdown.resolvesSystem() {
         fail("""
         ✗ refusing to arm: DNS isn't resolving right now (mid captive-portal login?).

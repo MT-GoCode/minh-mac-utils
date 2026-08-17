@@ -176,7 +176,7 @@ if [ "$NEED_DNS" = 1 ] || [ "$NEED_BROWSER" = 1 ]; then
     fi
     [ "$NEED_BROWSER" = 1 ] && echo "       open \"$NOBROWSER\""
     echo
-    echo "  arm is REFUSED until the DoH profile is present."
+    echo "  arm is REFUSED until BOTH profiles are present (NextDNS resolver + no-browser-doh)."
 fi
 
 cat <<EOF
