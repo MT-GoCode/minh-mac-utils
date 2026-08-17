@@ -29,12 +29,17 @@ SIGN=(--force --options runtime --sign "$ID")
 codesign "${SIGN[@]}" "$APP"
 codesign --verify --strict --verbose=2 "$APP"
 
-# Keep a prebuilt, signed copy so this folder can be installed on a Mac with NO Swift toolchain.
-# Developer ID + secure timestamp ⇒ it runs on any Mac and stays valid after the cert expires.
-mkdir -p "$HERE/dist"
-rm -rf "$HERE/dist/$APP"
-cp -R "$APP" "$HERE/dist/$APP"
+# Refresh the committed prebuilt (dist/) ONLY when explicitly asked with --refresh-dist. install.sh
+# deploys $HERE/Demonlock.app directly, so a normal build must NOT write the git-tracked dist/ — else
+# every install re-signs a fresh binary into it, dirtying the tree and colliding on the next `git pull`.
+# The prebuilt exists purely for installing on a Mac with no Swift toolchain; refresh it deliberately.
+if [ "${1:-}" = "--refresh-dist" ]; then
+    mkdir -p "$HERE/dist"
+    rm -rf "$HERE/dist/$APP"
+    cp -R "$APP" "$HERE/dist/$APP"
+    echo "✓ refreshed committed prebuilt dist/$APP"
+fi
 
 echo
-echo "✓ built $HERE/$APP  (signed: $ID; copied to dist/)"
+echo "✓ built $HERE/$APP  (signed: $ID)"
 echo "  install with:  sudo ./install/install.sh"
