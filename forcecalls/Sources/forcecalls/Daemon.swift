@@ -87,7 +87,7 @@ enum Daemon {
                     }
                     // Re-validate daemon-side: the CLI already checked, but the inbox is user-writable
                     // and a hand-rolled marker must not be able to install a malformed schedule.
-                    guard let spec = try? ScheduleSpec.parse(req.schedule, allowBareTime: req.once ?? false),
+                    guard let spec = try? ScheduleSpec.parse(req.schedule),
                           let dest = try? validateDestination(req.destination),
                           !req.name.trimmingCharacters(in: .whitespaces).isEmpty else {
                         logStderr("add: rejected invalid request '\(req.name)'"); continue

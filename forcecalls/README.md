@@ -112,11 +112,12 @@ All times are **local**, resolved live in the current timezone.
 
 ### `--once` — a single call
 
-Fires at the **next** occurrence of that time, then deletes itself. Because the day set is
-irrelevant to a one-shot, you may give a bare `HHMM` and skip the day letters:
+Fires at the **next** occurrence of the schedule, then deletes itself. The schedule syntax is
+exactly the same — `--once` changes the lifecycle, nothing else:
 
 ```sh
-forcecalls add --name checkin --destination +15559998888 --schedule 2045 --once
+forcecalls add --name checkin --destination +15559998888 --schedule *2045 --once   # next 20:45
+forcecalls add --name gran    --destination +15559998888 --schedule M0900  --once   # next Monday 09:00
 ```
 
 A one-shot is spent by an actual dial attempt, success or failure — but **not** by a presence skip.

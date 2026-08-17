@@ -31,17 +31,6 @@ enum SelfTest {
             check("rejects '\(bad)'", (try? ScheduleSpec.parse(bad)) == nil)
         }
 
-        // MARK: bare HHMM, allowed only for one-shots
-        check("bare 2045 is rejected by default", (try? ScheduleSpec.parse("2045")) == nil)
-        let bare = try? ScheduleSpec.parse("2045", allowBareTime: true)
-        check("bare 2045 with allowBareTime → every day 20:45", bare?.days == Set(1...7) && bare?.hhmm == 2045)
-        check("allowBareTime doesn't loosen anything else",
-              (try? ScheduleSpec.parse("99", allowBareTime: true)) == nil
-              && (try? ScheduleSpec.parse("2460", allowBareTime: true)) == nil
-              && (try? ScheduleSpec.parse("XX99", allowBareTime: true)) == nil)
-        check("day letters still work with allowBareTime",
-              (try? ScheduleSpec.parse("MWF0700", allowBareTime: true))?.days == Set([1, 3, 5]))
-
         // MARK: flag defaults survive a round-trip through calls.json
         let plain = """
             {"id":1,"name":"mom","destination":"+15559998888",

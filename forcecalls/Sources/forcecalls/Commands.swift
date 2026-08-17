@@ -70,7 +70,7 @@ enum Commands {
         let dest: String, spec: ScheduleSpec
         do {
             dest = try validateDestination(destRaw)
-            spec = try ScheduleSpec.parse(schedRaw, allowBareTime: once)
+            spec = try ScheduleSpec.parse(schedRaw)
         } catch { die("add: \(error)") }
 
         let req = AddRequest(name: name, destination: dest, schedule: spec.raw,
@@ -177,8 +177,9 @@ enum Commands {
           MWF0700    Mon/Wed/Fri at 07:00
           U1000      Sundays at 10:00
 
-        --once                fire at the next occurrence of that time, then delete itself. With
-                              --once you may give a bare HHMM (e.g. 2045) and skip the day letters.
+        --once                fire at the next occurrence of the schedule, then delete itself.
+                              Same schedule syntax as always: *0900 is the next 9am, M0900 the
+                              next Monday.
         --hangup-on-machine   if voicemail or a fax answers, hang up instead of bridging you to a
                               greeting. Adds a couple of seconds of detection before the bridge,
                               and a small per-call detection fee.
