@@ -357,7 +357,7 @@ demonlock admin-release-valve request "1h"    # ask for ≤1h of admin; granted 
 demonlock admin-release-valve status          # phase / countdown / gate-eval tree
 demonlock admin-release-valve abort           # cancel a pending request OR close a live grant now
 # extend a LIVE grant (SUDO — you only hold admin during a grant, so this can EXTEND but never bootstrap):
-sudo demonlock admin-release-valve i-still-need-sudo "for 45m"     # ≤1h more per call, in-window only
+sudo demonlock admin-release-valve i-still-need-sudo "for 45m"     # ≤1h more per call (needs a live grant, no gate)
 ```
 
 - **`IN_POLICY`** is a policy primitive valid **only** in the gate policy — the main policy's current
@@ -366,9 +366,14 @@ sudo demonlock admin-release-valve i-still-need-sudo "for 45m"     # ≤1h more 
   don't want to be locked out during the grant.
 - **`request` is idempotent while pending** — a repeat only updates the duration, never resets the
   frozen eligibility (can't shorten *or* re-extend the delay). Once granted, extend via
-  `i-still-need-sudo` (sudo, in-window) or `abort` and re-request.
+  `i-still-need-sudo` (sudo, needs a live grant) or `abort` and re-request.
 - **`arm` and `nosudo` close the valve** (abort a pending request + revoke a live grant inline), so a
   request can't hand out sudo minutes after you armed and `status` never lies.
+- **A grant flushes the no-sudo self-serve queues** — the instant admin is granted, every pending
+  delayed loosening is cancelled (`delay-set-policy`, `delayzones`, `delay-set-gate-policy`, `safe-apps`
+  delayed-registers, `snooze-preset` adds) plus the lockbox (pending unlocks + any open copy window).
+  You hold sudo now, so nothing queued from the locked-out state should silently land later; applied
+  config, registered spares, and an *active* snooze are untouched.
 - **delay-set-gate-policy** changes the gate policy itself on a delay (no sudo):
   `demonlock admin-release-valve delay-set-gate-policy "<expr>"` (+ `status`/`abort`;
   `sudo … delay-set-gate-policy set-delay "<dur>"`, baked 12h–168h).

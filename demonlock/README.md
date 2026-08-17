@@ -159,8 +159,9 @@ Every command falls into one of three buckets. This is the core of the whole des
 
 Since you run day‑to‑day with **no admin** (`nosudo`), "loosen now" is off the table — every
 loosening goes through the delay. Those delay floors/ceilings are **compiled into the binary**
-(`Bounds`), and every use re‑clamps into them, so editing the root settings file can't shrink them —
-changing a floor means recompiling, which isn't silent.
+(`Bounds`). The `set-*` tuners **reject** out‑of‑range values outright (a hard error, nothing stored),
+and every *use* also re‑clamps into the range — a second line of defense so a hand‑edited root settings
+file still can't shrink them. Changing a floor means recompiling, which isn't silent.
 
 ---
 
@@ -242,7 +243,7 @@ permanent blocklist — never spareable.
 | `safe-apps remove <name>` | no | immediate (tightening) |
 | `safe-apps set-delay "<dur>"` | **yes** | tune the delayed‑register delay |
 
-**Delay:** default **24h**, clamped **8h–168h**. `--name` overrides the auto‑derived handle used by
+**Delay:** default **24h**, must be **8h–168h** (`set-delay` rejects otherwise). `--name` overrides the auto‑derived handle used by
 `remove`. Registering the same bundle again just replaces the entry (set‑like by bundle id).
 
 ```
@@ -278,7 +279,7 @@ invocation at a time.**
 | `sudo snooze-preset add --name <n> --duration "<spec>" --delay "<dur>"` | **yes** | add a preset immediately |
 | `sudo snooze-preset set-delay "<dur>"` | **yes** | tune the delayed‑add delay |
 
-**Delays:** invoke‑delay per preset **1h–168h**; add‑delay default **48h**, clamped **24h–168h**;
+**Delays:** invoke‑delay per preset **1h–168h**; add‑delay default **48h**, must be **24h–168h** (`set-delay` rejects otherwise);
 any stand‑down is capped at **18h**.
 
 ```
@@ -362,8 +363,8 @@ sudo demonlock admin-release-valve set-max-request-duration "1h"
 
 - **gate‑policy** — *when* a grant may open (policy syntax, plus `IN_POLICY` = "the main policy
   currently allows"). Above: only during the 10–11am window while you're in policy.
-- **delay** — wait after you request before it's eligible. Floor **30m**, no ceiling.
-- **max‑request‑duration** — ceiling on how long a grant lasts. Hard ceiling **4h**.
+- **delay** — wait after you request before it's eligible. Floor **30m**, no ceiling (`set-delay` rejects below 30m).
+- **max‑request‑duration** — ceiling on how long a grant lasts. Hard ceiling **4h** (`set-max-request-duration` rejects above it).
 
 Then, with no sudo:
 ```bash
@@ -378,10 +379,18 @@ The lifecycle: **request** (frozen `eligible-at = now + delay`, can't be backdat
 clock.
 
 While a grant is live you can extend it (this needs sudo, which you only have *because* of the
-grant, so it can't bootstrap one):
+grant, so it can't bootstrap one). **No gate check** — sudo is the authority here (with it you could
+rewrite the gate anyway), and the narrow gate's job is to make the *initial* grant hard, not to
+re-fence a session you're already in:
 ```bash
-sudo demonlock admin-release-valve i-still-need-sudo "for 45m"   # ≤ 1h per call, in-window only
+sudo demonlock admin-release-valve i-still-need-sudo "for 45m"   # ≤ 1h per call (needs a live grant)
 ```
+
+> **A grant flushes your no‑sudo queues.** The instant admin is granted, every pending self‑serve
+> loosening is cancelled: `delay-set-policy`, `delayzones`, `delay-set-gate-policy`, `safe-apps`
+> delayed registrations, `snooze-preset` adds, and the lockbox (pending unlocks **and** any secret
+> still in its copy window). You hold sudo now — make the changes you actually want deliberately.
+> Already‑applied config and registered spares stay; an *active* snooze stays (it isn't a queue).
 
 Status while granted:
 ```

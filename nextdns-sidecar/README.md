@@ -90,9 +90,11 @@ sudo nextdns-sidecar set-delay "12h"     # the delay-add landing delay (clamped 
 4. **State dir** `/Library/Application Support/NextDNSSidecar` with a **user-owned `inbox/`** for the no-sudo markers.
 5. **Validates** the `pf` ruleset with `pfctl -n` (parse only — never enables `pf` or arms).
 6. **Loads** the LaunchDaemon `com.minh.nextdns-sidecar.enforcerd`.
-7. **Builds** the hardened resolver profile from your apple.nextdns.io download (prompted, or
-   `--profile-src <file>`), then **checks** (never silently installs) both profiles and prints the exact
-   `open` lines for the missing ones. `arm` is refused until the DoH profile is present.
+7. **Builds** the hardened resolver profile from your apple.nextdns.io download — **required** on a first
+   install (prompted, or `--profile-src <file>`); if a DoH profile is already installed it's kept and the
+   prompt is skipped. There is no "skip hardening" — with no profile and no `--profile-src`, install
+   refuses (NextDNS is the whole point). Then **checks** (never silently installs) both profiles and
+   prints the `open` lines for the missing ones. `arm` is refused until **both** profiles are present.
 
 ## Profiles (the captive-portal fix)
 
@@ -106,6 +108,8 @@ hand-authored profile silently). The installer prints `open "<path>"` for each m
   what makes captive portals appear.** The stock profile works too but doesn't handle captive as cleanly.
 - **`profiles/no-browser-doh.mobileconfig`** — forces Secure DNS **off** in every Chromium browser +
   Firefox so they can't bypass the system resolver (the `pf` DoH-IP blocklist is only a backstop).
+  **`arm` refuses without it** — checked via each installed browser's Secure-DNS policy — so you can't
+  arm a half-hardened system where a browser reaches its own DoH.
 
 Then confirm with `nextdns-sidecar networklockdown status` and `... arm`.
 

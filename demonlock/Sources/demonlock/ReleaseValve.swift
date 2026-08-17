@@ -151,21 +151,29 @@ enum ReleaseValve {
                         delaySec: cfg.effectiveDelay, maxRequestDurationSec: cfg.effectiveMaxDuration)
     }
 
-    /// On a fresh admin GRANT, cancel every no-sudo self-serve QUEUE: the delayed policy + zones changes,
-    /// pending safe-app registrations, and pending lockbox unlocks. Those queues are the commitment-device
-    /// path you use WITHOUT admin; once you hold admin you make changes deliberately with sudo, so stale
-    /// queued loosenings shouldn't silently land later. Only pending queues are cleared — already-applied
-    /// config, registered spares, and currently-unlocked secrets are untouched.
+    /// On a fresh admin GRANT, cancel every no-sudo self-serve QUEUE plus any open lockbox window: the
+    /// delayed policy / zones / release-valve-gate-policy changes, pending safe-app registrations, pending
+    /// snooze-preset adds, and the lockbox (pending unlocks AND currently-unlocked secrets). Those are the
+    /// commitment-device paths you use WITHOUT admin; once you hold admin you make changes deliberately
+    /// with sudo, so nothing queued should silently land later. Already-applied config and registered
+    /// spares are untouched, and an in-flight snooze (active suppression) is left alone — it's not a queue.
     private static func flushSelfServeQueues() {
         var cleared: [String] = []
-        var pol = DelayedState.load(Paths.delayedPolicyFile)
-        if pol.pending != nil { pol.pending = nil; pol.save(Paths.delayedPolicyFile); cleared.append("delay-set-policy") }
-        var zon = DelayedState.load(Paths.delayedZonesFile)
-        if zon.pending != nil { zon.pending = nil; zon.save(Paths.delayedZonesFile); cleared.append("delayzones") }
+        func flushDelayed(_ path: String, _ label: String) {
+            var s = DelayedState.load(path)
+            if s.pending != nil { s.pending = nil; s.save(path); cleared.append(label) }
+        }
+        flushDelayed(Paths.delayedPolicyFile, "delay-set-policy")
+        flushDelayed(Paths.delayedZonesFile, "delayzones")
+        flushDelayed(Paths.delayedGatePolicyFile, "delay-set-gate-policy")
         var sa = SafeApps.Registry.load()
         if !sa.pending.isEmpty { sa.pending.removeAll(); sa.save(); cleared.append("safe-apps") }
+        var sp = SnoozePresets.SPState.load()
+        if !sp.adds.isEmpty { sp.adds.removeAll(); sp.save(); cleared.append("snooze-preset-adds") }
         var lb = Lockbox.LBState.load()
-        if !lb.pending.isEmpty { lb.pending.removeAll(); lb.save(); cleared.append("lockbox-unlocks") }
+        if !lb.pending.isEmpty || !lb.unlockedUntil.isEmpty {
+            lb.pending.removeAll(); lb.unlockedUntil.removeAll(); lb.save(); cleared.append("lockbox")
+        }
         if !cleared.isEmpty { logStderr("release-valve: grant flushed queued self-serve changes: \(cleared.joined(separator: ", "))") }
     }
 
