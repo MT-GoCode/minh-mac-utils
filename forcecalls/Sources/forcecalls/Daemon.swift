@@ -9,6 +9,14 @@ struct AddRequest: Codable {
     var name: String
     var destination: String
     var schedule: String
+    var once: Bool?
+    var hangupOnMachine: Bool?
+}
+
+/// A testcall marker carries its flags alongside the number.
+struct TestRequest: Codable {
+    var destination: String
+    var hangupOnMachine: Bool?
 }
 
 /// A queued removal. `requestedAt` is stamped by the DAEMON, never by the CLI, so the delay can't be
@@ -79,7 +87,7 @@ enum Daemon {
                     }
                     // Re-validate daemon-side: the CLI already checked, but the inbox is user-writable
                     // and a hand-rolled marker must not be able to install a malformed schedule.
-                    guard let spec = try? ScheduleSpec.parse(req.schedule),
+                    guard let spec = try? ScheduleSpec.parse(req.schedule, allowBareTime: req.once ?? false),
                           let dest = try? validateDestination(req.destination),
                           !req.name.trimmingCharacters(in: .whitespaces).isEmpty else {
                         logStderr("add: rejected invalid request '\(req.name)'"); continue
@@ -88,9 +96,13 @@ enum Daemon {
                         logStderr("add: '\(req.name)' already exists — ignored"); continue
                     }
                     calls.append(ForcedCall(id: CallStore.nextID(calls), name: req.name,
-                                            destination: dest, schedule: spec))
+                                            destination: dest, schedule: spec,
+                                            once: req.once ?? false,
+                                            hangupOnMachine: req.hangupOnMachine ?? false))
                     callsDirty = true
-                    logStderr("add: '\(req.name)' \(dest) \(spec.raw)")
+                    logStderr("add: '\(req.name)' \(dest) \(spec.raw)"
+                              + ((req.once ?? false) ? " [once]" : "")
+                              + ((req.hangupOnMachine ?? false) ? " [hangup-on-machine]" : ""))
 
                 case "remove":
                     guard let id = Int(m.body), let call = calls.first(where: { $0.id == id }) else {
@@ -109,8 +121,15 @@ enum Daemon {
                     // Deliberately the SAME call path as a scheduled fire — same leg order, same
                     // LaML, same endpoint — so a passing test means the real thing works. It just
                     // skips the schedule and isn't recorded against any forced call.
-                    guard let dest = try? validateDestination(m.body) else {
-                        logStderr("testcall: rejected invalid destination '\(m.body)'"); continue
+                    // Accept both shapes: a bare number (older marker) and the JSON form with flags.
+                    var tDest = m.body
+                    var tAMD = false
+                    if let d = m.body.data(using: .utf8),
+                       let tr = try? JSONDecoder().decode(TestRequest.self, from: d) {
+                        tDest = tr.destination; tAMD = tr.hangupOnMachine ?? false
+                    }
+                    guard let dest = try? validateDestination(tDest) else {
+                        logStderr("testcall: rejected invalid destination '\(tDest)'"); continue
                     }
                     guard let creds = Creds.load() else {
                         st.lastResult[kTestKey] = "FAILED no credentials — reinstall to set them"
@@ -118,10 +137,14 @@ enum Daemon {
                         logStderr("testcall: no credentials at \(Paths.credsFile)")
                         continue
                     }
-                    let tr = SignalWire.placeCall(creds: creds, destination: dest)
-                    st.lastResult[kTestKey] = (tr.ok ? "ok " : "FAILED ") + tr.detail
+                    let res = SignalWire.placeCall(creds: creds, destination: dest, detectMachine: tAMD)
+                    var note = res.detail
+                    if res.ok, tAMD, let machine = SignalWire.hangupIfMachine(creds: creds, sid: res.detail) {
+                        note += " — hung up (\(machine))"
+                    }
+                    st.lastResult[kTestKey] = (res.ok ? "ok " : "FAILED ") + note
                     st.lastResultAt[kTestKey] = nowEpoch()
-                    logStderr("testcall -> \(dest): \(tr.ok ? "ok" : "FAILED") \(tr.detail)")
+                    logStderr("testcall -> \(dest): \(res.ok ? "ok" : "FAILED") \(note)")
 
                 case "abort":
                     if st.pendingRemovals.isEmpty {
@@ -183,10 +206,24 @@ enum Daemon {
                 st.save()
                 continue
             }
-            let r = SignalWire.placeCall(creds: creds, destination: call.destination)
-            st.lastResult[key] = (r.ok ? "ok " : "FAILED ") + r.detail
+            let r = SignalWire.placeCall(creds: creds, destination: call.destination,
+                                         detectMachine: call.hangupOnMachine)
+            var note = r.detail
+            if r.ok, call.hangupOnMachine, let machine = SignalWire.hangupIfMachine(creds: creds, sid: r.detail) {
+                note += " — hung up (\(machine))"
+            }
+            st.lastResult[key] = (r.ok ? "ok " : "FAILED ") + note
             st.lastResultAt[key] = nowEpoch()
-            logStderr("fire '\(call.name)' -> \(call.destination): \(r.ok ? "ok" : "FAILED") \(r.detail)")
+            logStderr("fire '\(call.name)' -> \(call.destination): \(r.ok ? "ok" : "FAILED") \(note)")
+
+            // A one-shot is spent by an actual dial attempt, success or failure — but NOT by a
+            // presence skip, which returns above without reaching here.
+            if call.once {
+                calls.removeAll { $0.id == call.id }
+                CallStore.save(calls)
+                st.lastFired.removeValue(forKey: key)
+                logStderr("once: '\(call.name)' fired and removed itself")
+            }
         }
 
         st.save()

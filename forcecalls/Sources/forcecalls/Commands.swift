@@ -20,10 +20,13 @@ enum Commands {
 
         let nameW = max(4, calls.map(\.name.count).max() ?? 4)
         let destW = max(11, calls.map(\.destination.count).max() ?? 11)
-        print("\(pad("ID", 4))\(pad("NAME", nameW + 2))\(pad("DESTINATION", destW + 2))\(pad("SCHEDULE", 10))NEXT")
+        print("\(pad("ID", 4))\(pad("NAME", nameW + 2))\(pad("DESTINATION", destW + 2))"
+              + "\(pad("SCHEDULE", 10))\(pad("ONCE", 6))\(pad("MACHINE", 9))NEXT")
         for c in calls {
             let next = c.schedule.nextOccurrence(now: now).map { fmtWhen($0) } ?? "—"
-            print("\(pad(String(c.id), 4))\(pad(c.name, nameW + 2))\(pad(c.destination, destW + 2))\(pad(c.schedule.raw, 10))\(next)")
+            print("\(pad(String(c.id), 4))\(pad(c.name, nameW + 2))\(pad(c.destination, destW + 2))"
+                  + "\(pad(c.schedule.raw, 10))\(pad(c.once ? "once" : "—", 6))"
+                  + "\(pad(c.hangupOnMachine ? "hang up" : "bridge", 9))\(next)")
         }
 
         let pending = st.pendingRemovals.sorted { $0.applyAt < $1.applyAt }
@@ -62,19 +65,24 @@ enum Commands {
         guard !CallStore.load().contains(where: { $0.name == name }) else {
             die("add: a forced call named '\(name)' already exists")
         }
+        let once = has(args, "--once")
+        let amd = has(args, "--hangup-on-machine")
         let dest: String, spec: ScheduleSpec
         do {
             dest = try validateDestination(destRaw)
-            spec = try ScheduleSpec.parse(schedRaw)
+            spec = try ScheduleSpec.parse(schedRaw, allowBareTime: once)
         } catch { die("add: \(error)") }
 
-        let req = AddRequest(name: name, destination: dest, schedule: spec.raw)
+        let req = AddRequest(name: name, destination: dest, schedule: spec.raw,
+                             once: once, hangupOnMachine: amd)
         guard let body = try? JSONEncoder().encode(req),
               let text = String(data: body, encoding: .utf8) else { die("add: couldn't encode the request") }
         do { try MarkerIO.drop(kind: "add", body: text) } catch { die("add: \(error)") }
 
         let next = spec.nextOccurrence(now: Date()).map { fmtWhen($0) } ?? "—"
-        print("queued '\(name)' → \(dest) on \(spec.raw)  (first call \(next))")
+        print("queued '\(name)' → \(dest) on \(spec.raw)"
+              + (once ? " ONCE" : "") + (amd ? " [hang up on voicemail]" : "")
+              + "  (\(once ? "fires" : "first call") \(next))")
         print("takes effect within a few seconds — confirm with: forcecalls show")
     }
 
@@ -122,8 +130,13 @@ enum Commands {
         } else {
             do { dest = try validateDestination(target) } catch { die("testcall: \(error)") }
         }
-        do { try MarkerIO.drop(kind: "testcall", body: dest) } catch { die("testcall: \(error)") }
-        print("calling \(dest) now — their phone rings first, then your endpoint auto-answers.")
+        let amd = has(args, "--hangup-on-machine")
+        let req = TestRequest(destination: dest, hangupOnMachine: amd)
+        guard let body = try? JSONEncoder().encode(req),
+              let text = String(data: body, encoding: .utf8) else { die("testcall: couldn't encode the request") }
+        do { try MarkerIO.drop(kind: "testcall", body: text) } catch { die("testcall: \(error)") }
+        print("calling \(dest) now\(amd ? " (hanging up if voicemail answers)" : "") — their phone"
+              + " rings first, then your endpoint auto-answers.")
         print("outcome shows up in: forcecalls show")
     }
 
@@ -151,9 +164,10 @@ enum Commands {
 
           forcecalls show
           forcecalls add --name <name> --destination <+E.164> --schedule <DAYS|*><HHMM>
+                         [--once] [--hangup-on-machine]
           forcecalls remove <name|id>      queued; lands after the removal delay
           forcecalls abort                 cancel every queued removal
-          forcecalls testcall <number|name>  dial now, exactly as a scheduled call would
+          forcecalls testcall <number|name> [--hangup-on-machine]   dial now, as a scheduled call would
           forcecalls presence              are you active enough for a call to fire right now?
           forcecalls help
 
@@ -163,12 +177,20 @@ enum Commands {
           MWF0700    Mon/Wed/Fri at 07:00
           U1000      Sundays at 10:00
 
+        --once                fire at the next occurrence of that time, then delete itself. With
+                              --once you may give a bare HHMM (e.g. 2045) and skip the day letters.
+        --hangup-on-machine   if voicemail or a fax answers, hang up instead of bridging you to a
+                              greeting. Adds a couple of seconds of detection before the bridge,
+                              and a small per-call detection fee.
+
         All commands are user-runnable. Only install/uninstall need sudo — that's what makes a
         forced call something you can't simply delete.
         """)
     }
 
     // MARK: arg parsing
+
+    private static func has(_ args: [String], _ name: String) -> Bool { args.contains(name) }
 
     private static func flag(_ args: [String], _ name: String) -> String? {
         guard let i = args.firstIndex(of: name), i + 1 < args.count else { return nil }

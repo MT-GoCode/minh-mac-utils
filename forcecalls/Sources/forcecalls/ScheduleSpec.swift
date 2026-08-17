@@ -18,8 +18,11 @@ struct ScheduleSpec: Codable, Equatable {
     static let dayMap: [Character: Int] = ["M": 1, "T": 2, "W": 3, "R": 4, "F": 5, "S": 6, "U": 7]
     static let dayLetters = "MTWRFSU"
 
-    static func parse(_ input: String) throws -> ScheduleSpec {
-        let raw = input.trimmingCharacters(in: .whitespaces).uppercased()
+    /// `allowBareTime` accepts a plain `2045` as "every day at 20:45" — only used for one-shot
+    /// calls, where the day set never matters because it fires at the next occurrence and dies.
+    static func parse(_ input: String, allowBareTime: Bool = false) throws -> ScheduleSpec {
+        var raw = input.trimmingCharacters(in: .whitespaces).uppercased()
+        if allowBareTime, raw.count == 4, raw.allSatisfy(\.isNumber) { raw = "*" + raw }
         guard !raw.isEmpty else { throw ForceError(message: "empty schedule — use <days>HHMM, e.g. *2045") }
         var idx = raw.startIndex
         var days = Set<Int>()
@@ -77,12 +80,36 @@ struct ScheduleSpec: Codable, Equatable {
     }
 }
 
-/// One forced call: who, what number, and when it fires.
+/// One forced call: who, what number, when it fires, and two behaviour flags.
 struct ForcedCall: Codable {
     var id: Int
     var name: String
     var destination: String     // E.164, e.g. +15559998888
     var schedule: ScheduleSpec
+    /// Fire at the next occurrence, then delete itself. Consumed by a real dial attempt — a
+    /// presence skip leaves it standing, since "call once" shouldn't be spent on a night you
+    /// weren't at the desk.
+    var once: Bool
+    /// Ask SignalWire to detect an answering machine and hang up instead of bridging you to a
+    /// voicemail greeting. Costs a couple of seconds of detection before the bridge.
+    var hangupOnMachine: Bool
+
+    init(id: Int, name: String, destination: String, schedule: ScheduleSpec,
+         once: Bool = false, hangupOnMachine: Bool = false) {
+        self.id = id; self.name = name; self.destination = destination
+        self.schedule = schedule; self.once = once; self.hangupOnMachine = hangupOnMachine
+    }
+
+    // Lenient: calls.json written before these flags existed decodes with them off.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        destination = try c.decode(String.self, forKey: .destination)
+        schedule = try c.decode(ScheduleSpec.self, forKey: .schedule)
+        once = (try? c.decode(Bool.self, forKey: .once)) ?? false
+        hangupOnMachine = (try? c.decode(Bool.self, forKey: .hangupOnMachine)) ?? false
+    }
 }
 
 enum CallStore {

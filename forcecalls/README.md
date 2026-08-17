@@ -88,9 +88,10 @@ Every command is **user-runnable — no sudo**:
 ```
 forcecalls show                                              # calls, next fire, pending removals
 forcecalls add --name <name> --destination <+E.164> --schedule <DAYS|*><HHMM>
+               [--once] [--hangup-on-machine]
 forcecalls remove <name|id>                                  # queued; lands after the delay
 forcecalls abort                                             # cancel every queued removal
-forcecalls testcall <+E.164|name>                            # dial now, exactly as a scheduled call would
+forcecalls testcall <+E.164|name> [--hangup-on-machine]       # dial now, exactly as a scheduled call would
 forcecalls presence                                          # are you active enough for a call to fire?
 forcecalls selftest                                          # assert the schedule math (no side effects)
 forcecalls help
@@ -108,6 +109,36 @@ forcecalls add --name gran --destination +15553334444 --schedule MWF1900  # Mon/
 ```
 
 All times are **local**, resolved live in the current timezone.
+
+### `--once` — a single call
+
+Fires at the **next** occurrence of that time, then deletes itself. Because the day set is
+irrelevant to a one-shot, you may give a bare `HHMM` and skip the day letters:
+
+```sh
+forcecalls add --name checkin --destination +15559998888 --schedule 2045 --once
+```
+
+A one-shot is spent by an actual dial attempt, success or failure — but **not** by a presence skip.
+"Call once" shouldn't be consumed on a night you weren't at the desk.
+
+### `--hangup-on-machine` — don't talk to voicemail
+
+Without it, a voicemail greeting counts as "answered" by the carrier, so you get bridged to a
+recording. With it, SignalWire runs answering-machine detection and the call is hung up instead.
+
+```sh
+forcecalls add --name mom --destination +15559998888 --schedule *2045 --hangup-on-machine
+forcecalls testcall +15559998888 --hangup-on-machine
+```
+
+Two costs: a couple of seconds of detection before you're bridged, and a small per-call detection
+fee. Both columns show in `forcecalls show`.
+
+**How it works without a webhook.** The usual way to act on `AnsweredBy` is to have SignalWire POST
+it to a URL you host — a public HTTPS endpoint existing solely for this. Instead the daemon asks for
+detection, polls the Call resource for `answered_by`, and hangs up over REST if it reports a machine
+or a fax. Serverless, at the price of that short delay.
 
 ### Trying it before 8:45 PM
 
