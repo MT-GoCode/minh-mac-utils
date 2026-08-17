@@ -27,6 +27,7 @@ sudo ./wtalk/uninstall.sh
 sudo ./msv2/uninstall.sh
 sudo ./stayup/uninstall.sh
 sudo ./blockrem/uninstall.sh
+sudo ./forcecalls/uninstall.sh
 sudo ./remote-agent-connector/uninstall.sh
 ./scripts/unset-paseo-daemon.sh
 rm -f ~/.local/bin/chrome-browser-fleet
@@ -41,6 +42,7 @@ sudo ./demonlock/install.sh
 sudo ./msv2/install.sh
 sudo ./stayup/install.sh
 sudo ./blockrem/install.sh
+sudo ./forcecalls/install.sh
 sudo ./remote-agent-connector/install.sh
 ./wtalk/setup.sh
 sudo ./wtalk/install.sh
@@ -61,6 +63,7 @@ sudo ./demonlock/register-recommended-spares.sh
 | **msv2** | desktop groups that scope ⌘⇥ + a hold-⌘⌥ overview; never moves windows; `msv2` CLI | `sudo ./msv2/install.sh` | yes |
 | **stayup** | menu-bar toggle for staying awake with the lid closed (`pmset disablesleep`); `stayup` CLI | `sudo ./stayup/install.sh` | yes |
 | **blockrem** | scheduled **un-quittable screen blocks** for forced breaks — a root daemon revives a grey full-screen cover + input freeze at each alarm; **fail-open** (a bug always lifts it); managing alarms is no-sudo | `sudo ./blockrem/install.sh` | yes |
+| **forcecalls** | scheduled phone calls you must **wait out** to cancel — a root daemon dials the other person via SignalWire, then bridges to a local baresip endpoint that auto-answers; `add` is instant, `remove` is delay-gated (12h), managing calls is no-sudo | `sudo ./forcecalls/install.sh` | yes |
 | **agentic-browser-setup** | installs `chrome-browser-fleet`: spins up isolated Chrome windows on their own CDP ports for agent browser automation | `./agentic-browser-setup/install.sh` | no |
 
 **Paseo daemon (`scripts/`).** `scripts/setup-paseo-daemon.sh` hands the third-party Paseo daemon to
@@ -99,9 +102,10 @@ paused; no-op if nowplaying-cli isn't installed).
 2. **nextdns-sidecar** — `sudo ./nextdns-sidecar/install.sh --profile-src ~/Downloads/NextDNS-*.mobileconfig` (enter your Profile ID + API key; it hardens that profile and prints the two `open` lines — approve both in Settings ▸ Device Management) → confirm with `nextdns-sidecar networklockdown status` → `nextdns-sidecar networklockdown arm`. (`nextdns-test <domain>` checks whether a domain is blocked.)
 3. **wtalk** — `cd wtalk && ./setup.sh` (venv+deps+ffmpeg) → `sudo ./install.sh` (PyInstaller-freeze, sign, deploy **root-owned** to `/Applications`, seed `~/.wtalk`) → put your Gemini key in `~/.wtalk/.env` → `wtalk restart` → bind a key in Karabiner to `/usr/local/bin/wtalk toggle` → grant **Microphone + Accessibility**.
 4. **msv2 / stayup** — `sudo ./msv2/install.sh`, `sudo ./stayup/install.sh` (each builds, signs, deploys root-owned, and registers itself as a demonlock spare).
-5. **remote-agent-connector** *(optional)* — `sudo ./remote-agent-connector/install.sh`, then Dock ▸ Get Permissions and `rac setup`.
-6. **agentic-browser-setup** *(optional, no sudo)* — `./agentic-browser-setup/install.sh`.
-7. **paseo daemon + third-party spares** *(optional)* — `./scripts/setup-paseo-daemon.sh`, then `sudo ./demonlock/register-recommended-spares.sh` (spares karabiner/alttab/raycast/etc.).
+5. **forcecalls** *(optional)* — `sudo ./forcecalls/install.sh` (prompts for your SignalWire space, project ID, API token, caller ID, and SIP endpoint) → install the endpoint from `forcecalls/endpoint/INSTALL.md` (baresip, auto-answer, root-owned + watchdog) → `forcecalls add --name mom --destination +1… --schedule *2045`.
+6. **remote-agent-connector** *(optional)* — `sudo ./remote-agent-connector/install.sh`, then Dock ▸ Get Permissions and `rac setup`.
+7. **agentic-browser-setup** *(optional, no sudo)* — `./agentic-browser-setup/install.sh`.
+8. **paseo daemon + third-party spares** *(optional)* — `./scripts/setup-paseo-daemon.sh`, then `sudo ./demonlock/register-recommended-spares.sh` (spares karabiner/alttab/raycast/etc.).
 
 ### 3. Only then harden
 Verify each tool's `status`. *Then* drop your daily admin with `demonlock nosudo` (re-login to fully
@@ -115,6 +119,7 @@ Installers scaffold these on the target Mac; you fill them in:
 |---|---|---|
 | `/usr/local/etc/nextdns-sidecar/credentials` | nextdns-sidecar install | enter Profile ID + API key at the prompt |
 | `~/.wtalk/.env` | wtalk `sudo ./install.sh` (template, user-owned `600`) | paste Gemini/Groq/HF keys |
+| `/Library/Application Support/Forcecalls/creds.json` | forcecalls install (root-owned `600`) | enter SignalWire space / project / token / caller ID / SIP endpoint at the prompt — deliberately unreadable afterwards |
 
 (demonlock no longer holds a password anywhere — admin is granted only by the delay-gated release
 valve, which edits the `admin` group directly.)

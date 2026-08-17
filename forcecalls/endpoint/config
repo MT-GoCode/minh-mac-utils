@@ -1,0 +1,19 @@
+# /etc/baresip/config  — root:wheel 644
+module_path            /opt/homebrew/lib/baresip/modules
+module                 ctrl_tcp.so
+module                 coreaudio.so
+module                 g711.so
+module                 opus.so
+module                 stun.so
+module                 turn.so
+module                 ice.so
+
+audio_player           coreaudio,default
+audio_source           coreaudio,default
+audio_alert            coreaudio,default
+
+sip_listen             0.0.0.0:5062
+call_accept            yes
+
+# ctrl_tcp: JSON-over-netstring control channel, localhost only
+ctrl_tcp_listen        127.0.0.1:4444

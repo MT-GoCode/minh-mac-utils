@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>           <string>com.forcecalls</string>
+    <key>CFBundleName</key>                 <string>Forcecalls</string>
+    <key>CFBundleExecutable</key>           <string>forcecalls-agent</string>
+    <key>CFBundlePackageType</key>          <string>APPL</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleShortVersionString</key>   <string>0.1</string>
+    <key>CFBundleVersion</key>              <string>1</string>
+    <key>LSMinimumSystemVersion</key>       <string>13.0</string>
+    <!-- Starts as a background accessory: no Dock tile, nothing on screen. It flips to .regular at
+         runtime only while a call is live, then back. .accessory also keeps it off demonlock's
+         .regular kill-list between calls. -->
+    <key>LSUIElement</key>                  <true/>
+</dict>
+</plist>
