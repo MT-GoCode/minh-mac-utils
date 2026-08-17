@@ -7,13 +7,21 @@ import AppKit
 ///
 /// CLOSING THE WINDOW DOES NOT END THE CALL. The close button and the Dock icon only show and hide
 /// the window; the call is held by baresip and the far end, neither of which this process controls.
-/// There is deliberately no hang-up button — the escape hatch is the thing forcecalls exists to
-/// remove. When the call ends on its own, the window and the Dock tile disappear together.
+///
+/// There IS an End Call button, but it stays disabled for the first `kHangupAfter` seconds. The
+/// point isn't to make hanging up impossible — it's to make the first thirty seconds unskippable, so
+/// leaving is a decision rather than a reflex. When the call ends, by either route, the window and
+/// the Dock tile disappear together.
+/// ponytail: a constant, not a setting. If it ever needs tuning it can move into settings.json,
+/// but a second knob nobody adjusts is worse than a number in one place.
+private let kHangupAfter: TimeInterval = 30
+
 final class AgentDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private var window: NSWindow?
     private var durationLabel: NSTextField?
     private var muteButton: NSButton?
+    private var hangupButton: NSButton?
     private var timer: Timer?
 
     private var live = false
@@ -55,9 +63,19 @@ final class AgentDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func refresh() {
         guard let start = callStart else { return }
-        let s = Int(Date().timeIntervalSince(start))
+        let elapsed = Date().timeIntervalSince(start)
+        let s = Int(elapsed)
         durationLabel?.stringValue = String(format: "%d:%02d", s / 60, s % 60)
         muteButton?.title = muted ? "Unmute" : "Mute"
+
+        let remaining = Int(ceil(kHangupAfter - elapsed))
+        if remaining > 0 {
+            hangupButton?.isEnabled = false
+            hangupButton?.title = "End call (\(remaining)s)"
+        } else {
+            hangupButton?.isEnabled = true
+            hangupButton?.title = "End call"
+        }
     }
 
     // MARK: window
@@ -89,11 +107,20 @@ final class AgentDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         mute.bezelStyle = .rounded
         muteButton = mute
 
+        let hangup = NSButton(title: "End call (\(Int(kHangupAfter))s)", target: self, action: #selector(endCall))
+        hangup.bezelStyle = .rounded
+        hangup.isEnabled = false
+        hangupButton = hangup
+
+        let buttons = NSStackView(views: [mute, hangup])
+        buttons.orientation = .horizontal
+        buttons.spacing = 8
+
         let note = NSTextField(labelWithString: "Closing this window won't end the call.")
         note.font = .systemFont(ofSize: 11)
         note.textColor = .secondaryLabelColor
 
-        [duration, mute, note].forEach { stack.addArrangedSubview($0) }
+        [duration, buttons, note].forEach { stack.addArrangedSubview($0) }
 
         let content = NSView()
         content.addSubview(stack)
@@ -113,6 +140,14 @@ final class AgentDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         Baresip.command("mute")                        // ctrl_tcp toggles; we mirror the flag locally
         muted.toggle()
         refresh()
+    }
+
+    /// Hang up the local leg. baresip dropping its side makes SignalWire tear down the far leg too,
+    /// so this ends the whole call, not just your half.
+    @objc private func endCall() {
+        guard let start = callStart, Date().timeIntervalSince(start) >= kHangupAfter else { return }
+        Baresip.resetBackoff()
+        Baresip.command("hangup")
     }
 
     /// Close = hide. The Dock tile stays for the life of the call so you can bring the window back.

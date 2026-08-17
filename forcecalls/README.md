@@ -189,9 +189,11 @@ leaves the original deadline standing rather than restarting (or shortening) it.
   replays your inbox markers in order, lands due removals, and places calls whose occurrence is due.
   It lives in the `system` domain, so you can't stop it without sudo.
 - **GUI agent** (`com.minh.forcecalls.agent`, LaunchAgent, `LSUIElement`) — invisible until a call is
-  live, then flips to `.regular`, takes a Dock tile, and opens a window with the duration and a mute
-  button. Closing the window or clicking the Dock icon only shows/hides it. There is deliberately
-  **no hang-up button**.
+  live, then flips to `.regular`, takes a Dock tile, and opens a window with the running duration, a
+  mute toggle, and an **End Call button that stays disabled for the first 30 seconds** and counts
+  down while it waits. Closing the window or clicking the Dock icon only shows/hides it — neither
+  ends the call. The delay isn't there to make hanging up impossible, only to make the first thirty
+  seconds unskippable, so leaving is a decision rather than a reflex.
 - **Endpoint** (`endpoint/`) — baresip as a root-owned LaunchAgent with `answermode=auto`, plus a
   root LaunchDaemon watchdog that re-bootstraps it if you `launchctl bootout` the agent.
 
