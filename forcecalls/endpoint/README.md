@@ -41,7 +41,7 @@ switch off — worth knowing before you rely on it.
 | Path | Owner | Notes |
 |---|---|---|
 | `/etc/baresip/config` | root `644` | modules, audio devices, `ctrl_tcp` on 127.0.0.1:4444 |
-| `/etc/baresip/accounts` | root `600` | generated; holds the SIP password, unreadable by you |
+| `/etc/baresip/accounts` | `root:staff 640` | generated; readable by you, **not writable** — baresip runs as you, so it must be able to read it |
 | `/Library/LaunchAgents/com.minh.forcecalls.endpoint.plist` | root `644` | baresip, `KeepAlive` |
 | `/Library/LaunchDaemons/com.minh.forcecalls.endpoint-watchdog.plist` | root `644` | re-bootstraps the agent |
 | `/usr/local/libexec/forcecalls-endpoint-watchdog.sh` | root `755` | 10s poll |
@@ -52,6 +52,15 @@ switch off — worth knowing before you rely on it.
 lights up with a mute toggle while a call is live. `brew install --cask swiftbar`, then drop it in
 SwiftBar's plugin folder. The Forcecalls Dock app covers the same ground with a window; this is the
 lighter option if you'd rather not have a Dock tile appear.
+
+## Why `accounts` is readable by you
+
+baresip runs in your GUI session, as you, so it must be able to read its own credentials — a
+root-only `0600` file means no account loads and registration silently never happens.
+
+The enforcement that matters isn't secrecy of the SIP password. Knowing it lets you register another
+softphone; it does **not** let you dodge a call. What stops you is that the file is not *writable*:
+you can't remove the account or turn `answermode=auto` off without sudo.
 
 ## Known ceilings
 

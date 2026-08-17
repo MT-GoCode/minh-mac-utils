@@ -15,8 +15,34 @@ enum Baresip {
         return reply.uppercased().contains("ESTABLISHED")
     }
 
+    /// ctrl_tcp rejected our frames with ENOTSUP and logged an error per poll, which filled
+    /// /var/log/baresip.log with one line every 2s. Two changes: send the full documented message
+    /// shape (params + token, not just command), and stop hammering after repeated failures — a
+    /// status indicator is never worth spamming a log we don't own.
+    private static var consecutiveFailures = 0
+    private static var skipped = 0
+    private static let failureCeiling = 5
+    private static let slowRetryEvery = 30      // ~1 minute at the 2s poll
+
     @discardableResult
     static func command(_ cmd: String, timeout: Double = 1.0) -> String? {
+        // Back off to an occasional retry rather than giving up for good: if ctrl_tcp comes back
+        // (baresip restarted, config fixed), the indicator should heal itself without a relaunch.
+        if consecutiveFailures >= failureCeiling {
+            skipped += 1
+            if skipped < slowRetryEvery { return nil }
+            skipped = 0
+        }
+        let r = send(cmd, timeout: timeout)
+        consecutiveFailures = (r == nil) ? consecutiveFailures + 1 : 0
+        return r
+    }
+
+    /// Clear the back-off — call when the user asks for something explicitly, so a transient
+    /// failure doesn't disable the control channel until the next launch.
+    static func resetBackoff() { consecutiveFailures = 0; skipped = 0 }
+
+    private static func send(_ cmd: String, timeout: Double) -> String? {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
         defer { close(fd) }
@@ -36,7 +62,8 @@ enum Baresip {
         }
         guard connected else { return nil }
 
-        let json = "{\"command\":\"\(cmd)\"}"
+        // Full documented shape: bare {"command":…} came back as ENOTSUP.
+        let json = "{\"command\":\"\(cmd)\",\"params\":\"\",\"token\":\"fc\"}"
         let frame = "\(json.utf8.count):\(json),"     // netstring framing, per ctrl_tcp
         let wrote: Int = Array(frame.utf8).withUnsafeBufferPointer { buf in
             guard let base = buf.baseAddress else { return -1 }

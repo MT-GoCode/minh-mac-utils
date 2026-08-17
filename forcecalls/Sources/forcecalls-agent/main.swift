@@ -109,6 +109,7 @@ final class AgentDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func toggleMute() {
+        Baresip.resetBackoff()          // explicit user action: always worth one more try
         Baresip.command("mute")                        // ctrl_tcp toggles; we mirror the flag locally
         muted.toggle()
         refresh()
