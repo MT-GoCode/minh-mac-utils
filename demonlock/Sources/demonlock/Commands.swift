@@ -610,7 +610,7 @@ usage:
   demonlock admin-release-valve status              # phase / countdown / gate eval
   demonlock admin-release-valve abort               # cancel a pending request OR close a live grant now
   # extend a LIVE grant (sudo — you only hold admin during a grant, so this can't bootstrap one):
-  sudo demonlock admin-release-valve i-still-need-sudo "for <dur>" | "until <HHMM>"   # ≤ 1h more, in-window only
+  sudo demonlock admin-release-valve i-still-need-sudo "for <dur>" | "until <HHMM>"   # ≤ 1h more (needs a live grant)
 """
 
 func runReleaseValve(_ args: [String]) {
@@ -654,8 +654,11 @@ private func rvRequest(_ durText: String) {
     print("  Watch: `demonlock status`  ·  cancel: `demonlock admin-release-valve abort`")
 }
 
-/// i-still-need-sudo (SUDO): extend a LIVE grant by ≤ Bounds.rvExtendMax, only while the gate is open.
-/// Requires sudo, which you only have during a grant — so it can extend but never bootstrap admin.
+/// i-still-need-sudo (SUDO): extend a LIVE grant by ≤ Bounds.rvExtendMax. Requires sudo, which you only
+/// have DURING a grant — so it extends an active session but can never bootstrap admin from nothing. No
+/// gate check: sudo IS the authority (with sudo you could rewrite the gate anyway), and the gate's job is
+/// to make the INITIAL grant hard — not to re-fence every extension of a session you already hold. That
+/// restrictiveness is the whole point of a narrow gate; re-checking it here would defeat it.
 private func rvExtend(_ spec: String) {
     requireRoot("admin-release-valve i-still-need-sudo")
     let s = spec.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -668,10 +671,6 @@ private func rvExtend(_ spec: String) {
 
     var st = ReleaseValveState.load()
     guard st.isGranted else { fail("✗ no live admin grant to extend — request one first (`admin-release-valve request \"1h\"`).") }
-    // The gate must be OPEN right now (from the daemon's published eval) — no extending after you leave.
-    guard let rv = StateStore.read()?.releaseValve, rv.windowOpen else {
-        fail("✗ the gate is closed right now — i-still-need-sudo only works inside the window.")
-    }
     st.grantExpiresAt = nowEpoch() + capped
     ReleaseValveState.write(st)
     print("✓ extended — admin now held for \(Int(capped/60))m more (from now).")

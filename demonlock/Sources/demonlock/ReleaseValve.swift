@@ -62,7 +62,7 @@ struct RVStatus: Codable {
     var requestedDurationSec: Double?
     var gatePolicy: String?
     var windowTree: EvalNode?    // the gate-policy evaluation (incl. IN_POLICY)
-    var windowOpen: Bool         // gate currently true — i-still-need-sudo requires this
+    var windowOpen: Bool         // gate currently true — shown in status while a request waits to grant
     var delaySec: Double?
     var maxRequestDurationSec: Double?
 }
