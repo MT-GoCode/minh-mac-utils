@@ -91,6 +91,7 @@ forcecalls add --name <name> --destination <+E.164> --schedule <DAYS|*><HHMM>
 forcecalls remove <name|id>                                  # queued; lands after the delay
 forcecalls abort                                             # cancel every queued removal
 forcecalls testcall <+E.164|name>                            # dial now, exactly as a scheduled call would
+forcecalls presence                                          # are you active enough for a call to fire?
 forcecalls help
 ```
 
@@ -119,6 +120,26 @@ forcecalls testcall mom             # or the name of a forced call you already a
 ```
 
 The outcome lands in `forcecalls show` under `(testcall)`.
+
+### It won't ring them if you're not there
+
+Before dialling, the daemon checks that **you** are at the machine: the console user must be the
+enforced user, and macOS's `HIDIdleTime` — nanoseconds since the last keyboard or mouse event — must
+be under `requireActiveSeconds` (default **5 minutes**).
+
+```sh
+forcecalls presence     # what the daemon would decide right now
+```
+
+A skipped call is recorded in `forcecalls show` with the reason, and is **not** retried later: the
+occurrence is stamped before the check, so a call declined at 20:45 can't fire at 03:00 because you
+got up for a glass of water.
+
+This check fails **closed** — if idle time can't be read, it doesn't dial. Ringing someone into an
+empty room is worse than missing a night.
+
+Set `requireActiveSeconds` to `0` in `settings.json` to disable it. That file is root-owned, which is
+deliberate: turning the check off is a loosening, and loosenings cost sudo.
 
 ### Removal is the whole point
 
@@ -160,7 +181,7 @@ asymmetry is what makes management no-sudo while the schedule itself stays out o
 | `calls.json` | root | daemon only | `[ForcedCall]` — not hand-editable |
 | `state.json` | root | daemon | fired history, pending removals, last outcome |
 | `creds.json` | root `0600` | install | SignalWire keys; unreadable by you |
-| `settings.json` | root | install | per-machine `enforcedUser`, delays |
+| `settings.json` | root | install | `enforcedUser`, delays, `requireActiveSeconds` |
 | `inbox/` | you `0700` | CLI (no sudo) | `<millis>-<rand>.{add,remove,abort}` markers |
 | `logs/daemon.log` | root | daemon | |
 

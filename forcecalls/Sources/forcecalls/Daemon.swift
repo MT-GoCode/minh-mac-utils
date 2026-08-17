@@ -159,10 +159,22 @@ enum Daemon {
             let key = String(call.id)
             if st.lastFired[key] == occ { continue }
 
-            // Stamp BEFORE dialling. If the process dies mid-request, the worst case is one missed
-            // call — never a loop that redials your mother every five seconds.
+            // Stamp BEFORE anything else. If the process dies mid-request, the worst case is one
+            // missed call — never a loop that redials your mother every five seconds. Stamping also
+            // applies to a presence skip: a call declined at 20:45 must not fire at 03:00 because
+            // you got up for a glass of water.
             st.lastFired[key] = occ
             st.save()
+
+            // Don't ring someone if you're not there to talk to them.
+            let presence = Presence.check(enforcedUser: s.enforcedUser, maxIdle: s.requireActiveSeconds)
+            guard presence.present else {
+                st.lastResult[key] = "skipped — \(presence.reason)"
+                st.lastResultAt[key] = nowEpoch()
+                logStderr("skip '\(call.name)': \(presence.reason)")
+                st.save()
+                continue
+            }
 
             guard let creds = Creds.load() else {
                 st.lastResult[key] = "FAILED no credentials — reinstall to set them"

@@ -127,6 +127,19 @@ enum Commands {
         print("outcome shows up in: forcecalls show")
     }
 
+    // MARK: presence
+
+    /// Show what the daemon would decide right now. Without this the presence gate is invisible —
+    /// you'd only learn it skipped by reading `show` the next morning.
+    static func presence() {
+        let s = Settings.load()
+        let v = Presence.check(enforcedUser: s.enforcedUser, maxIdle: s.requireActiveSeconds)
+        print("console user : \(v.consoleUser ?? "—")   (enforced: \(s.enforcedUser.isEmpty ? "—" : s.enforcedUser))")
+        print("idle         : \(v.idleSeconds.map { fmtLeft($0) } ?? "—")")
+        print("limit        : \(s.requireActiveSeconds > 0 ? fmtLeft(s.requireActiveSeconds) : "disabled")")
+        print("would dial   : \(v.present ? "yes" : "NO — \(v.reason)")")
+    }
+
     // MARK: help
 
     static func help() {
@@ -141,6 +154,7 @@ enum Commands {
           forcecalls remove <name|id>      queued; lands after the removal delay
           forcecalls abort                 cancel every queued removal
           forcecalls testcall <number|name>  dial now, exactly as a scheduled call would
+          forcecalls presence              are you active enough for a call to fire right now?
           forcecalls help
 
         SCHEDULE — days are M T W R F S U (R=Thu, U=Sun) or * for every day, then 4-digit HHMM:

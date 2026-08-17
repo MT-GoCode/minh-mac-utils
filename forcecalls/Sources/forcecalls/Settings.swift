@@ -7,13 +7,16 @@ struct Settings: Codable {
     var pollSeconds: Double       // daemon tick
     var removeDelaySec: Double    // how long `remove` sits before it lands — the commitment device
     var graceSeconds: Double      // how late an occurrence may fire (covers a slow tick / brief downtime)
+    var requireActiveSeconds: Double  // skip the call if you haven't touched the machine this recently; 0 disables
 
     init(enforcedUser: String = "", pollSeconds: Double = 5,
-         removeDelaySec: Double = 12 * 3600, graceSeconds: Double = 120) {
+         removeDelaySec: Double = 12 * 3600, graceSeconds: Double = 120,
+         requireActiveSeconds: Double = 300) {
         self.enforcedUser = enforcedUser
         self.pollSeconds = pollSeconds
         self.removeDelaySec = removeDelaySec
         self.graceSeconds = graceSeconds
+        self.requireActiveSeconds = requireActiveSeconds
     }
 
     init(from decoder: Decoder) throws {
@@ -23,6 +26,7 @@ struct Settings: Codable {
         pollSeconds    = (try? c.decode(Double.self, forKey: .pollSeconds))    ?? d.pollSeconds
         removeDelaySec = (try? c.decode(Double.self, forKey: .removeDelaySec)) ?? d.removeDelaySec
         graceSeconds   = (try? c.decode(Double.self, forKey: .graceSeconds))   ?? d.graceSeconds
+        requireActiveSeconds = (try? c.decode(Double.self, forKey: .requireActiveSeconds)) ?? d.requireActiveSeconds
     }
 
     static func load() -> Settings { loadJSON(Paths.settingsFile) ?? Settings() }
