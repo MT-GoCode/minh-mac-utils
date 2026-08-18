@@ -1,4 +1,4 @@
-# browser-blitz / browser-blitz
+# browser-blitz
 
 Drive your **real, logged-in Chrome** with `agent-browser` (or any CDP client), with each
 agent fenced into its own tab group.
@@ -12,6 +12,25 @@ agent-browser --cdp 9340 snapshot -i
 browser-blitz bring-to-front --slug work        # show yourself what it's doing
 browser-blitz end work                          # closes the group
 ```
+
+## Install
+
+Prerequisites: macOS, Google Chrome, and Node.js (`brew install node`).
+
+```bash
+git clone git@github.com:MT-GoCode/minh-mac-utils.git
+cd minh-mac-utils/browser-blitz
+./install.sh          # installs agent-browser if missing, starts the shim, links the CLI
+```
+
+Then load the extension **once per Chrome profile you want to drive**:
+
+1. open `chrome://extensions`  2. enable **Developer mode**
+3. **Load unpacked** → the `extension/` folder in this repo
+
+`browser-blitz status` should then show that profile as `installed, live`. Re-running
+`./install.sh` is always safe. `./install.sh --uninstall` removes the shim, CLI, and state
+(remove the Chrome extension by hand).
 
 ## Why it exists
 

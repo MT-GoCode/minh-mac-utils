@@ -6,10 +6,18 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LABEL="com.minh.browser-blitz"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-BINDIR="${BINDIR:-/opt/homebrew/bin}"
 STATE="$HOME/.local/state/browser-blitz"
 EXT="$HERE/extension"
-NODE="$(command -v node || echo /opt/homebrew/bin/node)"
+NODE="$(command -v node || true)"
+
+# Pick the right bin dir: Homebrew prefix if present (/opt/homebrew on Apple Silicon,
+# /usr/local on Intel), else /usr/local/bin. Override with BINDIR=... ./install.sh
+if [ -z "${BINDIR:-}" ]; then
+  if command -v brew >/dev/null 2>&1; then BINDIR="$(brew --prefix)/bin"
+  elif [ -d /opt/homebrew/bin ];   then BINDIR=/opt/homebrew/bin
+  else                                  BINDIR=/usr/local/bin
+  fi
+fi
 
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
@@ -34,35 +42,28 @@ echo
 
 # ---------------------------------------------------------------- preflight
 [ "$(uname)" = Darwin ] || bad "macOS only"
-[ -x "$NODE" ] || bad "node not found (brew install node)"
+[ -n "$NODE" ] || bad "node not found — install it first (brew install node)"
 ok "node $($NODE --version)"
-[ -d "/Applications/Google Chrome.app" ] || bad "Chrome not installed"
+NPM="$(dirname "$NODE")/npm"; [ -x "$NPM" ] || NPM="$(command -v npm || echo npm)"
+[ -d "/Applications/Google Chrome.app" ] || bad "Google Chrome not installed"
 ok "Chrome $("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --version | awk '{print $3}')"
-[ -f "$HERE/shim.js" ] || bad "shim.js missing"
+[ -f "$HERE/shim.js" ] || bad "shim.js missing (run from the browser-blitz repo dir)"
 [ -f "$EXT/manifest.json" ] || bad "extension/ missing"
 
-# ------------------------------------------- remove superseded predecessors
-# This tool has had two prior names/shapes; tear them all out so nothing double-runs.
-for old in com.minh.cdp-shim com.minh.use-my-chromed; do
-  if launchctl list 2>/dev/null | grep -q "$old"; then
-    launchctl bootout "gui/$(id -u)/$old" 2>/dev/null || true
-    launchctl remove "$old" 2>/dev/null || true
-    warn "removed obsolete service $old"
-  fi
-  rm -f "$HOME/Library/LaunchAgents/$old.plist"
-done
-pkill -f "cdpshim.js" 2>/dev/null || true
-pkill -f "umc.daemon" 2>/dev/null || true
-for oldbin in use-my-chrome agent-chrome; do
-  [ -e "$BINDIR/$oldbin" ] && { rm -f "$BINDIR/$oldbin"; warn "removed obsolete $oldbin"; }
-done
-rm -rf "$HOME/.local/state/use-my-chrome" 2>/dev/null || true
+# agent-browser is the driver the CLI hands a port to. Install it if absent.
+if command -v agent-browser >/dev/null 2>&1; then
+  ok "agent-browser present"
+else
+  warn "agent-browser not found — installing (npm i -g agent-browser)…"
+  "$NPM" install -g agent-browser >/dev/null 2>&1 && ok "agent-browser installed" \
+    || bad "could not install agent-browser — run: npm i -g agent-browser"
+fi
 
 # ------------------------------------------------------------------ install
 mkdir -p "$STATE" "$HOME/Library/LaunchAgents"
 
 if [ ! -d "$HERE/node_modules/ws" ]; then
-  ( cd "$HERE" && "$(dirname "$NODE")/npm" install --silent ws >/dev/null 2>&1 )
+  ( cd "$HERE" && "$NPM" install --silent ws >/dev/null 2>&1 )
 fi
 [ -d "$HERE/node_modules/ws" ] && ok "dependency: ws" || bad "npm install ws failed"
 
@@ -90,8 +91,10 @@ launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 
 chmod +x "$HERE/browser-blitz"
+mkdir -p "$BINDIR"
 ln -sf "$HERE/browser-blitz" "$BINDIR/browser-blitz"
 ok "CLI: $BINDIR/browser-blitz"
+case ":$PATH:" in *":$BINDIR:"*) ;; *) warn "$BINDIR is not on your PATH — add it to use 'browser-blitz' directly";; esac
 
 up=false
 for _ in $(seq 15); do
