@@ -307,6 +307,12 @@ function browserLevel(s) {
     // a download, so ack it. Downloads are NOT intercepted — the file saves to Chrome's normal
     // Downloads folder. To capture one, read its URL and fetch it directly (see README).
     'Browser.setDownloadBehavior': () => ({}),
+    // `agent-browser close` asks the browser to quit. That would close the USER'S whole
+    // Chrome, not just this slug. Refuse with the right instruction instead.
+    'Browser.close': () => {
+      throw new Error('refused: this would quit the user\'s entire Chrome. ' +
+        'End the session with `browser-blitz end <slug>` instead.');
+    },
     'Page.setDownloadBehavior': () => ({}),
   };
 }

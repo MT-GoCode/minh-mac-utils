@@ -95,8 +95,17 @@ wait @e1              # until element appears
 wait --text "Done"   wait --url "**/dashboard"   wait --load networkidle   wait --fn "<js>"
 wait 2000            # dumb ms wait — last resort only
 
-# tabs (all stay in your group)
-tab                  # list  |  tab new <url>  |  tab close  |  tab t2 (switch by id)
+# cheap state checks — ideal for verifying an action IN THE SAME TURN (a few tokens each)
+is visible <sel>   is enabled <sel>   is checked <sel>      # → true / false
+
+# tabs (all stay in your group). Ids are t1,t2,… — `tab 2` is an error, use `tab t2`.
+tab                              # list
+tab new [url]                    # new tab   |   tab close [t2]   |   tab t2  (switch)
+tab new --label docs <url>       # LABEL IT, then `tab docs` — survives renumbering,
+                                 # far more robust than t-ids for multi-tab work
+# Refs (@eN) belong to the tab that was active when you snapshotted — switch tabs, re-snapshot.
+# Don't use `agent-browser close`: it only tears down agent-browser's local daemon (your next
+# command silently respawns it) and never closes the user's Chrome. Use `browser-blitz end <slug>`.
 
 # capture
 screenshot <path.jpg>   # JPEG by default here (small); use on failure / final proof only
