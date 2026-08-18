@@ -107,8 +107,13 @@ tab new --label docs <url>       # LABEL IT, then `tab docs` — survives renumb
 # Don't use `agent-browser close`: it only tears down agent-browser's local daemon (your next
 # command silently respawns it) and never closes the user's Chrome. Use `browser-blitz end <slug>`.
 
-# capture
-screenshot <path.jpg>   # JPEG by default here (small); use on failure / final proof only
+# capture — NOTE: the file lands on the MAC. You are not on the Mac. Three steps to SEE it:
+#   1. ssh mac-personal 'agent-browser --cdp <PORT> screenshot /tmp/shot.jpg'
+#   2. scp -q mac-personal:/tmp/shot.jpg /tmp/shot.jpg
+#   3. Read /tmp/shot.jpg          ← only the Read tool actually shows you pixels
+# With no path it saves to ~/.agent-browser/tmp/screenshots/ (harder to fetch — always pass one).
+screenshot <path.jpg>       # JPEG by default here; ~2.9k vision tokens at retina size,
+                            # so `set viewport 800 600` FIRST if you only need the gist
 screenshot --annotate <p>   # numbered labels keyed to the last snapshot's @refs
 pdf <path>
 
@@ -196,8 +201,15 @@ But vision cost is **pixel-driven**, so to cut TOKENS shrink the viewport first:
 ```bash
 ssh mac-personal 'agent-browser --cdp 9340 get url; agent-browser --cdp 9340 console | tail -20; agent-browser --cdp 9340 snapshot -i -s "<region>"'
 ```
-Console is ~700 tok. Diagnose in the failing turn, don't spend a round trip asking "what
-happened".
+All three are TEXT (~1.7k tok total) and actionable — fresh `@eN` refs to click, exact error
+strings to read. Diagnose in the failing turn; don't spend a round trip asking "what happened".
+
+**No failure auto-captures anything.** A failed command prints text only
+(`✗ Element not found: #x. Verify the selector…`). Deliberately do NOT put a screenshot in
+this bundle: an image costs ~2.9k vision tokens (more than the whole text bundle), needs
+capture→scp→Read over SSH, and gives you no refs to act on. Screenshot ONLY when the question
+is inherently visual — layout looks wrong, or an element is in the DOM but not visible. To just
+show the user the result, `browser-blitz bring-to-front --slug <task>` costs zero tokens.
 
 **G. Hazards:**
 - **`--json` silently bypasses `--max-output`.** `snapshot -i --max-output 500` = 570 B;
