@@ -159,6 +159,11 @@ shim's own overhead 0.13ms
   Downloads folder under Chrome's own filename, so it will not appear at the path the client
   asked for. To capture a file, read its URL (`get attr @ref href`) and fetch it directly
   (e.g. `curl` over SSH); pull the tab's cookies first if the download is auth-gated.
+- **A trusted click that opens a new tab WILL focus Chrome.** Input here is genuinely trusted
+  (`isTrusted === true`), so a link/button calling `window.open` behaves exactly like a real
+  user click — Chrome creates the tab and raises the window. Tabs this tool opens itself
+  (`open`, `tab new`) are created inactive and never steal focus. In a loop, prefer reading the
+  destination url and navigating to it directly over clicking a "launch in new tab" control.
 - **Another extension's frame can block the debugger.** Chrome refuses `chrome.debugger` on a
   tab whose frame tree contains a DIFFERENT extension's frame, reporting it as
   `Cannot access a chrome-extension:// URL of different extension` even when the page is

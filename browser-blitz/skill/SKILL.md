@@ -68,8 +68,10 @@ snapshot -i -u      # include href urls on links
 get text <sel|@ref>   get html <sel>   get attr <sel> <name>   get value <sel>
 get title   get url   get count <sel>   get box <sel>   get styles <sel>
 
-# interact  (input is REAL and trusted — the target tab briefly becomes active in its window;
-#            this does NOT raise Chrome or steal your OS focus)
+# interact  (input is REAL and trusted — the target tab becomes active within its own window;
+#            that alone does NOT raise Chrome or steal the user's OS focus. BUT because the
+#            input is genuinely trusted, clicking something that calls window.open DOES focus
+#            Chrome, exactly as a real click would — see C2 in the Optimizations section.)
 click <sel|@ref>   dblclick   hover   focus   fill <sel> <text>   type <sel> <text>
 press <key>        # e.g. press Enter, press Control+a, press Backspace
 check <sel>   uncheck   select <sel> <val…>   scroll down 500   scrollintoview <sel>
@@ -197,6 +199,20 @@ CONTINUE-ON-ERROR, so a failed `fill` would still let the following `click submi
 `batch` only for independent reads with no ordering dependency (`batch '["get","url"]'
 '["get","title"]'`), where it saves one process spawn per command (~32ms on 4 calls — trivial
 next to the 206ms ssh trip, so never contort a flow for it).
+
+**C2. Don't click things that open a NEW TAB — navigate to the URL instead.** Your clicks are
+genuinely trusted (`isTrusted === true`), so a link/button that calls `window.open` behaves
+exactly as if the user clicked it: Chrome creates the tab AND raises the window, stealing the
+user's focus — once per click, which is brutal in a loop. Tabs this tool opens itself
+(`open`, `tab new`) are created inactive and never steal focus. So:
+```bash
+# BAD in a loop: every click yanks the user's focus to Chrome
+agent-browser --cdp $P click "@e12"        # "Launch X" → window.open → focus stolen
+# GOOD: read where it goes, then navigate there directly (stays in the same inactive tab)
+agent-browser --cdp $P get attr "@e12" href     # or read the form/LTI target from the DOM
+agent-browser --cdp $P open "<that url>"
+```
+If a click genuinely must open the tab, tell the user upfront that focus will move.
 
 **D. Wait on conditions, not sleeps** (section 2) — each avoided sleep saves a re-observe.
 
