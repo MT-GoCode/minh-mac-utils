@@ -73,7 +73,16 @@ get title   get url   get count <sel>   get box <sel>   get styles <sel>
 click <sel|@ref>   dblclick   hover   focus   fill <sel> <text>   type <sel> <text>
 press <key>        # e.g. press Enter, press Control+a, press Backspace
 check <sel>   uncheck   select <sel> <val…>   scroll down 500   scrollintoview <sel>
-drag <src> <dst>   upload <sel> <file…>
+drag <src> <dst>   upload <sel> <file…>   highlight <sel>   # highlight = show the user
+
+# when fill/type does nothing (custom components that intercept key events) — THE common fix.
+# This is what makes autocompletes/comboboxes fire; `fill` on a selector often won't.
+focus <sel> && keyboard type "text"     # raw keystrokes at the focused element, no selector
+keyboard inserttext "text"              # bypasses key events entirely
+mouse move 100 200   mouse down left   mouse up left   mouse wheel 400   # raw coords
+
+# dialogs — alert/beforeunload auto-accept; confirm/prompt BLOCK until you answer
+dialog status   dialog accept   dialog accept "prompt text"   dialog dismiss
 
 # find WITHOUT a snapshot (no prior observe needed — act blind on known targets)
 find role button click --name "Submit"     # roles: button, link, heading, textbox, …
@@ -96,9 +105,37 @@ pdf <path>
 
 # extract / debug
 eval "<js>"          # run JS in the page, return the result (surgical extraction)
+eval --stdin <<'JS'  # multi-line JS without quoting hell
+…
+JS
 console              # captured console.* output      errors   # page errors
 network route "**/analytics**" --abort    network requests --filter <pat>    network har start|stop
 batch '["get","url"]' '["get","title"]'   # many commands, one process spawn
+frame <sel>          # operate inside a same-origin iframe
+storage local        # localStorage: `storage local <key>` / `storage local set k v`
+cookies              # list cookies (NEVER `cookies clear` — profile-wide, logs the user out)
+```
+
+## Worked examples
+
+```bash
+# One-turn search-and-extract: navigate, wait on a condition, extract only what's needed.
+ssh mac-personal 'agent-browser --cdp 9340 open "https://news.ycombinator.com" && \
+  agent-browser --cdp 9340 wait --text "comments" && \
+  agent-browser --cdp 9340 eval "JSON.stringify([...document.querySelectorAll(\".titleline>a\")].slice(0,5).map(a=>a.textContent))"'
+
+# Form fill, then VERIFY in the same turn (never spend a turn asking "did it work?").
+ssh mac-personal 'agent-browser --cdp 9340 fill "#email" "me@x.com" && \
+  agent-browser --cdp 9340 fill "#password" "$PW" && \
+  agent-browser --cdp 9340 click "button[type=submit]" && \
+  agent-browser --cdp 9340 wait --url "**/dashboard" && \
+  agent-browser --cdp 9340 get url'
+
+# Autocomplete/combobox (the pattern that plain `fill` fails on):
+#   click the field → keyboard type → snapshot to see the options → click the right one
+ssh mac-personal 'agent-browser --cdp 9340 click "@e78" && agent-browser --cdp 9340 keyboard type "Venice"'
+ssh mac-personal 'agent-browser --cdp 9340 snapshot -i -s "[role=listbox]"'   # scoped: ~1k tok, not 26k
+ssh mac-personal 'agent-browser --cdp 9340 click "@e4"'
 ```
 
 **What differs through this bridge:**
