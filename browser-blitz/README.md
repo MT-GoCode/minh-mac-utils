@@ -159,6 +159,15 @@ shim's own overhead 0.13ms
   Downloads folder under Chrome's own filename, so it will not appear at the path the client
   asked for. To capture a file, read its URL (`get attr @ref href`) and fetch it directly
   (e.g. `curl` over SSH); pull the tab's cookies first if the download is auth-gated.
+- **Another extension's frame can block the debugger.** Chrome refuses `chrome.debugger` on a
+  tab whose frame tree contains a DIFFERENT extension's frame, reporting it as
+  `Cannot access a chrome-extension:// URL of different extension` even when the page is
+  ordinary https. Password managers (iCloud Passwords, etc.) inject an autofill frame into
+  login forms, so this shows up on LOGIN pages specifically. Mitigation: the bridge attaches
+  the moment a tab joins a slug's group, while it is still blank — an attachment made before
+  the frame appears survives the navigation. A tab handed over while ALREADY sitting on such a
+  page cannot be attached at all; the error names the extensions running frames so it is
+  obvious what to disable.
 - **Input needs the tab to be the ACTIVE tab of its window — then it is genuinely trusted.**
   Chrome discards `Input.*` aimed at a non-active tab (returns `{}`, no effect). The window does
   NOT need OS focus — verified with Chrome fully backgrounded behind another app. So the shim

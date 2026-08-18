@@ -6,7 +6,7 @@
 // tab/group change so the shim can diff it into Target lifecycle events.
 const SHIM_URL = 'ws://127.0.0.1:9334';
 const PROTOCOL_VERSION = '1.3';
-const BUILD = '0.9.0';
+const BUILD = '0.9.5';
 
 let ws = null;
 const RETRY_MIN = 2000, RETRY_MAX = 10000;
@@ -81,16 +81,49 @@ async function handle(ev) {
   try {
     switch (type) {
       case 'cdp': {
-        await ensureAttached(m.tabId);
-        const result = await chrome.debugger.sendCommand(
-          { tabId: Number(m.tabId) }, m.method, m.params || {});
-        return ok(id, result);
+        try {
+          const dbg = await ensureAttached(m.tabId);
+          const result = await chrome.debugger.sendCommand(dbg, m.method, m.params || {});
+          return ok(id, result);
+        } catch (e) {
+          // Chrome refuses chrome.debugger on a tab whose frame tree contains ANOTHER
+          // extension's frame, and reports it as "Cannot access a chrome-extension:// URL of
+          // different extension" even though the page itself is ordinary https. Password
+          // managers inject an autofill frame into login forms, so this hits login pages only.
+          // The raw message sends people hunting a chrome-extension URL that isn't there, so
+          // name the real cause and the real remedy.
+          const msg = String((e && e.message) || e);
+          if (/chrome-extension:\/\/ URL of different extension/.test(msg)) {
+            const culprits = (await chrome.debugger.getTargets())
+              .filter(t => String(t.url).startsWith('chrome-extension:'))
+              .map(t => String(t.url).split('/')[2]);
+            const ids = [...new Set(culprits)].join(', ');
+            throw new Error(
+              `${m.method} refused by Chrome: another extension has injected a frame into this ` +
+              `page, so chrome.debugger cannot attach. This is a Chrome restriction, not a bug ` +
+              `in this page. It affects LOGIN pages because password managers inject an ` +
+              `autofill frame there. Fix: disable the offending extension in chrome://extensions ` +
+              `(iCloud Passwords is the usual one). Extensions currently running frames: ${ids}`);
+          }
+          throw e;
+        }
       }
 
       case 'setProfileDir': {
         profileDir = m.profileDir;
         await chrome.storage.local.set({ profileDir });
         return ok(id, { profileDir });
+      }
+
+      // Attach NOW, while the tab is still blank. Chrome refuses chrome.debugger on a tab
+      // whose frame tree already holds another extension's frame (password managers inject an
+      // autofill frame into login forms), but an attachment made BEFORE that frame appears
+      // survives the navigation. Attaching the moment a tab joins a slug's group is therefore
+      // what makes login pages driveable at all — attaching lazily on the first command is too
+      // late, because by then the login page (and its injected frame) has already loaded.
+      case 'attachTab': {
+        await ensureAttached(m.tabId);
+        return ok(id, { attached: true });
       }
 
       case 'listTabs':      return ok(id, { tabs: await tabSnapshot() });
@@ -196,11 +229,20 @@ async function handle(ev) {
 
 // ---------- debugger ----------
 
+// Attach by {tabId}: the attachment then survives cross-process navigations, which attaching
+// to a specific {targetId} does not (a new document = a new target = a silent detach).
+//
+// NOTE: Chrome refuses this attach outright when the tab's frame tree contains ANOTHER
+// extension's frame, reporting "Cannot access a chrome-extension:// URL of different
+// extension". Attaching by targetId does NOT work around it (measured), because the refusal is
+// about the tab's contents, not the debuggee shape. The 'cdp' handler turns that raw message
+// into an actionable one; there is no in-extension fix.
 async function ensureAttached(tabId) {
   const n = Number(tabId);
-  if (attached.has(n)) return;
+  if (attached.has(n)) return { tabId: n };
   await chrome.debugger.attach({ tabId: n }, PROTOCOL_VERSION);
   attached.add(n);
+  return { tabId: n };
 }
 
 chrome.debugger.onEvent.addListener((source, method, params) => {
@@ -214,12 +256,19 @@ chrome.debugger.onDetach.addListener((source) => { attached.delete(source.tabId)
 async function tabSnapshot() {
   const tabs = await chrome.tabs.query({});
   return tabs
-    // A freshly-created tab reports url:"" for a moment before it settles to about:blank.
-    // Dropping those made a just-opened window look empty.
-    .map(t => ({ ...t, url: t.url || t.pendingUrl || 'about:blank' }))
-    // chrome:// and the Web Store can never be attached to; never advertise them.
-    .filter(t => !/^(chrome|devtools|chrome-extension):/.test(t.url)
-              && !t.url.startsWith('https://chromewebstore.google.com'))
+    // Filter on the REAL url, never a fabricated one. A previous version defaulted an empty
+    // url to 'about:blank' BEFORE this filter, so a chrome-extension:// or chrome:// page that
+    // momentarily reported url:"" (they do while loading) passed as attachable. The agent then
+    // attached to a target chrome.debugger always refuses ("Cannot access a chrome-extension://
+    // URL of different extension") and every later command on that tab failed permanently.
+    // Unattachable pages can never be advertised, so an unknown url is dropped, not guessed.
+    .filter(t => {
+      const real = t.url || t.pendingUrl || '';
+      if (!real) return false;   // url not settled yet: skip this round, a later push includes it
+      return !/^(chrome|devtools|chrome-extension|view-source):/.test(real)
+          && !real.startsWith('https://chromewebstore.google.com');
+    })
+    .map(t => ({ ...t, url: t.url || t.pendingUrl }))
     .map(t => ({
       tabId: String(t.id), url: t.url, title: t.title || '',
       groupId: t.groupId, windowId: t.windowId, attached: attached.has(t.id),

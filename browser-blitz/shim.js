@@ -153,6 +153,11 @@ function reconcileAll(profileKey) {
     for (const t of now) {
       if (!s.known.has(t.tabId)) {
         s.known.add(t.tabId);
+        // Attach before the page can load anything. See sw.js 'attachTab': an attachment made
+        // while the tab is blank survives into pages that would refuse a fresh attach.
+        callExt(s.profileKey, { type: 'attachTab', tabId: t.tabId })
+          .then(r => { if (r.error) log(`eager attach failed for tab ${t.tabId}: ${r.error}`); })
+          .catch(() => {});
         slugBroadcast(s, { method: 'Target.targetCreated', params: { targetInfo: targetInfo(t) } });
       }
     }
@@ -378,7 +383,22 @@ function startSlugServer(s) {
         }
 
         const r = await callExt(s.profileKey, { type: 'cdp', tabId, method, params });
-        if (r.error) return send({ error: { code: -32000, message: r.error } });
+        if (r.error) {
+          // The tab died (closed by the user, replaced by the page, or discarded) but this
+          // session still points at it, so every later command would fail the same way forever.
+          // Retire the dead target now: drop its sessions, forget it, and tell the client it is
+          // gone so it re-attaches to a live tab in the group instead of wedging.
+          if (/No tab with given id|no page target for tab/i.test(r.error)) {
+            s.known.delete(tabId);
+            for (const [sid, tid] of [...s.sessions]) if (String(tid) === String(tabId)) s.sessions.delete(sid);
+            slugBroadcast(s, { method: 'Target.targetDestroyed', params: { targetId: String(tabId) } });
+            log(`retired dead tab ${tabId} for slug '${s.slug}'`);
+            return send({ error: { code: -32000, message:
+              `tab ${tabId} no longer exists; it has been retired. Re-attach to a current ` +
+              `target (Target.getTargets) or open a new tab.` } });
+          }
+          return send({ error: { code: -32000, message: r.error } });
+        }
         send({ result: r.result ?? {} });
       } catch (e) {
         send({ error: { code: -32000, message: String(e && e.message || e) } });
