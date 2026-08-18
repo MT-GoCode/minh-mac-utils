@@ -184,12 +184,19 @@ simple pages (a few hundred tokens) — it's commercial pages where it explodes.
 `click "#id"`, `fill @ref` (from an earlier snapshot) — **zero** observation cost. Re-observing
 a page you already understand is the most common waste.
 
-**C. One turn, many commands — including the verification read.** CLI calls are ~11ms; your
-*turns* are seconds. Chain a whole flow in ONE shell invocation so "did it work?" never costs a
-round trip:
+**C. One SSH invocation, many commands — including the verification read.** Measured: **one
+`ssh` round trip costs ~206ms**, while an agent-browser call inside it is ~11-25ms. So 4
+separate `ssh` calls = 855ms, versus ~250ms for one `ssh` with 4 chained commands — **3.4×**.
+Your own *turns* cost seconds, which dwarfs both. Chain the whole flow, verification included,
+so "did it work?" never costs a round trip:
 ```bash
 ssh mac-personal 'agent-browser --cdp 9340 fill "#q" "hi" && agent-browser --cdp 9340 click "#go" && agent-browser --cdp 9340 wait --url "**/results" && agent-browser --cdp 9340 get text ".summary"'
 ```
+**`&&` vs `batch`:** use `&&` for any ordered flow — it **fail-fasts**, and `batch` DEFAULTS TO
+CONTINUE-ON-ERROR, so a failed `fill` would still let the following `click submit` run. Reach for
+`batch` only for independent reads with no ordering dependency (`batch '["get","url"]'
+'["get","title"]'`), where it saves one process spawn per command (~32ms on 4 calls — trivial
+next to the 206ms ssh trip, so never contort a flow for it).
 
 **D. Wait on conditions, not sleeps** (section 2) — each avoided sleep saves a re-observe.
 
