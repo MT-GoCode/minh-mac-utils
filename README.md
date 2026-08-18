@@ -30,7 +30,7 @@ sudo ./blockrem/uninstall.sh
 sudo ./forcecalls/uninstall.sh
 sudo ./remote-agent-connector/uninstall.sh
 ./scripts/unset-paseo-daemon.sh
-rm -f ~/.local/bin/chrome-browser-fleet
+./browser-blitz/install.sh --uninstall
 sudo ./demonlock/uninstall.sh
 ```
 
@@ -47,7 +47,7 @@ sudo ./remote-agent-connector/install.sh
 ./wtalk/setup.sh
 sudo ./wtalk/install.sh
 sudo ./nextdns-sidecar/install.sh --profile-src ~/Downloads/NextDNS-*.mobileconfig
-./agentic-browser-setup/install.sh
+./browser-blitz/install.sh
 ./scripts/setup-paseo-daemon.sh
 sudo ./demonlock/register-recommended-spares.sh
 ```
@@ -64,7 +64,7 @@ sudo ./demonlock/register-recommended-spares.sh
 | **stayup** | menu-bar toggle for staying awake with the lid closed (`pmset disablesleep`); `stayup` CLI | `sudo ./stayup/install.sh` | yes |
 | **blockrem** | scheduled **un-quittable screen blocks** for forced breaks — a root daemon revives a grey full-screen cover + input freeze at each alarm; **fail-open** (a bug always lifts it); managing alarms is no-sudo | `sudo ./blockrem/install.sh` | yes |
 | **forcecalls** | scheduled phone calls you must **wait out** to cancel — a root daemon dials the other person via SignalWire, then bridges to a local baresip endpoint that auto-answers; `add` is instant, `remove` is delay-gated (12h), managing calls is no-sudo | `sudo ./forcecalls/install.sh` | yes |
-| **agentic-browser-setup** | installs `chrome-browser-fleet`: spins up isolated Chrome windows on their own CDP ports for agent browser automation | `./agentic-browser-setup/install.sh` | no |
+| **browser-blitz** | drive your **real, logged-in Chrome** with `agent-browser`: a shim impersonates a Chrome CDP endpoint over an MV3 extension, and each agent session is fenced to its own tab group; `browser-blitz` CLI | `./browser-blitz/install.sh` | no |
 
 **Paseo daemon (`scripts/`).** `scripts/setup-paseo-daemon.sh` hands the third-party Paseo daemon to
 launchd (so it survives the desktop app dying — e.g. when demonlock closes the GUI on a lockout) and
@@ -78,7 +78,7 @@ config-wiring for an external app, not a repo-built tool, so it's a manual scrip
 (build → deploy root-owned → CLI shim → launchd → register the demonlock spare); the more involved
 apps (demonlock, wtalk, nextdns-sidecar, remote-agent-connector) keep a bespoke `install.sh`.
 They don't share one rigid runtime interface — most lockers have `arm`/`disarm`, but wtalk and
-agentic-browser-setup don't fit that mold, and that's fine.
+browser-blitz don't fit that mold, and that's fine.
 
 **wtalk media auto-pause (optional):** if `nowplaying-cli` is on your `PATH`
 (`brew install nowplaying-cli`), wtalk fades the system volume out + pauses whatever's playing when
@@ -104,7 +104,7 @@ paused; no-op if nowplaying-cli isn't installed).
 4. **multistreamviewer / stayup** — `sudo ./multistreamviewer/install.sh`, `sudo ./stayup/install.sh` (each builds, signs, deploys root-owned, and registers itself as a demonlock spare).
 5. **forcecalls** *(optional)* — first create a **SIP credential** and a **verified caller ID** in your SignalWire space (see `forcecalls/README.md`; the verified number means you never rent a number) → `sudo ./forcecalls/install.sh`, which prompts for space / project ID / API token / caller ID / SIP endpoint, or takes them as `SW_*` env vars for a non-interactive install (the same script installs the baresip endpoint — **do this while you still have sudo**) → `forcecalls testcall +1…` to rehearse it, then `forcecalls add --name mom --destination +1… --schedule *2045`.
 6. **remote-agent-connector** *(optional)* — `sudo ./remote-agent-connector/install.sh`, then Dock ▸ Get Permissions and `rac setup`.
-7. **agentic-browser-setup** *(optional, no sudo)* — `./agentic-browser-setup/install.sh`.
+7. **browser-blitz** *(optional, no sudo)* — `./browser-blitz/install.sh` (installs `agent-browser` if missing), then load the extension once per Chrome profile you want to drive: `chrome://extensions` → Developer mode → **Load unpacked** → `browser-blitz/extension`.
 8. **paseo daemon + third-party spares** *(optional)* — `./scripts/setup-paseo-daemon.sh`, then `sudo ./demonlock/register-recommended-spares.sh` (spares karabiner/alttab/raycast/etc.).
 
 ### 3. Only then harden
