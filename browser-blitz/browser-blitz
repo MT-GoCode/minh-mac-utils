@@ -1,0 +1,174 @@
+#!/usr/bin/env node
+// browser-blitz — thin client. Holds no state; the shim owns everything.
+const fs = require('fs');
+const net = require('net');
+const os = require('os');
+const path = require('path');
+
+const SOCK = path.join(os.homedir(), '.local/state/browser-blitz/shim.sock');
+const CHROME = path.join(os.homedir(), 'Library/Application Support/Google/Chrome');
+// Derive from this script's real path (it is symlinked into PATH), so the extension dir
+// matches wherever the repo is checked out — not a hardcoded home path.
+const EXT_DIR = path.join(path.dirname(fs.realpathSync(__filename)), 'extension');
+
+const die = (msg, code = 1) => { console.error(`browser-blitz: ${msg}`); process.exit(code); };
+
+function call(req) {
+  return new Promise((resolve) => {
+    const c = net.createConnection(SOCK)
+      .on('error', () => die('shim not running (launchctl kickstart -k gui/$(id -u)/com.minh.browser-blitz)', 5));
+    let buf = '';
+    c.on('connect', () => c.write(JSON.stringify(req) + '\n'));
+    c.on('data', (d) => { buf += d.toString(); });
+    c.on('end', () => { try { resolve(JSON.parse(buf)); } catch { resolve({ ok: false, error: buf }); } });
+  });
+}
+const unwrap = (r) => r.ok ? r.result : die(r.error, /no live slug|already exists/.test(r.error) ? 3 : 1);
+
+// --- on-disk profile inventory (works even for profiles that aren't loaded) ---
+function diskProfiles() {
+  const ls = JSON.parse(fs.readFileSync(path.join(CHROME, 'Local State'), 'utf8'));
+  const cache = ls.profile.info_cache;
+  return Object.entries(cache).map(([dir, info]) => {
+    let installed = false;
+    try {
+      // NOTE: extension state lives in "Secure Preferences", not "Preferences".
+      const sp = JSON.parse(fs.readFileSync(path.join(CHROME, dir, 'Secure Preferences'), 'utf8'));
+      const exts = (sp.extensions && sp.extensions.settings) || {};
+      installed = Object.values(exts).some(e => String(e.path || '') === EXT_DIR);
+    } catch {}
+    // user_name is the signed-in email, which is the same key the extension reports via
+    // chrome.identity.getProfileUserInfo() — that's what maps a connection to a profile.
+    return { dir, name: info.name || dir, email: info.user_name || null, installed };
+  }).sort((a, b) => a.dir.localeCompare(b.dir));
+}
+
+async function main() {
+  const [cmd, ...rest] = process.argv.slice(2);
+  const flag = (n, d) => { const i = rest.indexOf(`--${n}`); return i >= 0 ? rest[i + 1] : d; };
+  const has = (n) => rest.includes(`--${n}`);
+
+  switch (cmd) {
+    case 'status': {
+      const live = unwrap(await call({ cmd: 'profiles' }));
+      const { staleClients } = unwrap(await call({ cmd: 'ping' }));
+      console.log('PROFILE       NAME            BRIDGE           BUILD    TABS');
+      for (const p of diskProfiles()) {
+        // Match on the profile DIRECTORY the extension reports. Email is unreliable —
+        // getProfileUserInfo() returns nothing unless the profile is signed into Chrome.
+        const conn = live.find(l => l.profileDir === p.dir);
+        // staleClients is global — it can't be attributed to a specific profile, so it must
+        // not colour a profile's own state. A profile with no connection is simply cold.
+        const state = !p.installed ? 'not installed'
+                    : conn ? 'installed, live'
+                    : 'installed, cold';
+        console.log(`${p.dir.padEnd(13)} ${p.name.padEnd(15)} ${state.padEnd(16)} ${(conn ? conn.build : '—').padEnd(8)} ${conn ? conn.tabs : '—'}`);
+      }
+      if (staleClients > 0) {
+        console.log(`\n${staleClients} socket(s) connected but never identified — a crash`);
+        console.log('  before startup finished. check: chrome://extensions → Errors');
+      }
+      // A signed-out profile reports a stored id instead of an email, so it can't be matched
+      // to a directory — surface it rather than silently dropping it.
+      // A connection with no directory yet has never been identified — that happens once,
+      // and start-session assigns it by launching that profile.
+      const unlabelled = live.filter(l => !l.profileDir);
+      if (unlabelled.length) {
+        console.log('\nconnected, profile not yet identified:');
+        for (const p of unlabelled) console.log(`  ${p.key}  (${p.tabs} tabs)  — run start-session --profile <dir> to label it`);
+      }
+      break;
+    }
+
+    case 'start-session': {
+      const slug = flag('slug') || die('--slug required', 2);
+      const profile = flag('profile', 'Default');
+      const disk = diskProfiles().find(p => p.dir === profile || p.name === profile);
+      if (!disk) die(`unknown profile '${profile}'`, 4);
+      if (!disk.installed) {
+        const others = diskProfiles().filter(p => p.installed).map(p => `${p.dir} (${p.name})`);
+        die(`profile '${profile}' has no bridge installed\n` +
+            `  available: ${others.join(', ') || 'none'}\n` +
+            `  fix: load unpacked from ${EXT_DIR}`, 4);
+      }
+      // The shim resolves by directory and warms the profile itself if it's cold.
+      const r = unwrap(await call({ cmd: 'start-session', slug,
+        profileDir: disk.dir, inLastWindow: has('in-last-window'), url: flag('url'),
+        allowDestructive: has('allow-destructive') }));
+      console.log(`--cdp ${r.port}`);
+      console.error(`slug '${r.slug}' → port ${r.port}, group ${r.groupId}, ${r.color}`);
+      break;
+    }
+
+    case 'list': {
+      const rows = unwrap(await call({ cmd: 'list' }));
+      if (!rows.length) { console.log('(no active slugs)'); break; }
+      console.log('SLUG            PROFILE       PORT   TABS  LAST');
+      for (const s of rows) {
+        const a = s.lastInteractionS;
+        const age = a < 60 ? `${a}s` : a < 600 ? `${Math.floor(a/60)}m ${a%60}s` : 'over 10m';
+        console.log(`${s.slug.padEnd(15)} ${String(s.profileDir || '?').padEnd(13)} ${String(s.port).padEnd(6)} ${String(s.tabs).padEnd(5)} ${age}`);
+      }
+      break;
+    }
+
+    case 'adopt':
+      console.log(JSON.stringify(unwrap(await call({ cmd: 'adopt', slug: rest[0], tabId: rest[1] }))));
+      break;
+
+    case 'end':
+      console.log(JSON.stringify(unwrap(await call({ cmd: 'end', slug: rest[0], keep: has('keep') }))));
+      break;
+
+    case 'bring-to-front': {
+      const slug = flag('slug') || rest[0] || die('usage: bring-to-front --slug S', 2);
+      const r = unwrap(await call({ cmd: 'bring-to-front', slug }));
+      console.log(r.alreadyFocused
+        ? `'${r.slug}' already frontmost — switched to tab ${r.tabId}`
+        : `'${r.slug}' brought to front, tab ${r.tabId}`);
+      if (r.title || r.url) console.log(`  ${r.title || ''}  ${r.url || ''}`.trim());
+      break;
+    }
+
+    case 'orphans': {
+      const r = unwrap(await call({ cmd: 'orphans' }));
+      if (!r.orphans.length) { console.log(`no orphaned groups (${r.tracked} tracked)`); break; }
+      console.log(`${r.orphans.length} orphaned group(s) — created by this tool, no longer tracked:`);
+      for (const g of r.orphans) console.log(`  ${g.title}  (${g.tabs} tabs, window ${g.windowId})`);
+      console.log('\nremove them with:  browser-blitz cleanup');
+      break;
+    }
+
+    case 'cleanup': {
+      const r = unwrap(await call({ cmd: 'cleanup' }));
+      console.log(`closed ${r.closed} orphaned group(s)`);
+      for (const t of r.groups) console.log(`  ${t}`);
+      break;
+    }
+
+    case 'ping':
+      console.log(JSON.stringify(unwrap(await call({ cmd: 'ping' }))));
+      break;
+
+    default:
+      console.log(`browser-blitz <command>
+
+  status                              profiles: installed / live
+  start-session --slug S [--profile P] [--in-last-window] [--url U] [--allow-destructive]
+      Opens a NEW window by default. --in-last-window puts the group in whatever
+      window you last used instead. A cold profile is launched automatically.
+      clicks/keys activate the tab first, so Chrome delivers real trusted input.
+      --allow-destructive permits profile-wide commands (cookies clear, cache clear)
+      that affect ALL sites, not just this slug's tabs. Off by default.
+  list                                active slugs
+  adopt <slug> <tabId>                move an existing tab into a slug's group
+  bring-to-front --slug S             raise that window and switch to the tab the
+                                      agent last touched (no-op if already frontmost)
+  end <slug> [--keep]                 close the group (or just detach)
+  orphans                             groups this tool created that nothing tracks
+  cleanup                             close those orphaned groups
+  ping`);
+      process.exit(2);
+  }
+}
+main();

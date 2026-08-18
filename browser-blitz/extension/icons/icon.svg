@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <path id="cur" d="M34,18 L34,96 L54,77 L66,101 L78,95 L66,72 L90,72 Z"/>
+    <clipPath id="bandA"><rect x="0" y="40" width="128" height="11"/></clipPath>
+    <clipPath id="bandB"><rect x="0" y="60" width="128" height="9"/></clipPath>
+    <clipPath id="bandC"><rect x="0" y="80" width="128" height="10"/></clipPath>
+  </defs>
+
+  <!-- rounded dark tile -->
+  <rect x="4" y="4" width="120" height="120" rx="26" fill="#14141f"/>
+
+  <!-- cursor + glitch, centered in the tile (nudged right) -->
+  <g transform="translate(13,3)">
+    <!-- loose glitch shards behind the cursor -->
+    <rect x="30" y="44" width="42" height="4" fill="#a855f7" opacity="0.55"/>
+    <rect x="44" y="83" width="34" height="3" fill="#ec4899" opacity="0.5"/>
+
+    <!-- base cursor: white body, subtle outline -->
+    <use href="#cur" fill="#f6f6fb" stroke="#0c0c14" stroke-width="3" stroke-linejoin="round"/>
+
+    <!-- glitch slices: same cursor, clipped to horizontal bands, shifted + tinted -->
+    <g clip-path="url(#bandA)"><use href="#cur" transform="translate(7,0)"  fill="#a855f7"/></g>
+    <g clip-path="url(#bandB)"><use href="#cur" transform="translate(-6,0)" fill="#ec4899"/></g>
+    <g clip-path="url(#bandC)"><use href="#cur" transform="translate(5,0)"  fill="#c026d3"/></g>
+
+    <!-- bright glitch pixels -->
+    <rect x="70" y="41" width="9" height="9" fill="#f0abfc"/>
+    <rect x="26" y="63" width="7" height="7" fill="#f9a8d4"/>
+  </g>
+</svg>
