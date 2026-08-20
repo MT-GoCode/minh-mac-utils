@@ -129,13 +129,21 @@ A bb session is a tab group in the user's **real, logged-in Chrome**, already bo
 categories of `playwright-cli` command assume the opposite — that the browser is yours, disposable,
 and yours alone. They are not.
 
-### Never — these break the session binding
+### Never — these break the session binding, permanently
+
+A slug is **poisoned** the moment its playwright-cli daemon is detached or killed. Re-attaching
+under the same name never works: `playwright-cli list` will report `status: open` and
+`browser-type: chrome (attached)`, and every command then hangs until it times out, with empty
+stdout and empty stderr. Nothing re-binds — bb does not try, because trying cannot work.
+`bb resume` and `bb restart` do **not** fix it either. The only recovery is
+`bb delete-session <slug>` then `bb new-session <slug>`, which loses the tabs.
+
 
 | command | what it actually does |
 |---|---|
-| `open` | Launches a **brand-new** browser (Chrome for Testing) under that session name and detaches from the user's Chrome. No logins, no cookies, no extensions. bb re-binds within ~15s, so you and bb then fight over the name. **There is no open step — a bb session is already an open tab.** |
+| `open` | Launches a **brand-new** browser (Chrome for Testing) under that session name and detaches from the user's Chrome. No logins, no cookies, no extensions — and the slug is now poisoned. **There is no open step — a bb session is already an open tab.** |
 | `attach` | bb already attached it. Re-attaching to anything else does the same damage as `open`. |
-| `close` / `detach` / `browser.close()` | Drops the connection only — it does NOT quit the user's Chrome, and bb re-binds within ~15s. So it achieves nothing except confusing yourself. To end a session: `bb delete-session <slug>`. |
+| `close` / `detach` / `browser.close()` | Drops the connection. It does NOT quit the user's Chrome — but it poisons the slug, and the tabs are then only reachable by deleting and recreating the session. To end a session: `bb delete-session <slug>`. |
 | `close-all` / `kill-all` | Kills **every** session on the machine, including other agents' work in progress. Never. |
 | `delete-data` | Deletes the session's user data. |
 | `install` / `install-browser` | Already done by bb's installer. |
