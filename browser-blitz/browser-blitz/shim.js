@@ -335,8 +335,18 @@ async function reconcileTargets(slug, tabs) {
     for (const [sid, tabId] of [...c.sessions]) {
       if (live.has(tabId)) continue;
       c.sessions.delete(sid);
-      toClient(c, { method: 'Target.detachedFromTarget', params: { sessionId: sid, targetId: String(tabId) } });
-      toClient(c, { method: 'Target.targetDestroyed', params: { targetId: String(tabId) } });
+      // The target id Playwright knows is the FRAME id, not the tabId — same invariant as the
+      // handshake. Announcing the teardown under the tabId meant Playwright never matched it, so
+      // a released tab stayed in its page list and could still be driven: a hole in the fence.
+      const gone = String(frameIds.get(tabId) || tabId);
+      toClient(c, { method: 'Target.detachedFromTarget', params: { sessionId: sid, targetId: gone } });
+      toClient(c, { method: 'Target.targetDestroyed', params: { targetId: gone } });
+    }
+    // Pruned only after every client has been told, and only for tabs no client still holds.
+    for (const tabId of [...frameIds.keys()]) {
+      if (live.has(tabId)) continue;
+      if ([...clients.values()].some((set) => [...set].some((cl) => [...cl.sessions.values()].includes(tabId)))) continue;
+      frameIds.delete(tabId);
     }
   }
 }
