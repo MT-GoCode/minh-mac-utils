@@ -184,6 +184,21 @@ def prompt_accessibility():
         return True
 
 
+# Peak amplitude below this counts as digital silence — a mic we were never allowed to hear.
+# Real room tone from a live mic sits well above it, so this won't false-positive on a quiet room.
+SILENCE_PEAK = 1e-4
+
+
+def mic_authorized():
+    """macOS Microphone TCC status for THIS app, WITHOUT recording. True/False, or None if
+    AVFoundation isn't available in the frozen bundle (then we simply don't warn)."""
+    try:
+        from AVFoundation import AVCaptureDevice, AVMediaTypeAudio
+        return AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeAudio) == 3  # 3 = authorized
+    except Exception:
+        return None
+
+
 def prime_mic_permission():
     """Open + immediately close a tiny input stream to trigger the macOS Microphone
     TCC prompt (attributed to this signed 'wtalk' app). Best-effort; used by the
@@ -434,7 +449,8 @@ class Session:
         if audio is None:
             audio = np.concatenate(self.frames) if self.frames else np.zeros(0, np.float32)
         if not len(audio):
-            return {"text": "", "marked": "", "duration": 0.0, "pauses": [], "confidence": 0.0}
+            return {"text": "", "marked": "", "duration": 0.0, "pauses": [], "confidence": 0.0,
+                    "peak": 0.0}
         tmp = Path(tempfile.gettempdir()) / "wtalk_capture.wav"
         _write_wav(tmp, self._to16k(audio), config.TARGET_SR)
         kw = ({"chunk_duration": 300.0, "overlap_duration": 15.0}
@@ -445,7 +461,8 @@ class Session:
         toks = [t for s in self.result.sentences for t in s.tokens] if self.result else []
         conf = min((t.confidence for t in toks), default=0.0)
         out = {"text": plain, "marked": marked, "duration": self.duration,
-               "pauses": pauses, "confidence": conf}
+               "pauses": pauses, "confidence": conf,
+               "peak": float(np.max(np.abs(audio)))}
         self.result = None          # drop refs to any MLX arrays before releasing the pool
         _clear_mlx_cache()          # return Metal buffers to the OS (else IOAccelerator grows to GBs)
         return out
@@ -844,7 +861,24 @@ class Daemon:
         words = plain.split()
 
         if not plain:
-            config.db_insert(dur, "", None, None, "empty")
+            # Nothing transcribed. Tell the user WHY instead of vanishing: separate a dead mic
+            # (macOS handed us digital silence — almost always a missing Microphone grant, e.g.
+            # after the bundle id changed) from a live mic that just caught no speech. This used
+            # to `return` silently, so the dictation disappeared with no dot, log line, or notice.
+            peak = cap.get("peak", 0.0)
+            if peak < SILENCE_PEAK:
+                msg = ("No audio from the mic - grant Microphone to wtalk in System Settings "
+                       "> Privacy & Security > Microphone, then run: wtalk restart")
+                self.last_error = "microphone captured silence (permission?)"
+                status = "no_audio"
+            else:
+                msg = "Nothing recognized - no speech detected"
+                self.last_error = "empty transcript"
+                status = "empty"
+            _log(f"{status}: peak={peak:.4f} dur={dur:.1f}s - {msg}")
+            _notify(msg)
+            self._mark_done("error")
+            config.db_insert(dur, "", None, None, status)
             return
         # passthrough: short + no pauses + confident -> paste raw, no model
         if (len(words) <= config.PASSTHROUGH_MAX_WORDS and not pauses
@@ -975,6 +1009,10 @@ class Daemon:
             self.current_mic = _resolve_device()[1]  # show the mic in `wtalk status`
         except Exception:
             pass
+        if mic_authorized() is False:        # cheap, no recording — catches a reset TCC grant early
+            _log("WARNING: Microphone NOT granted to wtalk — every recording will be silent. "
+                 "Grant it in System Settings > Privacy & Security > Microphone.")
+            _notify("Grant Microphone to wtalk - recordings are silent without it")
         if not prompt_accessibility():       # pops the standard 'grant Accessibility' dialog
             _log("WARNING: Accessibility NOT granted to wtalk — auto-paste blocked "
                  "(text still lands on the clipboard). A grant dialog was shown.")

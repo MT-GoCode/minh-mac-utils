@@ -247,6 +247,14 @@ install; the sealed bundle is never edited). Edit, then `wtalk restart`. Highlig
   re-sign, toggle it off/on to refresh the grant).
 - **Mic error / nothing records** → grant **Microphone** to `wtalk`; `wtalk status`
   shows the mic and last error.
+- **Records, buffers, then silently vanishes — no text, no ✓** → the mic captured
+  **digital silence**, so there was nothing to transcribe. Almost always a missing
+  **Microphone** grant. Since a TCC grant is keyed to the *bundle id*, **renaming or
+  changing the bundle id resets it** (that's what `com.wtalk.daemon → com.minh.wtalk`
+  did). Re-grant it in **System Settings ▸ Privacy & Security ▸ Microphone**, or run
+  `wtalk --prime-perms` to re-fire the prompts, then `wtalk restart`. wtalk now says
+  so out loud — an error dot, a banner, and a `no_audio: peak=…` line in the log —
+  instead of failing silently.
 - **F5 does nothing** → check the Karabiner rule runs `wtalk toggle`; disable any Mac
   default on F5.
 - **Pastes into the wrong place** → focus the target field before F5.
