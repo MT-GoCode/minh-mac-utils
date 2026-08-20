@@ -123,19 +123,62 @@ bb work release-tab 4711                  hand a tab back out (it stays open, ju
 `bb list` statuses: **LIVE** (group is open) · **CLOSED** (profile visible, group gone — `resume`
 it) · **UNKNOWN** (that Chrome profile isn't running) · **UNTRACKED** (a `⚙` group with no record).
 
-## Playwright calls that collide with bb
+## Commands you must NOT run
 
-Most of Playwright is safely inside the fence. These are the exceptions.
+A bb session is a tab group in the user's **real, logged-in Chrome**, already bound. Two whole
+categories of `playwright-cli` command assume the opposite — that the browser is yours, disposable,
+and yours alone. They are not.
 
-| call | what happens |
+### Never — these break the session binding
+
+| command | what it actually does |
 |---|---|
-| `context.clearCookies()`, `clearDataForOrigin` | **Refused by bb.** Cookies are per-profile, not per-tab-group — this would sign the user out of every site. Do it by hand in Chrome if it's really wanted. |
-| `playwright-cli -s=<slug> open` | Launches a **new** browser under that session name and detaches from the user's Chrome. bb will keep re-binding, so the two fight. Never run `open`. |
-| `playwright-cli -s=<slug> close` | Kills the connection, not the session. bb re-binds within ~15s. Use `bb delete-session`. |
-| `browser.close()` | **Refused by bb** — it would quit the user's entire Chrome. |
-| `page.close()` on the last tab | Ends the session: Chrome deletes a group when its last tab leaves. `bb resume <slug>` brings it back. |
-| `context.storageState()` | Works, and dumps **every cookie in the profile** to disk. Don't, unless asked. |
-| `context.newPage()` | Safe — the new tab lands inside the session's group. |
+| `open` | Launches a **brand-new** browser (Chrome for Testing) under that session name and detaches from the user's Chrome. No logins, no cookies, no extensions. bb re-binds within ~15s, so you and bb then fight over the name. **There is no open step — a bb session is already an open tab.** |
+| `attach` | bb already attached it. Re-attaching to anything else does the same damage as `open`. |
+| `close` / `detach` | Drops the connection. bb re-binds within ~15s, so this achieves nothing except confusion. To end a session: `bb delete-session <slug>`. |
+| `close-all` / `kill-all` | Kills **every** session on the machine, including other agents' work in progress. Never. |
+| `delete-data` | Deletes the session's user data. |
+| `install` / `install-browser` | Already done by bb's installer. |
+
+### Never — these reach past the tab-group fence into the whole profile
+
+The fence contains **tabs**. It does not contain cookies, storage, or window state — those belong
+to the user's whole profile, and every site they are signed into.
+
+| command | what it actually does |
+|---|---|
+| `cookie-clear` | Signs the user out of **everything**. bb refuses it, but do not try. |
+| `cookie-set` / `cookie-delete` | Edits real logins for real sites. |
+| `state-save` | Writes **every cookie in the profile** to a file on disk. |
+| `state-load` | Injects a cookie jar into the user's real profile. |
+| `localstorage-clear` / `sessionstorage-clear` | Wipes real site data for the current origin. |
+| `network-state-set offline` | Takes the browser offline — including the tabs the user is reading. |
+| `route` / `unroute` | Intercepts and mocks requests. Fine on a throwaway browser; on the user's real one it silently changes what they see. |
+| `resize` | Resizes the user's actual window. |
+
+`cookie-list`, `cookie-get`, `localstorage-get/list` are **reads** and are fine.
+
+### Careful — these hang or surprise
+
+`pause-at`, `resume`, `step-over` are the debugger — they stop execution and wait. `show` opens a
+dashboard the user has to interact with. `dialog-accept`/`dialog-dismiss` answer a real dialog, so
+only use them when you know one is open.
+
+### Everything else is safe
+
+`goto` `click` `dblclick` `fill` `type` `press` `hover` `select` `check` `uncheck` `drag` `drop`
+`upload` `go-back` `go-forward` `reload` `snapshot` `find` `eval` `run-code` `screenshot` `pdf`
+`tab-list` `tab-new` `tab-select` `tab-close` `console` `requests` `request*` `response*`
+`generate-locator` `highlight` `tracing-*` `video-*` `mouse*` `key*`
+
+New tabs from `tab-new` and `context.newPage()` land **inside** the session's group — the fence
+holds for anything you open.
+
+### Ending a session
+
+Always `bb delete-session <slug>`, never a `playwright-cli` command. Add `--keep` to leave the
+tabs open and just ungrouped. And do end it — sessions never expire, and each one you abandon is
+a tab group left in the user's browser.
 
 ## Things that will bite you
 
