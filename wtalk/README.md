@@ -129,7 +129,7 @@ you. Grant these in **System Settings → Privacy & Security**:
 
 | Permission | Why | How it's requested |
 |---|---|---|
-| **Microphone** | record your voice | `sudo ./install.sh` tries to prompt up front, but macOS **often defers it to your first dictation** (first real mic use) — approve it then |
+| **Microphone** | record your voice | prompted up front via `AVCaptureDevice.requestAccess` (the daemon also asks at startup if it's still undecided). If it was ever **denied**, macOS never re-asks — enable it in Settings, or `tccutil reset Microphone com.minh.wtalk` first |
 | **Accessibility** | synthesize ⌘V to paste | the installer pops the dialog → **Open System Settings** → toggle **wtalk** on |
 | ~~Input Monitoring~~ | not needed | Karabiner owns the keys |
 

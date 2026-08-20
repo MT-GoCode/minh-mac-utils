@@ -12,3 +12,4 @@ pyobjc-core==12.1            # overlay + menu bar + paste (AppKit/Quartz/Foundat
 pyobjc-framework-Cocoa==12.1
 pyobjc-framework-Quartz==12.1
 pyobjc-framework-ApplicationServices==12.1   # Accessibility check (AXIsProcessTrusted)
+pyobjc-framework-AVFoundation==12.1          # Microphone TCC status + requestAccess prompt

@@ -189,28 +189,87 @@ def prompt_accessibility():
 SILENCE_PEAK = 1e-4
 
 
-def mic_authorized():
-    """macOS Microphone TCC status for THIS app, WITHOUT recording. True/False, or None if
-    AVFoundation isn't available in the frozen bundle (then we simply don't warn)."""
+# AVAuthorizationStatus values (AVFoundation).
+_TCC_NOT_DETERMINED, _TCC_RESTRICTED, _TCC_DENIED, _TCC_AUTHORIZED = 0, 1, 2, 3
+
+
+def _av_audio():
+    """(AVCaptureDevice, AVMediaTypeAudio), or None when AVFoundation isn't in the bundle."""
     try:
         from AVFoundation import AVCaptureDevice, AVMediaTypeAudio
-        return AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeAudio) == 3  # 3 = authorized
-    except Exception:
+        return AVCaptureDevice, AVMediaTypeAudio
+    except Exception as e:
+        _log(f"WARNING: AVFoundation unavailable — cannot query or request Microphone access: {e}")
         return None
 
 
-def prime_mic_permission():
-    """Open + immediately close a tiny input stream to trigger the macOS Microphone
-    TCC prompt (attributed to this signed 'wtalk' app). Best-effort; used by the
-    installer (`wtalk --prime-perms`) so the Mic dialog appears up front instead of
-    on first record."""
+def mic_status():
+    """This app's Microphone TCC status, WITHOUT recording: a _TCC_* value, or None if unavailable."""
+    av = _av_audio()
+    if not av:
+        return None
+    AVCaptureDevice, AVMediaTypeAudio = av
+    return AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeAudio)
+
+
+def mic_authorized():
+    st = mic_status()
+    return None if st is None else st == _TCC_AUTHORIZED
+
+
+def _prime_mic_via_stream():
+    """Fallback nudge when AVFoundation isn't bundled: open + close a tiny input stream."""
     try:
         s = sd.InputStream(channels=1, samplerate=16000)
         s.start(); sleep(0.15); s.stop(); s.close()
-        _log(f"mic permission primed (authorized={mic_authorized()})")
+        return None
     except Exception as e:
-        # Silently passing here meant "no dialog appeared" was indistinguishable from "it worked".
         _log(f"WARNING: could not open the mic to trigger the TCC prompt: {e}")
+        return False
+
+
+def request_mic_access(wait_sec=0.0):
+    """Ask for Microphone consent the way macOS actually supports: AVCaptureDevice.requestAccess.
+
+    Opening a CoreAudio/PortAudio stream — what we used to rely on to "trigger" the prompt — does NOT
+    reliably raise a TCC dialog for a background LSUIElement launchd agent. It just returns silent
+    buffers, which is exactly how a missing grant masqueraded as "transcription stopped working".
+
+    The dialog is drawn by the system but is tied to the REQUESTING PROCESS: it disappears when that
+    process exits. So a short-lived caller (`--prime-perms`) must pass wait_sec and stay alive until
+    the user answers. Returns True / False, or None if still undecided (or AVFoundation is missing).
+    """
+    st = mic_status()
+    if st is None:
+        return _prime_mic_via_stream()
+    if st == _TCC_AUTHORIZED:
+        return True
+    if st in (_TCC_DENIED, _TCC_RESTRICTED):
+        # Once denied, macOS NEVER re-prompts — only Settings (or tccutil reset) can undo it, so
+        # asking again here would silently do nothing. Say what actually works instead.
+        _log("Microphone is DENIED for wtalk — macOS will not ask again. Enable it in System Settings "
+             "> Privacy & Security > Microphone, or run: tccutil reset Microphone com.minh.wtalk")
+        _notify("Microphone is blocked for wtalk - enable it in Privacy & Security > Microphone")
+        return False
+    AVCaptureDevice, AVMediaTypeAudio = _av_audio()
+    done, out = threading.Event(), {}
+
+    def _handler(granted):
+        out["granted"] = bool(granted)
+        done.set()
+
+    _log("Microphone undecided — requesting access (a system prompt should appear now)")
+    AVCaptureDevice.requestAccessForMediaType_completionHandler_(AVMediaTypeAudio, _handler)
+    if wait_sec and done.wait(wait_sec):
+        _log(f"microphone prompt answered: granted={out.get('granted')}")
+        return out.get("granted")
+    return None
+
+
+def prime_mic_permission():
+    """Installer entry (`wtalk --prime-perms`): present the prompt and WAIT for the answer. This used
+    to open a stream for 0.15s and exit — killing the dialog before it could even be read."""
+    return request_mic_access(wait_sec=120)
 
 
 def paste(text):
@@ -1019,9 +1078,11 @@ class Daemon:
             self.current_mic = _resolve_device()[1]  # show the mic in `wtalk status`
         except Exception:
             pass
-        if mic_authorized() is False:        # cheap, no recording — catches a reset TCC grant early
-            _log("WARNING: Microphone NOT granted to wtalk — every recording will be silent. "
-                 "Grant it in System Settings > Privacy & Security > Microphone.")
+        # Ask up front when undecided. The daemon is long-lived and runs in the user's GUI session,
+        # so the dialog survives long enough to answer — unlike the old first-record path, which just
+        # recorded silence forever without ever asking.
+        if request_mic_access() is False:
+            _log("WARNING: Microphone NOT granted to wtalk — every recording will be silent.")
             _notify("Grant Microphone to wtalk - recordings are silent without it")
         if not prompt_accessibility():       # pops the standard 'grant Accessibility' dialog
             _log("WARNING: Accessibility NOT granted to wtalk — auto-paste blocked "

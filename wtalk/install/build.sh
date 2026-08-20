@@ -53,6 +53,7 @@ echo "▸ PyInstaller freeze (a few minutes; later builds are faster)"
     --collect-submodules Quartz \
     --collect-submodules Foundation \
     --collect-submodules ApplicationServices \
+    --collect-submodules AVFoundation \
     --add-data "$HERE/config.txt:." \
     --add-data "$HERE/prompts:prompts" \
     --distpath "$HERE/_pyi_dist" --workpath "$HERE/_pyi_build" --specpath "$HERE/_pyi_build" \
