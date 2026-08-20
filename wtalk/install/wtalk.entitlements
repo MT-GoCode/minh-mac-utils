@@ -9,5 +9,14 @@
          doesn't let anyone inject code; it only permits the app's own Metal JIT. -->
     <key>com.apple.security.cs.allow-jit</key>                        <true/>
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key> <true/>
+
+    <!-- REQUIRED for the microphone under the hardened runtime. Without it macOS doesn't merely
+         deny recording — it never even shows the consent prompt: authorizationStatus stays
+         notDetermined forever, requestAccess() does nothing visible, and every capture comes back
+         as digital silence. That is exactly how "wtalk stopped transcribing" presented: red dot,
+         a real buffer, an empty transcript, and no way to grant the permission because no dialog
+         ever appeared. NSMicrophoneUsageDescription in Info.plist is necessary but NOT sufficient;
+         a hardened-runtime binary also needs this entitlement. -->
+    <key>com.apple.security.device.audio-input</key>                  <true/>
 </dict>
 </plist>

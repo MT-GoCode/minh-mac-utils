@@ -89,7 +89,14 @@ codesign --force --options runtime --entitlements "$ENT" "${TS[@]}" --sign "$ID"
 codesign --force --options runtime --entitlements "$ENT" "${TS[@]}" --sign "$ID" \
          --identifier "$BUNDLE_ID" "$HERE/$APP"
 codesign --verify --deep --strict --verbose=2 "$HERE/$APP"
-echo "  entitlements on main binary:"; codesign -d --entitlements - "$HERE/$APP/Contents/MacOS/wtalk" 2>/dev/null | grep -o "allow-[a-z-]*" | sed 's/^/    /'
+# The mic entitlement is easy to lose (a re-sign without --entitlements silently drops it) and its
+# absence is invisible until a dictation returns silence with no prompt. Fail the build instead.
+codesign -d --entitlements - "$HERE/$APP/Contents/MacOS/wtalk" 2>/dev/null \
+    | grep -q "device.audio-input" || {
+    echo "✗ com.apple.security.device.audio-input is MISSING from the signed binary — under the" >&2
+    echo "  hardened runtime the mic would be denied with no consent prompt. Check $ENT." >&2
+    exit 1; }
+echo "  entitlements on main binary:"; codesign -d --entitlements - "$HERE/$APP/Contents/MacOS/wtalk" 2>/dev/null | grep -oE "allow-[a-z-]*|device\.audio-input" | sed 's/^/    /'
 
 # --- keep a prebuilt copy in dist/ ---
 mkdir -p "$HERE/dist"; rm -rf "$HERE/dist/$APP"; cp -R "$HERE/$APP" "$HERE/dist/$APP"

@@ -247,6 +247,13 @@ install; the sealed bundle is never edited). Edit, then `wtalk restart`. Highlig
   re-sign, toggle it off/on to refresh the grant).
 - **Mic error / nothing records** → grant **Microphone** to `wtalk`; `wtalk status`
   shows the mic and last error.
+- **No microphone prompt EVER appears, and every capture is silent** → the signed app is missing
+  the `com.apple.security.device.audio-input` entitlement. Under the **hardened runtime** that
+  entitlement is mandatory for mic access: without it macOS doesn't just deny recording, it never
+  shows the consent dialog at all — `authorizationStatus` stays `notDetermined`, `requestAccess()`
+  does nothing visible, and there's no way to grant it in Settings (the Microphone pane has no "+";
+  entries only appear after a successful prompt). `NSMicrophoneUsageDescription` is necessary but
+  NOT sufficient. Fix: rebuild (`install/build.sh` now fails if the entitlement is missing).
 - **Records, buffers, then silently vanishes — no text, no ✓** → the mic captured
   **digital silence**, so there was nothing to transcribe. Almost always a missing
   **Microphone** grant. Since a TCC grant is keyed to the *bundle id*, **renaming or
