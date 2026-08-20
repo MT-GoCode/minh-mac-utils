@@ -764,7 +764,9 @@ const cli = {
       if (p.launchTabId != null) used.consumed = true;
       state.sessions.push({ slug: a.slug, profileDir: dir, createdAt: new Date().toISOString(), tabs: [] });
       saveState();
-      return { slug: a.slug, profile: dir, cdp: cdpUrlFor(a.slug), ...r.result };
+      // Not ...r.result: that spreads the extension's groupId/tabId/windowId/tabCount into
+      // the CLI table, which is debug output for a command whose answer is 'here is your session'.
+      return { slug: a.slug, profile: dir, cdp: cdpUrlFor(a.slug) };
     });
   }),
 
@@ -804,6 +806,11 @@ const cli = {
     const r = await callExt(id, { type: 'closeSession', slug: a.slug, keepTabs: !!a.keep });
     if (!r.ok) throw new Error(r.error);
     if (rec) { state.sessions = state.sessions.filter((s) => s.slug !== a.slug); saveState(); }
+    // Prune the mirror too. The extension's next push is ~120ms of debounce away, and until it
+    // lands `bb list` re-adds the slug we just deleted as an UNTRACKED row — which reads as an
+    // orphaned group needing attention, not as "closed, one moment". We closed it; it is gone.
+    const m = mirrors.get(dir);
+    if (m) m.sessions = m.sessions.filter((s) => s.slug !== a.slug);
     return { slug: a.slug, profile: dir, ...r.result };
   }),
 
