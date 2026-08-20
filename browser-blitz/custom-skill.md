@@ -101,6 +101,43 @@ losing every login, which is the entire point of this tool. Same for `--browser`
 A bb session is already an open tab in the user's real browser. You navigate it with
 `page.goto(...)` inside `run-code`. There is no open step.
 
+## Rule 5 — files in and out
+
+Screenshots: pass a path.
+
+```bash
+playwright-cli -s=work run-code "async page => { await page.screenshot({ path: '/tmp/shot.png' }); return 'ok' }"
+```
+
+The bare `playwright-cli screenshot` saves into the shim's working directory, which is never where
+you wanted it.
+
+Downloads: if the file is public, use `curl` and skip the browser.
+
+```bash
+curl -fL -o /tmp/paper.pdf https://example.com/paper.pdf
+```
+
+Exact destination, a real exit code, nobody gets prompted. If you get HTML back instead of the
+file, it needs the session — then navigate to it and let Chrome save it to Downloads:
+
+```bash
+playwright-cli -s=work run-code "async page => {
+  try { await page.goto('https://example.com/private.pdf'); return 'no download' }
+  catch (e) { return e.message.split('\n')[0] }     // 'Download is starting' means it worked
+}"
+```
+
+There is no completion event and no way to add one — `Browser.setDownloadBehavior` is browser-level
+and bb attaches `chrome.debugger` per tab. Chrome also quietly refuses more than one automatic
+download from a page, so do them one at a time.
+
+## `bb <slug> bring-to-front` — when you need the human
+
+This is how you hand something back. CAPTCHA, a robot check, a password, Touch ID, 2FA, a download
+Chrome won't allow. Raise the window, say what you need, and let them do it — they are sitting
+right there, which is the whole reason you are driving their browser and not a headless one.
+
 ## `bb` reference
 
 ```bash
@@ -199,11 +236,7 @@ a tab group left in the user's browser.
 
 - **The user can see and touch everything.** They may drag a tab in or out mid-run; the group is
   the source of truth, so just re-read it.
-- **CAPTCHAs and 2FA**: stop and ask. The user is right there and can tap it — that is the point
-  of driving their real browser rather than a headless one.
-- **Downloads don't fire events** through the extension bridge (`Browser.setDownloadBehavior` is a
-  no-op on `chrome.debugger`). The file still saves to Chrome's Downloads folder; read the URL and
-  fetch it directly if you need the bytes.
+- **CAPTCHAs and 2FA**: `bb <slug> bring-to-front` and ask.
 - **A page a password manager injects into may refuse to attach.** `bb list` shows it; navigating
   away and back usually clears it.
 - **Clean up when you are done**: `bb delete-session <slug>`. Sessions do not expire, and every
