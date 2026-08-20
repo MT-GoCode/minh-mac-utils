@@ -118,6 +118,14 @@ function colourFor(slug) {
   return GROUP_COLORS[h % GROUP_COLORS.length];
 }
 
+// Middle-truncate: every URL on a site shares its first 40 characters and the discriminating
+// part is the tail, so cutting the end is the one thing you must not do.
+function shortUrl(u, max = 72) {
+  u = String(u || '').replace(/^https?:\/\//, '');
+  if (u.length <= max) return u;
+  return u.slice(0, max - 23) + '…' + u.slice(-20);
+}
+
 const sessionRecord = (slug) => state.sessions.find((s) => s.slug === slug) || null;
 
 function requireRecord(slug) {
@@ -767,6 +775,21 @@ const cli = {
       installed: installed.map((p) => ({ ...p, status: isConnected(p.dir) ? 'CONNECTED' : (idsForDir(p.dir).length ? 'DISCONNECTED' : 'UNKNOWN') })),
       connected: conn,
     };
+  },
+
+  'list-tabs': async (a) => {
+    const dir = a.profile || DEFAULT_PROFILE;
+    const id = liveIdFor(dir);
+    if (!id) {
+      throw new Error(idsForDir(dir).length
+        ? `profile '${dir}' is not connected — its Chrome window may be closed, or its worker asleep; 'bb identify --profile ${dir}' wakes it`
+        : `profile '${dir}' has never been identified — run 'bb identify --profile ${dir}'`);
+    }
+    const r = await callExt(id, { type: 'listAllTabs' });
+    if (!r.ok) throw new Error(r.error);
+    return r.result.tabs.map((t) => ({
+      tab: t.tabId, session: t.slug || '', title: (t.title || '').slice(0, 38), url: shortUrl(t.url),
+    }));
   },
 
   'bring-to-front': (a) => callSlug(a.slug, 'bringToFront'),

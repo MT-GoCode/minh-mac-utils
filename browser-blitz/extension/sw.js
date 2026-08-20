@@ -272,6 +272,20 @@ async function handle(m) {
       return hit ? { tabId: hit.id, windowId: hit.windowId } : { tabId: null };
     }
 
+    // The only way to discover a tab you might want to grab. Playwright can see only the tabs
+    // inside a session's group — that fence is the point — so enumerating the rest is
+    // extension-only work, same as tab groups themselves.
+    case 'listAllTabs': {
+      const groups = await sortedGroups();
+      const slugOf = new Map();
+      for (const g of groups) { const sl = slugFromTitle(g.title); if (sl) slugOf.set(g.id, sl); }
+      const tabs = await chrome.tabs.query({});
+      return { tabs: tabs.map((t) => ({
+        tabId: t.id, url: t.url || t.pendingUrl || '', title: t.title || '',
+        slug: slugOf.get(t.groupId) || null, active: !!t.active,
+      })) };
+    }
+
     case 'hasSession': {
       const gid = await groupForSlug(m.slug);
       if (gid == null) return { present: false };

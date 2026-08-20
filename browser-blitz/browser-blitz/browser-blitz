@@ -15,8 +15,8 @@ const LABEL = 'com.minh.browser-blitz';
 // Verbs that act INSIDE a session, written `bb <slug> <verb>`. Checked before the verb-first
 // shape so `bb new-session grab-tab` is a slug named grab-tab, not two commands.
 const SLUG_FIRST = new Set(['bring-to-front', 'grab-tab', 'release-tab']);
-const TOP_LEVEL = new Set(['new-session', 'resume', 'delete-session', 'list', 'identify',
-                           'extension-status', 'restart', 'help', '--help', '-h']);
+const TOP_LEVEL = new Set(['new-session', 'resume', 'delete-session', 'list', 'list-tabs',
+                           'identify', 'extension-status', 'restart', 'help', '--help', '-h']);
 const FLAGS = new Set(['--profile', '--keep', '--duplicate', '--json']);
 
 const HELP = `browser-blitz — Chrome sessions for Playwright
@@ -25,6 +25,7 @@ const HELP = `browser-blitz — Chrome sessions for Playwright
   resume <slug>                          bring a closed session back (adopts it if Chrome restored it)
   delete-session <slug> [--keep]         close the group (--keep leaves the tabs, ungrouped)
   list                                   every session: profile, status, tabs, CDP url
+  list-tabs [--profile <dir>]            every tab in the profile, and which session owns it
   identify [--profile <dir>]             learn a profile's identity, create nothing
   extension-status                       which profiles have the extension, and their state
   restart                                restart the shim
@@ -131,6 +132,10 @@ async function main() {
   if (opts.json) { console.log(JSON.stringify(r.result, null, 2)); return; }
 
   const res = r.result;
+  if (cmd === 'list-tabs') {
+    if (!res.length) { console.log('(no tabs)'); return; }
+    return table(res);
+  }
   if (cmd === 'list') {
     if (!res.length) { console.log('(no sessions)'); return; }
     return table(res);
