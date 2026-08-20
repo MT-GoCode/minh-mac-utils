@@ -343,6 +343,15 @@ function onCdpEvent(identityId, m) {
     for (const c of cs) {
       const sid = sidFor(m.tabId);
       if (!c.sessions.has(sid)) continue;
+      // Chrome auto-attaches OOPIFs and announces them here. Register the child so a command
+      // addressed to it resolves back to this tab; without this Playwright gets a session id it
+      // can address and the shim answers "no session for <method>".
+      if (m.method === 'Target.attachedToTarget' && m.params && m.params.sessionId) {
+        c.sessions.set(m.params.sessionId, m.tabId);
+      }
+      if (m.method === 'Target.detachedFromTarget' && m.params && m.params.sessionId) {
+        c.sessions.delete(m.params.sessionId);
+      }
       toClient(c, { method: m.method, params: m.params || {}, sessionId: m.sessionId || sid });
     }
   }
@@ -366,6 +375,9 @@ function browserLevel(slug, c) {
     // Acked, not implemented. chrome.debugger has no tab-level download control, so download
     // events never fire — the same limitation Playwright's own extension mode documents.
     'Browser.setDownloadBehavior': () => ({}),
+    // Playwright asks for this when it believes the target has a UI window. It never does over
+    // connect_over_cdp, but answering beats "no session for Browser.getWindowForTarget".
+    'Browser.getWindowForTarget': () => ({ windowId: 1, bounds: {} }),
     'Target.getBrowserContexts': () => ({ browserContextIds: [] }),
     'Target.createBrowserContext': () => ({ browserContextId: 'CTX' }),
     'Target.disposeBrowserContext': () => ({}),
@@ -486,16 +498,20 @@ cdpWss.on('connection', (ws, req) => {
     if (process.env.BB_TRACE) log('← cdp', { m: method, sid: sessionId, n: tabsOf(slug).length });
     const reply = (payload) => toClient(c, { id, ...payload, ...(sessionId ? { sessionId } : {}) });
     try {
-      if (handlers[method]) return reply({ result: await handlers[method](params) });
+      // Gate on !sessionId. Matching by method alone swallowed Target.setAutoAttach when
+      // Playwright sent it on a PAGE session to pick up out-of-process iframes, so chrome.debugger
+      // never auto-attached the child target and every cross-origin frame stayed empty.
+      if (!sessionId && handlers[method]) return reply({ result: await handlers[method](params) });
 
       const tabId = sessionId ? c.sessions.get(sessionId) : null;
+      const childSid = sessionId && !sessionId.startsWith('S-') ? sessionId : undefined;
       if (tabId == null) return reply({ error: { code: -32000, message: `no session for ${method}` } });
 
       const rec = sessionRecord(slug);
       const extId = rec ? liveIdFor(rec.profileDir) : null;
       if (!extId) return reply({ error: { code: -32000, message: `session '${slug}' is not connected` } });
 
-      const r = await callExt(extId, { type: 'cdp', tabId, method, params });
+      const r = await callExt(extId, { type: 'cdp', tabId, method, params, sessionId: childSid });
       if (!r.ok) {
         // The tab died but this session still points at it, so every later command would fail
         // the same way forever. Retire it and tell the client, so it re-attaches to a live tab.

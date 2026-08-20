@@ -1,2 +1,4 @@
 # Installed by install.sh on the target Mac; the repo stays source-only.
 browser-blitz/node_modules/
+# playwright-cli writes snapshots into its cwd (the shim WorkingDirectory).
+browser-blitz/.playwright-cli/

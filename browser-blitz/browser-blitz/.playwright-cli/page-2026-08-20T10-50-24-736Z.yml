@@ -1,4 +1,0 @@
-- generic [active] [ref=e1]:
-  - heading "outer" [level=1] [ref=e2]
-  - iframe [ref=e3]:
-    - heading "inner" [level=1] [ref=f1e2]
