@@ -927,13 +927,16 @@ function startCliSocket() {
 startCliSocket();
 
 // The extension's worker dies after ~30s idle and a silent socket does not count as activity.
-// Scoped to profiles that actually hold a live session — pinging an idle one pins its worker
-// alive forever for nothing.
+//
+// EVERY connected profile, not just ones holding a session. Scoping this to profiles with live
+// sessions saved one idle service worker and cost far more than it saved: with no session open
+// the worker died, so the next `bb new-session` found no live connection and had to relaunch
+// Chrome with `open -na` just to wake it — a window blip, and on a foregrounding launch it stole
+// the user's focus. Keeping the worker warm means that path effectively never runs while Chrome
+// is up. A worker parked on a WebSocket costs approximately nothing; interrupting someone does.
 setInterval(() => {
-  for (const [dir, m] of mirrors) {
-    if (!m.sessions.length) continue;
-    const id = liveIdFor(dir);
-    if (id) { const p = profiles.get(id); try { p.ws.send(JSON.stringify({ type: 'ping', id: seq++ })); } catch {} }
+  for (const [, p] of profiles) {
+    try { p.ws.send(JSON.stringify({ type: 'ping', id: seq++ })); } catch {}
   }
 }, PING_MS);
 

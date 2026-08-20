@@ -158,7 +158,8 @@ bb work release-tab 4711                  hand a tab back out (it stays open, ju
 ```
 
 `bb list`'s **DRIVER** column says `connected` when a playwright-cli daemon is holding the
-session's CDP socket right now. Empty means nothing is driving it — the session is poisoned and
+session's CDP socket right now. Empty on a brand-new session just means the attach has not landed
+yet — give it a second. Empty on one you have been driving means the daemon is gone, and
 `delete-session` + `new-session` is the way back. Statuses: **LIVE** (group is open) · **CLOSED** (profile visible, group gone — `resume`
 it) · **UNKNOWN** (that Chrome profile isn't running) · **UNTRACKED** (a `⚙` group with no record).
 
