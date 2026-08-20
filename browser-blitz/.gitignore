@@ -1,2 +1,2 @@
-node_modules/
-*.log
+# Installed by install.sh on the target Mac; the repo stays source-only.
+browser-blitz/node_modules/

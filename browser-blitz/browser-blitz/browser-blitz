@@ -1,0 +1,153 @@
+#!/usr/bin/env node
+// browser-blitz — session management for Chrome tab groups. Playwright does the driving.
+//
+// A session is a ⚙-titled tab group in your real, logged-in Chrome. The shim exposes each one as
+// a CDP endpoint and binds `playwright-cli -s=<slug>` to it automatically, so the whole loop is:
+//
+//   bb new-session work
+//   playwright-cli -s=work run-code "async page => { … }"
+const net = require('net');
+const path = require('path');
+const os = require('os');
+
+const SOCK = path.join(os.homedir(), '.local/state/browser-blitz/shim.sock');
+const LABEL = 'com.minh.browser-blitz';
+// Verbs that act INSIDE a session, written `bb <slug> <verb>`. Checked before the verb-first
+// shape so `bb new-session grab-tab` is a slug named grab-tab, not two commands.
+const SLUG_FIRST = new Set(['bring-to-front', 'grab-tab', 'release-tab']);
+const TOP_LEVEL = new Set(['new-session', 'resume', 'delete-session', 'list', 'identify',
+                           'extension-status', 'restart', 'help', '--help', '-h']);
+const FLAGS = new Set(['--profile', '--keep', '--duplicate', '--json']);
+
+const HELP = `browser-blitz — Chrome sessions for Playwright
+
+  new-session <slug> [--profile <dir>]   open a ⚙ tab group and bind playwright-cli -s=<slug>
+  resume <slug>                          bring a closed session back (adopts it if Chrome restored it)
+  delete-session <slug> [--keep]         close the group (--keep leaves the tabs, ungrouped)
+  list                                   every session: profile, status, tabs, CDP url
+  identify [--profile <dir>]             learn a profile's identity, create nothing
+  extension-status                       which profiles have the extension, and their state
+  restart                                restart the shim
+
+  <slug> bring-to-front                  raise the window and show the session
+  <slug> grab-tab <id>… [--duplicate]    pull tabs into the session
+  <slug> release-tab <id>… [--duplicate] take tabs out of it
+
+Driving is Playwright:
+  playwright-cli -s=<slug> snapshot
+  playwright-cli -s=<slug> run-code "async page => { … }"    ← chain; one call, many actions
+`;
+
+const die = (msg, code = 1) => { console.error(`browser-blitz: ${msg}`); process.exit(code); };
+
+function parse(argv) {
+  const opts = {}; const words = [];
+  for (let i = 0; i < argv.length; i++) {
+    const t = argv[i];
+    if (t.startsWith('--')) {
+      const eq = t.indexOf('=');
+      const name = eq < 0 ? t : t.slice(0, eq);
+      if (!FLAGS.has(name)) die(`unknown flag '${name}'`, 2);
+      if (name === '--profile') {
+        // A flag's VALUE must never be read as a positional: `--profile Work foo` once created a
+        // session named Work.
+        const v = eq < 0 ? argv[++i] : t.slice(eq + 1);
+        if (v == null) die('--profile needs a value', 2);
+        opts.profile = v;
+      } else opts[name.slice(2)] = true;
+    } else words.push(t);
+  }
+  return { opts, words };
+}
+
+function send(payload) {
+  return new Promise((resolve) => {
+    const conn = net.createConnection(SOCK);
+    let buf = '';
+    conn.on('error', () => resolve({ ok: false, error: `shim not running (launchctl kickstart -k gui/$(id -u)/${LABEL})` }));
+    conn.on('connect', () => conn.write(JSON.stringify(payload) + '\n'));
+    conn.on('data', (d) => { buf += d; });
+    conn.on('end', () => { try { resolve(JSON.parse(buf)); } catch { resolve({ ok: false, error: 'bad reply' }); } });
+  });
+}
+
+// One renderer for every command, so no verb grows its own column logic.
+function table(rows) {
+  if (!rows || !rows.length) return;
+  const cols = [...new Set(rows.flatMap((r) => Object.keys(r)))];
+  const w = cols.map((c) => Math.max(c.length, ...rows.map((r) => String(r[c] ?? '').length)));
+  const line = (cells) => cells.map((v, i) => String(v ?? '').padEnd(w[i])).join('  ').trimEnd();
+  console.log(line(cols.map((c) => c.toUpperCase())));
+  for (const r of rows) console.log(line(cols.map((c) => r[c])));
+}
+
+async function main() {
+  const argv = process.argv.slice(2);
+  if (!argv.length) { console.log(HELP); return; }
+
+  let slug = null, cmd = argv[0], rest = argv.slice(1);
+  if (!TOP_LEVEL.has(argv[0]) && SLUG_FIRST.has(argv[1])) { slug = argv[0]; cmd = argv[1]; rest = argv.slice(2); }
+  else if (!TOP_LEVEL.has(argv[0]) && !SLUG_FIRST.has(argv[0])) {
+    die(`unknown command '${argv[0]}' — run 'bb' for help`, 2);
+  }
+
+  if (cmd === 'help' || cmd === '--help' || cmd === '-h') { console.log(HELP); return; }
+
+  // Deliberately not sent through the shim, so it works when the shim is wedged.
+  if (cmd === 'restart') {
+    const { execFileSync } = require('child_process');
+    const fs = require('fs');
+    const before = (() => { try { return fs.statSync(SOCK).ino; } catch { return 0; } })();
+    try { execFileSync('launchctl', ['kickstart', '-k', `gui/${process.getuid()}/${LABEL}`]); }
+    catch (e) { die(`kickstart failed: ${(e && e.message) || e}`); }
+    // The socket's inode is the one true "this instance booted" marker — the shim recreates it
+    // only after both ports bind. A port probe answers "is anything listening", not "is it ours".
+    for (let i = 0; i < 15; i++) {
+      const now = (() => { try { return fs.statSync(SOCK).ino; } catch { return 0; } })();
+      if (now && now !== before) { console.log('shim restarted'); return; }
+      execFileSync('sleep', ['1']);
+    }
+    die('shim did not come back — see ~/.local/state/browser-blitz/shim.err');
+  }
+
+  const { opts, words } = parse(rest);
+  const a = { cmd, slug, ...opts };
+
+  if (['new-session', 'resume', 'delete-session'].includes(cmd)) {
+    if (!words.length) die(`${cmd} needs a slug`, 2);
+    a.slug = words[0];
+  }
+  if (cmd === 'grab-tab' || cmd === 'release-tab') {
+    // Whitespace-split: tab ids are contiguous tokens, and a pasted multi-line block arrives as
+    // one argv entry.
+    const ids = words.flatMap((x) => x.split(/\s+/)).filter(Boolean).map(Number);
+    if (!ids.length || ids.some(Number.isNaN)) die(`${cmd} needs one or more numeric tab ids`, 2);
+    a.tabIds = ids;
+  }
+  if (SLUG_FIRST.has(cmd) && !a.slug) die(`'${cmd}' acts on a session — use: bb <slug> ${cmd} …`, 2);
+
+  const r = await send(a);
+  if (!r.ok) die(r.error);
+  if (opts.json) { console.log(JSON.stringify(r.result, null, 2)); return; }
+
+  const res = r.result;
+  if (cmd === 'list') {
+    if (!res.length) { console.log('(no sessions)'); return; }
+    return table(res);
+  }
+  if (cmd === 'extension-status') {
+    console.log('installed:'); table(res.installed);
+    console.log('\nconnected:'); table(res.connected.length ? res.connected : [{ identity: '(none)' }]);
+    return;
+  }
+  if (res && res.results) return table(res.results);
+  if (res && res.nothing) { console.log('nothing to close'); return; }
+  if (Array.isArray(res)) return table(res);
+  table([res]);
+
+  if (cmd === 'new-session' || cmd === 'resume') {
+    console.log(`\nplaywright-cli -s=${a.slug} run-code "async page => { … }"`);
+  }
+}
+
+main().catch((e) => die(String((e && e.message) || e)));
