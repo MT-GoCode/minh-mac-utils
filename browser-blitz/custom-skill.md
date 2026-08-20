@@ -125,3 +125,7 @@ it) · **UNKNOWN** (that Chrome profile isn't running) · **UNTRACKED** (a `⚙`
   away and back usually clears it.
 - **Don't run `playwright-cli close`** on a bb session — use `bb delete-session`. `close` kills the
   browser connection, not the group.
+- **Closing the last page** ends the session (Chrome deletes a group when its last tab leaves).
+  `bb list` will show it `CLOSED`; `bb resume <slug>` brings it back.
+- **Cross-origin iframes work** — `page.frame_locator(...)` reaches into them. So do new tabs:
+  `page.context().newPage()` opens inside the session's group, never outside it.
