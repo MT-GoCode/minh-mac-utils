@@ -1,21 +1,20 @@
 // browser-blitz-bridge — the half of the job CDP cannot do.
 //
-// Chrome exposes tab groups, windows and tab membership only to extensions: the CDP protocol
-// has 52 domains and no Tabs domain at all. That is the entire reason this file exists. Page
-// driving is Playwright's job — it reaches these tabs through the shim's CDP endpoint, and every
-// command it sends is forwarded verbatim to chrome.debugger.
+// Chrome exposes tab groups, windows and tab membership only to extensions: CDP has 52 domains
+// and no Tabs domain at all. That is the entire reason this file exists. Page driving is
+// Playwright's job — it reaches these tabs through the shim's CDP endpoint, and every command it
+// sends is forwarded verbatim to chrome.debugger.
 //
 // Waking up. Chrome kills an idle MV3 service worker after ~30s and a pending setTimeout dies
 // with it, silently. Three things revive it:
-//   - chrome.tabs.onCreated — the cold-launch handshake depends on this. The shim wakes a
-//     profile by opening a window in it; without this listener that launch fires nothing.
-//   - chrome.alarms — the backstop, browser-backed so it survives worker death. Armed
-//     unconditionally at top level, NOT only in onclose: a killed worker never runs onclose,
-//     which is exactly the case it covers. Chrome floors the period at 1 minute.
+//   - chrome.tabs.onCreated — the cold-launch handshake depends on it: the shim wakes a profile
+//     by opening a window in it, and without this listener that launch fires nothing.
+//   - chrome.alarms — the backstop, browser-backed so it survives worker death. Armed at top
+//     level, NOT in onclose: a killed worker never runs onclose, which is the case it covers.
+//     Chrome floors the period at 1 minute.
 //   - onInstalled / onStartup.
-// The 2s retry chain is only the fast path for a worker still alive. The shim also pings
-// profiles holding a live session, which keeps the worker resident so commands land and the
-// rename snap-back can hear a rename.
+// The 2s retry chain only helps a worker that is still alive. What keeps one resident is the
+// shim's ping — without it commands do not land and the rename snap-back cannot hear a rename.
 const SHIM_URL = 'ws://127.0.0.1:9334';
 const TITLE_PREFIX = '⚙ ';
 const SLUG_FROM_TITLE = /^⚙\s*(.+)$/;
@@ -45,18 +44,17 @@ const slugFromTitle = (t) => {
 
 // ---------------------------------------------------------------- state, loaded once
 //
-// Identity is random and persisted forever. Email was tried and dropped: it only bought a
-// shortcut to resolving a signed-in profile's directory, and two profiles on one Google account
-// share an email.
+// Identity is random and persisted forever. Not the account email: two profiles on one Google
+// account share one.
 //
 // `owned` lives in storage.session — in memory, survives worker death, cleared when the browser
 // closes, which is exactly how long a groupId stays valid.
 //
-// Read ONCE here and used from memory after. Storage reads are async: two handlers that each
-// read-modify-write clobber each other, and a handler running before the read finishes sees
-// "nothing owned" and takes the wrong branch — that is how a rename sticks. This promise must
-// never reject: every handler awaits it, and a rejection would wedge the worker while the socket
-// stayed open, reporting CONNECTED and timing out every command.
+// Read ONCE here, used from memory after. Storage reads are async, so two handlers that
+// read-modify-write clobber each other and a handler that runs before the read finishes sees
+// "nothing owned" and takes the wrong branch (that is how a rename sticks). This promise must
+// NEVER reject: every handler awaits it, and a rejection wedges the worker with the socket still
+// open — reporting CONNECTED while every command times out.
 const ready = (async () => {
   let identity = null;
   try {
@@ -88,10 +86,10 @@ function saveOwned() {
 // A tab is driveable or it carries a reason it isn't.
 //
 // chrome.debugger.attach grants the tab's WHOLE frame tree, so Chrome refuses when any frame
-// belongs to another extension — and reports it as a chrome-extension:// URL error on a page
-// that is plainly https. Password managers inject exactly such a frame into login forms. The
-// check runs at ATTACH time only, so attaching while the tab is still blank survives every later
-// navigation, including into that login page. That is why we attach on group-join, not lazily.
+// belongs to another extension — password managers inject exactly such a frame into login forms,
+// and the refusal arrives as a chrome-extension:// URL error on a page that is plainly https.
+// Chrome checks only at ATTACH time, which is why we attach on group-join rather than lazily:
+// an attachment made while the tab is blank survives navigating into that login page.
 function attachReason(msg) {
   if (/chrome-extension:\/\/ URL of different extension/.test(msg)) {
     return 'a password manager extension has a frame on this page — navigate away, or disable it in chrome://extensions';
@@ -126,9 +124,20 @@ async function attachOnce(tabId) {
     // "Already attached" is ambiguous — DevTools, another tool, or OUR OWN session surviving a
     // worker restart (`attached` is worker memory and starts empty every time). detach settles
     // it without guessing: it only succeeds on a session WE hold.
+    // Retry INLINE, never via tryAttach: this call is already the in-flight promise in
+    // `attaching`, so tryAttach would hand our own promise back to us and it would resolve to
+    // itself. That cycle runs through .finally, so V8's chaining-cycle check does not catch it —
+    // it simply never settles, and since pushChain is serialised one hit freezes every push for
+    // the life of the worker.
     if (/already attached/i.test(msg)
         && await chrome.debugger.detach({ tabId }).then(() => true, () => false)) {
-      return tryAttach(tabId);
+      try {
+        await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
+        attached.add(tabId); failed.delete(tabId);
+      } catch (e2) {
+        failed.set(tabId, attachReason(String((e2 && e2.message) || e2)));
+      }
+      return;
     }
     failed.set(tabId, attachReason(msg));
   }
@@ -351,14 +360,14 @@ async function handle(m) {
       if (gid == null) return { closed: false };
       const tabs = await chrome.tabs.query({ groupId: gid });
       const ids = tabs.map((t) => t.id);
-      // Per-id and catch-and-continue. One tab closing between the query and the call (the user,
-      // or window.close()) used to reject the whole remove AFTER the ungroup had landed, orphaning
-      // every other tab outside any group with the session still recorded.
-      // Ungroup FIRST, always. Since Chrome 131 closing a populated group saves it and pins it to
+      // Ungroup FIRST, always: since Chrome 131 closing a POPULATED group saves it and pins it to
       // the bookmarks bar, so a session per task quietly fills that bar with dead groups. Emptying
-      // the group by ungrouping deletes it instead of closing it. Chrome exposes no API for saved
-      // groups, so this is prevention only — existing ones have to be removed by hand, or hidden
-      // with right-click the bookmarks bar -> uncheck "Show tab groups".
+      // the group by ungrouping deletes it instead. There is no API for saved groups, so this is
+      // prevention only; existing ones come off by hand (right-click the bookmarks bar -> uncheck
+      // "Show tab groups").
+      // Per-id, catch-and-continue: one tab closing between the query and the call (the user, or
+      // window.close()) rejected the whole remove AFTER the ungroup had landed, which left every
+      // other tab orphaned outside any group with the session still recorded.
       for (const id of ids) await chrome.tabs.ungroup(id).catch(() => {});
       if (!m.keepTabs) for (const id of ids) await chrome.tabs.remove(id).catch(() => {});
       owned.delete(gid); saveOwned();
@@ -440,11 +449,10 @@ async function handle(m) {
 
     // --------------------------------------------------- CDP relay (used by the shim's endpoint)
     //
-    // Every tab-addressed command re-checks group membership HERE. The shim's per-client session
-    // map used to be the only fence, which meant anything that got a tabId into that map reached
-    // the whole profile — and sendCdp would happily tryAttach a tab we were never given.
-    // Defence in depth: the extension is the only place that can see the groups, so it is the
-    // only place the fence can actually be enforced.
+    // Every tab-addressed command re-checks group membership HERE, and this is where the fence
+    // actually lives: only the extension can see tab groups at all. The shim's per-client session
+    // map is not a substitute — anything that gets a tabId into it would otherwise reach the
+    // whole profile, with sendCdp happily attaching to a tab we were never given.
     case 'cdp': return { result: await sendCdp(await inSession(m.slug, m.tabId), m.method, m.params, m.sessionId) };
 
     case 'createTabInGroup': {
@@ -591,8 +599,8 @@ chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
 });
 
 // Rename defence. Chrome has no pre-update hook, so this is revert, not prevention — there is a
-// visible snap-back. It only works while the worker is running, which is why the shim pings
-// profiles holding a live session.
+// visible snap-back. It only works while the worker is running, which is one of the things the
+// shim's ping buys.
 chrome.tabGroups.onUpdated.addListener(async (g) => {
   await ready;
   const slug = owned.get(g.id);

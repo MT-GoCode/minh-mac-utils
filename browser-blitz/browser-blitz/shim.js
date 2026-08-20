@@ -1,12 +1,18 @@
-// browser-blitz shim.
+// browser-blitz shim — the daemon behind `bb`. Owns all state and every decision; the extension
+// answers questions about tabs and groups and relays CDP, Playwright does the driving.
 //
 // Three servers:
-//   :9334  loopback WebSocket the extension dials into
+//   :9334  loopback WebSocket the extension dials into, one connection per Chrome profile
 //   :9342  a CDP browser endpoint per slug, at /<slug> — this is what Playwright attaches to
 //   unix   the CLI socket
 //
-// Owns all state and every decision. The extension answers questions about tabs and groups and
-// relays CDP; Playwright does all the driving.
+// State: `state.sessions` (on disk) is which slugs exist and in which profile; `mirrors` is the
+// last tab list each profile pushed, and is the only thing `list` and the CDP endpoint read, so
+// they cannot disagree; `clients` is who is speaking CDP now; `frameIds` maps tab -> main frame.
+//
+// Two invariants Playwright depends on, each enforced (and explained) further down: a page
+// target's id IS its main frame id, never the tabId; and the Target.attachedToTarget announce
+// goes out BEFORE the setAutoAttach reply, never after.
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -46,13 +52,11 @@ const SETTLE_POLL_MS = 250;
 const EXT_CALL_TIMEOUT_MS = 20000;
 const PW = 'playwright-cli';
 
-// The tab-group fence contains TABS. It does not contain CDP: these commands act on the whole
-// Chrome profile, so a session scoped to three tabs could sign the user out of every site they
-// use. Playwright reaches them through ordinary API calls — context.clearCookies() is one line —
-// so an agent can trip this without ever meaning to.
-//
-// Refused outright rather than gated behind a flag: there is no in-fence version of "clear every
-// cookie", and a per-site reset is something the user can do in Chrome in five seconds.
+// The tab-group fence holds TABS, not CDP: these commands act on the whole Chrome profile, so a
+// session scoped to three tabs could sign the user out of every site they use. Playwright reaches
+// them through ordinary API calls (context.clearCookies() is one line), so an agent trips this
+// without meaning to. Refused outright, not gated behind a flag: there is no in-fence version of
+// "clear every cookie".
 const PROFILE_WIDE = new Set([
   'Network.clearBrowserCookies', 'Network.clearBrowserCache',
   'Storage.clearCookies', 'Storage.clearDataForOrigin', 'Storage.clearDataForStorageKey',
@@ -66,9 +70,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------------------------------------------------------------- logging
 //
-// Summarised, and rotated. Full CDP payloads are enormous once Playwright is attached (it
-// enables Page, Runtime and Network and every event flows through here), and an unrotated log
-// reached 352 MB in two days.
+// Summarised, and rotated. Playwright enables Page, Runtime and Network on attach, so every event
+// in the browser flows through here; logging them whole is what filled a disk (LOG_MAX_BYTES).
 function log(dir, msg) {
   let line;
   try { line = JSON.stringify(msg); } catch { line = String(msg); }
@@ -201,9 +204,9 @@ const wss = new WebSocketServer({
   // could drive the user's real Chrome.
   port: EXT_PORT,
   host: '127.0.0.1',
-  // Origin is set by the browser and a web page cannot forge it. Without this check ANY website
-  // the user visits can open a socket here, claim an identity, and receive commands. A native
-  // local process can still forge it — same trust level as reading the Chrome profile directory.
+  // The Origin check is what stops any web page driving the user's Chrome: without it any site
+  // the user visits could open a socket here, claim an identity and receive commands. A browser
+  // cannot forge Origin; a native local process can, but it can read the profile directory too.
   verifyClient: (info, cb) => {
     const origin = info.origin || (info.req && info.req.headers.origin);
     if (origin === EXT_ORIGIN) return cb(true);
@@ -273,8 +276,8 @@ function onSessions(identityId, sessions) {
   }
   if (dirty) saveState();
 
-  // Attach/detach Playwright to match reality. A slug is bindable exactly while its group is
-  // live; anything else and `playwright-cli -s=<slug>` should not be pointing at a dead endpoint.
+  // Attach/detach Playwright to match reality: a slug is bindable exactly while its group is
+  // live, and never wants `playwright-cli -s=<slug>` pointed at a dead endpoint.
   syncPlaywright(dir, new Set(sessions.map((s) => s.slug)));
   // A tab that joined or left an attached slug has to be announced to the connected client.
   for (const s of sessions) reconcileTargets(s.slug, s.tabs).catch(() => {});
@@ -282,19 +285,18 @@ function onSessions(identityId, sessions) {
 
 // ---------------------------------------------------------------- CDP endpoint
 //
-// One port, slug as PATH. Playwright appends /json/version/ to whatever URL you hand it — with a
-// trailing slash, measured — and then connects to whatever absolute webSocketDebuggerUrl the
-// response carries. Both facts together mean a port RANGE is unnecessary: the old design's
-// allocPort, its 9340-9399 window and its stale-port collision are all gone.
+// One port, slug as PATH — deliberately not a port range. Playwright appends /json/version/ to
+// whatever URL it is handed (trailing slash included) and then connects to the absolute
+// webSocketDebuggerUrl in the reply, so one port serves every session with nothing to allocate,
+// leak or collide.
 const clients = new Map();    // slug -> Set<{ ws, sessions:Map<sessionId,tabId>, autoAttach:bool }>
 
 const sidFor = (tabId) => 'S-' + tabId;
 
-// Chrome guarantees a page target's id EQUALS its main frame's id, and Playwright depends on it:
-// crPage.js keys _sessions by frame id but registers the main session under the TARGET id, then
-// _sessionForFrame walks up from the frame and throws "Frame has been detached." when the lookup
-// misses. Using tabId as the targetId broke that invariant, so every page was born detached.
-// So: learn each tab's real main-frame id and use THAT as its target id.
+// INVARIANT: a page target's id must EQUAL its main frame id. Playwright's crPage.js keys
+// _sessions by frame id but registers the main session under the TARGET id, so if the two differ
+// _sessionForFrame misses and every action fails "Frame has been detached." Hence: learn each
+// tab's real main-frame id and use THAT as its target id. The tabId is never a target id.
 const frameIds = new Map();     // tabId -> main frame id
 const tabForFrame = (fid) => [...frameIds].find(([, f]) => f === fid)?.[0] ?? null;
 
@@ -324,8 +326,8 @@ const targetInfo = (t) => ({
 
 function clientsOf(slug) { return clients.get(slug) || new Set(); }
 
-// BB_TRACE=1 logs the CDP conversation. It is how the stray-about:blank bug was found: the
-// trace showed Target.createTarget arriving 8ms after setAutoAttach, before our announce.
+// BB_TRACE=1 logs the CDP conversation. Ordering bugs here are measured in single-digit
+// milliseconds, so the trace is the only way to see one.
 function toClient(c, payload) {
   if (process.env.BB_TRACE && payload.method) log('→ evt', { m: payload.method, sid: payload.sessionId });
   try { if (c.ws.readyState === 1) c.ws.send(JSON.stringify(payload)); } catch {}
@@ -350,9 +352,8 @@ async function reconcileTargets(slug, tabs) {
     for (const [sid, tabId] of [...c.sessions]) {
       if (live.has(tabId)) continue;
       c.sessions.delete(sid);
-      // The target id Playwright knows is the FRAME id, not the tabId — same invariant as the
-      // handshake. Announcing the teardown under the tabId meant Playwright never matched it, so
-      // a released tab stayed in its page list and could still be driven: a hole in the fence.
+      // Teardown carries the FRAME id too. Announced under the tabId, Playwright matches nothing,
+      // keeps the page in its list and can still drive a released tab — a hole in the fence.
       const gone = String(frameIds.get(tabId) || tabId);
       toClient(c, { method: 'Target.detachedFromTarget', params: { sessionId: sid, targetId: gone } });
       toClient(c, { method: 'Target.targetDestroyed', params: { targetId: gone } });
@@ -376,9 +377,8 @@ function onCdpEvent(identityId, m) {
     for (const c of cs) {
       const sid = sidFor(m.tabId);
       if (!c.sessions.has(sid)) continue;
-      // Chrome auto-attaches OOPIFs and announces them here. Register the child so a command
-      // addressed to it resolves back to this tab; without this Playwright gets a session id it
-      // can address and the shim answers "no session for <method>".
+      // Chrome auto-attaches OOPIFs and announces them here. Register the child session or a
+      // command addressed to it comes back "no session for <method>".
       if (m.method === 'Target.attachedToTarget' && m.params && m.params.sessionId) {
         c.sessions.set(m.params.sessionId, m.tabId);
       }
@@ -397,10 +397,9 @@ function onCdpDetached(identityId, m) {
 // Browser-level CDP. Everything here is answered locally: these are questions about which
 // targets exist, which is bookkeeping the shim already owns from the extension's pushes.
 function browserLevel(slug, c) {
-  // A client-supplied targetId must resolve to a tab THIS slug actually has. tabForFrame misses
-  // for anything that is not a known frame id, and Number() then accepts any integer — so
-  // attachToTarget would mint a session for another slug's tab (verified: it drove one), and a
-  // garbage id became {sessionId:'S-NaN'}, a successful attach to nothing.
+  // A client-supplied targetId must resolve to a tab THIS slug owns. tabForFrame misses on
+  // anything that is not a known frame id and Number() then takes any integer, so without this
+  // check attachToTarget hands out a working session on another slug's tab, or on 'S-NaN'.
   const tabOf = (p) => {
     const id = tabForFrame(p && p.targetId) ?? Number(p && p.targetId);
     if (!Number.isInteger(id) || !tabsOf(slug).some((t) => t.tabId === id)) {
@@ -408,9 +407,9 @@ function browserLevel(slug, c) {
     }
     return id;
   };
-  // The extension is unreachable when its profile is not connected, and callExt RESOLVES with
-  // {ok:false} rather than throwing — so a discarded result reports success for work that never
-  // happened, and Playwright then waits for a targetDestroyed that never comes.
+  // Fail loudly when the profile is not connected. callExt RESOLVES {ok:false} rather than
+  // throwing, so calling anyway reports success for work that never ran and Playwright waits
+  // forever on an event that will not come.
   const ext = () => {
     const id = liveIdFor(requireRecord(slug).profileDir);
     if (!id) throw new Error(`session '${slug}' is not connected`);
@@ -434,9 +433,9 @@ function browserLevel(slug, c) {
     'Target.createBrowserContext': () => ({ browserContextId: 'CTX' }),
     'Target.disposeBrowserContext': () => ({}),
     'Target.getTargets': () => ({ targetInfos: tabsOf(slug).map(targetInfo) }),
-    // No targetId means Playwright is asking about the BROWSER target, not a page. Answering
-    // with a page made it register that page AS the browser, after which the real page never got
-    // a frame model — page.url() came back '' and every goto failed "Frame has been detached".
+    // No targetId means Playwright is asking about the BROWSER target, not a page. Answer with a
+    // page and it registers that page as the browser; the real page then never gets a frame model
+    // and every goto fails "Frame has been detached".
     'Target.getTargetInfo': (p) => {
       if (!p || !p.targetId) {
         return { targetInfo: { targetId: 'browser', type: 'browser', title: '', url: '',
@@ -450,11 +449,10 @@ function browserLevel(slug, c) {
       for (const t of tabsOf(slug)) toClient(c, { method: 'Target.targetCreated', params: { targetInfo: targetInfo(t) } });
       return {};
     },
-    // THE handshake step. Playwright sends this with flatten:true and waits for
-    // Target.attachedToTarget before it believes any page exists — and gives up after ~8ms,
-    // calling Target.createTarget and minting a stray tab. So the announce goes out BEFORE this
-    // command's own response, not on a timer: frame ids are resolved first, then the events, then
-    // the reply. Anything slower loses the race.
+    // THE handshake step, and the second invariant. Playwright waits for Target.attachedToTarget
+    // before it believes any page exists — for about 8ms, then it gives up and mints a stray tab
+    // with Target.createTarget. So the announce goes out BEFORE this command's own reply: frames
+    // resolved, then the events, then the return. A timer, or any extra round trip, loses.
     'Target.setAutoAttach': async (p) => {
       if (!p || !p.autoAttach) { c.autoAttach = false; return {}; }
       c.autoAttach = true;
@@ -488,9 +486,8 @@ function browserLevel(slug, c) {
       if (!r.ok) throw new Error(r.error);
       const tabId = r.result.tabId;
       const fid = await learnFrameId(requireRecord(slug).profileDir, tabId);
-      // Announce it NOW, not on the next push. newPage() waits for Target.attachedToTarget right
-      // after createTarget returns; a 120ms debounced push is far too late and it fails with
-      // "Cannot read properties of undefined (reading '_page')".
+      // Announce NOW, not on the next push: newPage() waits for Target.attachedToTarget the
+      // moment createTarget returns, and the extension's push is 120ms of debounce away.
       if (c.autoAttach && !c.sessions.has(sidFor(tabId))) {
         c.sessions.set(sidFor(tabId), tabId);
         toClient(c, { method: 'Target.attachedToTarget', params: {
@@ -532,11 +529,10 @@ const cdpServer = http.createServer((req, res) => {
   })));
 });
 
-// WebSocket handshakes are NOT subject to CORS, so without this ANY page the user visits can open
-// this socket, guess a slug (they are short words like 'work'), and speak full CDP against their
-// real logged-in Chrome — Target.getTargets to enumerate the group, then Runtime.evaluate on it.
-// A native client (playwright-cli, a node ws client) sends no Origin header; a browser always
-// does, and cannot forge or omit it. So: no Origin, or no connection.
+// WebSocket handshakes are NOT subject to CORS. This check is the only thing stopping any page
+// the user visits from opening this socket, guessing a slug (they are short words like 'work')
+// and speaking full CDP against their real logged-in Chrome. A native client sends no Origin; a
+// browser always does and can neither forge nor omit it. So: no Origin, or no connection.
 const cdpWss = new WebSocketServer({
   server: cdpServer,
   verifyClient: (info, cb) => {
@@ -562,9 +558,9 @@ cdpWss.on('connection', (ws, req) => {
     if (process.env.BB_TRACE) log('← cdp', { m: method, sid: sessionId, n: tabsOf(slug).length });
     const reply = (payload) => toClient(c, { id, ...payload, ...(sessionId ? { sessionId } : {}) });
     try {
-      // Gate on !sessionId. Matching by method alone swallowed Target.setAutoAttach when
-      // Playwright sent it on a PAGE session to pick up out-of-process iframes, so chrome.debugger
-      // never auto-attached the child target and every cross-origin frame stayed empty.
+      // Gate on !sessionId: these handlers are browser-level only. Playwright ALSO sends
+      // Target.setAutoAttach on a page session to pick up out-of-process iframes, and answering
+      // that here instead of forwarding it leaves every cross-origin frame empty.
       if (!sessionId && handlers[method]) return reply({ result: await handlers[method](params) });
 
       if (PROFILE_WIDE.has(method)) {
@@ -574,9 +570,9 @@ cdpWss.on('connection', (ws, req) => {
           `really mean it.` } });
       }
 
-      // A browser-level command we do not implement went to "no session for <method>", which broke
-      // context.cookies() and addCookies() outright. chrome.debugger has no browser target, but it
-      // does support these per-target, so fall through to the session's first tab.
+      // Browser-level commands we do not implement fall through to the session's first tab
+      // rather than "no session for <method>", which broke context.cookies(). chrome.debugger has
+      // no browser target, but it does support these per-target.
       const tabId = sessionId ? c.sessions.get(sessionId) : (tabsOf(slug)[0] || {}).tabId ?? null;
       const childSid = sessionId && !sessionId.startsWith('S-') ? sessionId : undefined;
       if (tabId == null) return reply({ error: { code: -32000, message: `no session for ${method}` } });
@@ -591,8 +587,11 @@ cdpWss.on('connection', (ws, req) => {
         // the same way forever. Retire it and tell the client, so it re-attaches to a live tab.
         if (/No tab with given id|no page target/i.test(r.error || '')) {
           c.sessions.delete(sessionId);
-          toClient(c, { method: 'Target.detachedFromTarget', params: { sessionId, targetId: String(tabId) } });
-          toClient(c, { method: 'Target.targetDestroyed', params: { targetId: String(tabId) } });
+          // Frame id, not tabId — same invariant as reconcileTargets. Announced under the tabId
+          // Playwright never matches the teardown, so the dead tab stays in its page list.
+          const gone = String(frameIds.get(tabId) || tabId);
+          toClient(c, { method: 'Target.detachedFromTarget', params: { sessionId, targetId: gone } });
+          toClient(c, { method: 'Target.targetDestroyed', params: { targetId: gone } });
         }
         return reply({ error: { code: -32000, message: r.error } });
       }
@@ -615,18 +614,18 @@ cdpServer.listen(CDP_PORT, '127.0.0.1');
 
 // ---------------------------------------------------------------- playwright binding
 //
-// A slug is bindable exactly while its group is live. The shim owns this so the model never has
-// to run setup: `bb new-session work` and `playwright-cli -s=work run-code …` is the whole loop.
-// Slugs we have run `attach` for. Not a liveness record — a daemon that dies is gone for good
-// (see the poisoning note in custom-skill.md), and nothing here can bring it back.
+// A slug is bindable exactly while its group is live, and the shim binds it so the model never
+// runs setup: `bb new-session work` then `playwright-cli -s=work run-code …` is the whole loop.
 //
-// Retries are BOUNDED, not absent. Retrying on every push is what minted a fresh about:blank in
-// the user's group several times a second, because `attach` opens a page as part of connecting —
-// but never retrying meant one transient failure (playwright-cli mid-upgrade, a shim restart
-// landing mid-attach) killed the session for the shim's lifetime, with `bb list` still
-// advertising a CDP url. A handful of spaced attempts costs at most BIND_TRIES stray tabs in the
-// worst case and recovers every transient failure.
-const attached = new Set();        // slug -> attach succeeded, or we gave up trying
+// Retries are BOUNDED — neither unbounded nor zero, and both extremes were worse. `attach` OPENS
+// A PAGE as part of connecting, so retrying on every push mints a fresh about:blank in the user's
+// group several times a second; never retrying lets one transient failure (playwright-cli
+// mid-upgrade, a shim restart landing mid-attach) kill the slug for the shim's lifetime while
+// `bb list` still advertises a CDP url. A few spaced attempts cost at most BIND_TRIES stray tabs
+// and recover everything transient.
+// `attached` is NOT a liveness record: a daemon that dies takes the slug with it (the poisoning
+// note in custom-skill.md) and nothing here notices, which is why `bb list` reports the socket.
+const attached = new Set();        // slugs bound, or given up on
 const bindTries = new Map();       // slug -> attempts so far
 const bindLastAt = new Map();      // slug -> when we last tried
 const BIND_TRIES = 3;
@@ -639,9 +638,9 @@ const cdpUrlFor = (slug) => `http://127.0.0.1:${CDP_PORT}/${encodeURIComponent(s
 async function pw(args) {
   try { const r = await execFile(PW, args, { timeout: PW_TIMEOUT_MS }); return { ok: true, out: r.stdout }; }
   catch (e) {
-    // stderr, not e.message: execFile's message is the command line, which says nothing.
-    // stderr first. Falling back to stdout stored playwright-cli's SUCCESS banner as the failure
-    // reason, which reads as though the attach worked and then was never retried.
+    // stderr, not e.message (that is just the command line) and stderr BEFORE stdout: stdout
+    // carries playwright-cli's success banner, and logging that as the failure reason reads as
+    // an attach that worked and then mysteriously was never retried.
     const err = (e.stderr || '').trim();
     const why = err || `exited ${e.code ?? '?'}${e.stdout ? ` (stdout: ${String(e.stdout).trim().split('\n')[0]})` : ''}`;
     return { ok: false, error: why.split('\n').slice(0, 3).join(' | ').slice(0, 300) };
@@ -672,9 +671,8 @@ async function unbind(slug) {
 }
 
 function syncPlaywright(dir, liveSlugs) {
-  // Only slugs WE own. An UNTRACKED ⚙ group — one whose record is gone, or a group the user
-  // titled by hand — is not ours to bind, and binding it opened tabs in a group nobody asked
-  // us to touch.
+  // Only slugs WE own. An UNTRACKED ⚙ group (record gone, or one the user titled by hand) is not
+  // ours to bind — and binding opens tabs, in a group nobody asked us to touch.
   const ours = new Set(state.sessions.filter((s) => s.profileDir === dir).map((s) => s.slug));
   for (const slug of liveSlugs) if (ours.has(slug)) bind(slug).catch(() => {});
   for (const slug of [...attached]) {
@@ -698,17 +696,15 @@ async function ensureProfileReady(dir) {
 
   const token = 'bb' + Math.random().toString(36).slice(2, 10);
   log('◆ launching', { dir, token });
-  // -g: do not bring Chrome to the foreground. Waking a profile is bookkeeping — the extension's
-  // MV3 worker gets killed after ~30s idle and this is how we get it back — so it must not steal
-  // the user's focus mid-sentence. Without it every session created after a quiet spell yanked
-  // Chrome in front of whatever they were doing. `bb <slug> bring-to-front` is how the window
-  // gets raised, and only when someone asked for it.
+  // -g: do NOT foreground Chrome. Waking a profile is bookkeeping — the MV3 worker dies after
+  // ~30s idle and this is how we get it back — so it must never steal focus mid-sentence.
+  // Raising a window is `bb <slug> bring-to-front`, and only when someone asked.
   await execFile('open', ['-g', '-na', 'Google Chrome', '--args', '--new-window',
                           `--profile-directory=${dir}`, LAUNCH_URL(token)]);
 
   // Poll for a connection that HOLDS THE TOKEN. Nothing else proves which directory a connection
-  // belongs to — a profile cannot learn its own directory, and timing alone would happily
-  // attribute an unrelated profile that connected at the same moment.
+  // belongs to: a profile cannot learn its own, and timing alone happily credits an unrelated
+  // profile that connected at the same moment.
   const deadline = Date.now() + LAUNCH_TIMEOUT_MS;
   let found = null;
   while (Date.now() < deadline && !found) {
@@ -765,9 +761,9 @@ async function callSlug(slug, type, extra = {}) {
   if (!id) throw new Error(`profile '${rec.profileDir}' is not connected — start a session in it, or run 'bb identify --profile ${rec.profileDir}'`);
   const r = await callExt(id, { type, slug, ...extra });
   if (!r.ok) {
-    // A CLOSED session — record on disk, profile connected, group gone — passes the checks above
-    // and fails in the extension with "no session here". True, but it reads like a bug when
-    // `bb list` shows the slug. The shim knows a record exists, so it can say what happened.
+    // A CLOSED session (record on disk, profile connected, group gone) clears the checks above
+    // and fails in the extension with "no session here" — true, but it reads like a bug while
+    // `bb list` still shows the slug. Only the shim knows a record exists, so it explains.
     if (/^no session '.*' here$/.test(r.error || '')) {
       throw new Error(`session '${slug}' is closed — nothing is open in ${rec.profileDir}; resume it first`);
     }
@@ -788,10 +784,9 @@ const cli = {
       if (p.launchTabId != null) used.consumed = true;
       state.sessions.push({ slug: a.slug, profileDir: dir, createdAt: new Date().toISOString(), tabs: [] });
       saveState();
-      // Not ...r.result: groupId/tabId/windowId/tabCount are debug output for a command whose
-      // answer is 'here is your session'. `adopted` is NOT debug output — it is the only sign
-      // that Chrome handed us a pre-existing ⚙ group full of the user's tabs rather than a fresh
-      // one, and resume reports it for the same reason.
+      // Not ...r.result: groupId/tabId/windowId/tabCount are debug noise. `adopted` is not — it
+      // is the only sign that Chrome handed us a pre-existing ⚙ group full of the user's tabs
+      // instead of a fresh one. resume reports it for the same reason.
       return { slug: a.slug, profile: dir, adopted: !!(r.result && r.result.adopted), cdp: cdpUrlFor(a.slug) };
     });
   }),
@@ -832,9 +827,9 @@ const cli = {
     const r = await callExt(id, { type: 'closeSession', slug: a.slug, keepTabs: !!a.keep });
     if (!r.ok) throw new Error(r.error);
     if (rec) { state.sessions = state.sessions.filter((s) => s.slug !== a.slug); saveState(); }
-    // Prune the mirror too. The extension's next push is ~120ms of debounce away, and until it
-    // lands `bb list` re-adds the slug we just deleted as an UNTRACKED row — which reads as an
-    // orphaned group needing attention, not as "closed, one moment". We closed it; it is gone.
+    // Prune the mirror too: the next push is ~120ms of debounce away, and until it lands
+    // `bb list` re-adds the slug we just deleted as an UNTRACKED row, which reads as an orphaned
+    // group needing attention rather than "closed, one moment".
     const m = mirrors.get(dir);
     if (m) m.sessions = m.sessions.filter((s) => s.slug !== a.slug);
     return { slug: a.slug, profile: dir, ...r.result };
@@ -848,11 +843,9 @@ const cli = {
       const status = !connected ? 'UNKNOWN' : live ? 'LIVE' : 'CLOSED';
       return { slug: rec.slug, profile: rec.profileDir, status,
                tabs: live ? live.tabs.length : (rec.tabs.length ? `${rec.tabs.length} saved` : ''),
-               // A CONNECTED CDP SOCKET, not a remembered intention. The old BOUND column read
-               // from `bound`, which only recorded that `attach` once exited 0 — so it said yes
-               // for a daemon that had since died, and the session hung with no warning. This
-               // drops the moment the daemon's socket closes, which is the only honest signal
-               // the shim has.
+               // A CONNECTED CDP SOCKET, not a remembered intention: reporting that `attach`
+               // once exited 0 said "bound" for a daemon that had since died, and the session
+               // hung with no warning. A closing socket is the only honest signal there is.
                driver: clientsOf(rec.slug).size ? 'connected' : '',
                cdp: status === 'LIVE' ? cdpUrlFor(rec.slug) : '' };
     });
@@ -928,12 +921,10 @@ startCliSocket();
 
 // The extension's worker dies after ~30s idle and a silent socket does not count as activity.
 //
-// EVERY connected profile, not just ones holding a session. Scoping this to profiles with live
-// sessions saved one idle service worker and cost far more than it saved: with no session open
-// the worker died, so the next `bb new-session` found no live connection and had to relaunch
-// Chrome with `open -na` just to wake it — a window blip, and on a foregrounding launch it stole
-// the user's focus. Keeping the worker warm means that path effectively never runs while Chrome
-// is up. A worker parked on a WebSocket costs approximately nothing; interrupting someone does.
+// EVERY connected profile, not just the ones holding a session. Scoped to live sessions, an idle
+// profile's worker dies, and the next `bb new-session` there has to relaunch Chrome with
+// `open -na` just to wake it — a window blip, and a focus steal if the launch foregrounds.
+// A worker parked on a WebSocket costs approximately nothing; interrupting someone does.
 setInterval(() => {
   for (const [, p] of profiles) {
     try { p.ws.send(JSON.stringify({ type: 'ping', id: seq++ })); } catch {}

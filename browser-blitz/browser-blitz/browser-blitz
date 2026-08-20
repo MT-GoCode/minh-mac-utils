@@ -108,11 +108,10 @@ async function main() {
   let slug = null, cmd = argv[0], rest = argv.slice(1);
   if (!TOP_LEVEL.has(argv[0]) && SLUG_FIRST.has(argv[1])) { slug = argv[0]; cmd = argv[1]; rest = argv.slice(2); }
   else if (!TOP_LEVEL.has(argv[0]) && !SLUG_FIRST.has(argv[0])) {
-    // `bb work teleport` is a fine slug and a bad verb; `bb new-sesion work` is a typo'd
-    // command. From here the two are indistinguishable — argv[0] is just a word we do not know —
-    // so blaming either one guesses, and guessing wrong sends the reader hunting for a typo in
-    // the half that was correct. Say both readings instead. A flag in argv[1] is the one case
-    // that IS decidable: no slug verb takes that shape, so argv[0] is simply not a command.
+    // `bb work teleport` is a fine slug and a bad verb; `bb new-sesion work` is a typo'd command.
+    // From here they are indistinguishable, and guessing wrong sends the reader hunting for a
+    // typo in the half that was correct — so name both readings. A flag in argv[1] IS decidable:
+    // no slug verb takes that shape, so argv[0] is simply not a command.
     const verbs = SLUG_FIRST_NAMES.join(', ');
     if (argv[1] && !argv[1].startsWith('-')) {
       die(`'${argv[0]}' is not a command, and if it is a session then '${argv[1]}' is not one of ` +
