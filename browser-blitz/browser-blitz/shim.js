@@ -552,7 +552,10 @@ cdpWss.on('connection', (ws, req) => {
       // never auto-attached the child target and every cross-origin frame stayed empty.
       if (!sessionId && handlers[method]) return reply({ result: await handlers[method](params) });
 
-      const tabId = sessionId ? c.sessions.get(sessionId) : null;
+      // A browser-level command we do not implement went to "no session for <method>", which broke
+      // context.cookies() and addCookies() outright. chrome.debugger has no browser target, but it
+      // does support these per-target, so fall through to the session's first tab.
+      const tabId = sessionId ? c.sessions.get(sessionId) : (tabsOf(slug)[0] || {}).tabId ?? null;
       const childSid = sessionId && !sessionId.startsWith('S-') ? sessionId : undefined;
       if (tabId == null) return reply({ error: { code: -32000, message: `no session for ${method}` } });
 
@@ -580,7 +583,11 @@ cdpWss.on('connection', (ws, req) => {
   ws.on('close', () => {
     const set = clients.get(slug);
     if (set) { set.delete(c); if (!set.size) clients.delete(slug); }
-    log('◆ cdp client gone', { slug });
+    // The socket closing IS the liveness signal. Without this the shim believed a slug stayed
+    // bound for the life of its group after the playwright-cli daemon exited, so `bb list` handed
+    // out a CDP url and every run-code failed with "Browser is not open". Dropping it here lets
+    // the next push re-bind; if the session is gone, syncPlaywright simply won't.
+    if (!clients.has(slug) && bound.delete(slug)) log('◆ unbound (client gone)', { slug });
   });
 });
 cdpServer.on('error', (e) => {
@@ -598,7 +605,8 @@ const bound = new Set();
 // retries every slug that is a hot loop: `playwright-cli attach` opens a page as part of
 // connecting, so a failing bind minted a fresh about:blank in the user's group several times a
 // second. Cleared when the session goes away, so the next new-session/resume tries again.
-const bindFailed = new Map();   // slug -> reason
+const bindFailed = new Map();   // slug -> { why, at }
+const BIND_RETRY_MS = 30000;
 
 const cdpUrlFor = (slug) => `http://127.0.0.1:${CDP_PORT}/${encodeURIComponent(slug)}`;
 
@@ -606,19 +614,27 @@ async function pw(args) {
   try { const r = await execFile(PW, args); return { ok: true, out: r.stdout }; }
   catch (e) {
     // stderr, not e.message: execFile's message is the command line, which says nothing.
-    const why = (e.stderr || e.stdout || String(e.message || e)).trim().split('\n').slice(0, 3).join(' | ');
-    return { ok: false, error: why.slice(0, 300) };
+    // stderr first. Falling back to stdout stored playwright-cli's SUCCESS banner as the failure
+    // reason, which reads as though the attach worked and then was never retried.
+    const err = (e.stderr || '').trim();
+    const why = err || `exited ${e.code ?? '?'}${e.stdout ? ` (stdout: ${String(e.stdout).trim().split('\n')[0]})` : ''}`;
+    return { ok: false, error: why.split('\n').slice(0, 3).join(' | ').slice(0, 300) };
   }
 }
 
 async function bind(slug) {
-  if (bound.has(slug) || bindFailed.has(slug)) return;
+  if (bound.has(slug)) return;
+  // Retried, not abandoned. Sticky-forever meant one transient failure — a shim restart mid-attach
+  // — left the slug unusable for the life of its group.
+  const f = bindFailed.get(slug);
+  if (f && Date.now() - f.at < BIND_RETRY_MS) return;
   bound.add(slug);                                   // added first: two pushes can race here
   const r = await pw(['-s=' + slug, 'attach', '--cdp=' + cdpUrlFor(slug)]);
-  if (r.ok) { log('◆ bound', { slug }); return; }
+  if (r.ok) { bindFailed.delete(slug); log('◆ bound', { slug }); return; }
   bound.delete(slug);
-  bindFailed.set(slug, r.error);
-  log('! bind failed', { slug, error: r.error });    // logged ONCE, not every push
+  const first = !bindFailed.has(slug);
+  bindFailed.set(slug, { why: r.error, at: Date.now() });
+  if (first) log('! bind failed', { slug, error: r.error });   // once per failure run, not per push
 }
 
 async function unbind(slug) {
@@ -792,7 +808,7 @@ const cli = {
       const status = !connected ? 'UNKNOWN' : live ? 'LIVE' : 'CLOSED';
       return { slug: rec.slug, profile: rec.profileDir, status,
                tabs: live ? live.tabs.length : (rec.tabs.length ? `${rec.tabs.length} saved` : ''),
-               bound: bound.has(rec.slug) ? 'yes' : (bindFailed.get(rec.slug) ? 'FAILED' : ''), cdp: status === 'LIVE' ? cdpUrlFor(rec.slug) : '' };
+               bound: bound.has(rec.slug) ? 'yes' : (bindFailed.has(rec.slug) ? 'retrying' : ''), cdp: status === 'LIVE' ? cdpUrlFor(rec.slug) : '' };
     });
     const known = new Set(state.sessions.map((s) => s.slug));
     for (const [dir, m] of mirrors) {
@@ -872,6 +888,10 @@ setInterval(() => {
     if (!m.sessions.length) continue;
     const id = liveIdFor(dir);
     if (id) { const p = profiles.get(id); try { p.ws.send(JSON.stringify({ type: 'ping', id: seq++ })); } catch {} }
+    // Re-bind here as well as on the push. A dead playwright-cli daemon produces no tab event, so
+    // nothing pushes, so syncPlaywright never runs — and the session stayed unbound until the user
+    // happened to touch a tab. bind() carries its own backoff, so this is a no-op when healthy.
+    if (id) syncPlaywright(dir, new Set(m.sessions.map((x) => x.slug)));
   }
 }, PING_MS);
 
