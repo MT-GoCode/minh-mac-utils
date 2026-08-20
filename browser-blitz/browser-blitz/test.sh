@@ -6,9 +6,12 @@
 # because other agents and the user share this machine.
 
 set -u
-PASS=0; FAIL=0; SLUGS=()
+PASS=0; FAIL=0
 
-cleanup() { for s in "${SLUGS[@]:-}"; do [ -n "$s" ] && bb delete-session "$s" >/dev/null 2>&1; done; }
+# Sweeps `bb list` rather than a remembered array: `new` runs inside $( ), which is a subshell,
+# so anything it appended to a variable was thrown away and eight sessions leaked out of the
+# first two runs. The `bbt` prefix belongs to this suite alone, so taking all of them is safe.
+cleanup() { for s in $(bb list 2>/dev/null | grep -oE '^bbt[a-z][0-9]+'); do bb delete-session "$s" >/dev/null 2>&1; done; }
 trap cleanup EXIT
 
 sec()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
@@ -18,7 +21,7 @@ bad()  { FAIL=$((FAIL+1)); printf '  \033[31mFAIL\033[0m %s\n       want: %s\n  
 is()   { case "$3" in *"$2"*) ok "$1";; *) bad "$1" "$2" "$3";; esac; }
 isnt() { case "$3" in *"$2"*) bad "$1" "NOT $2" "$3";; *) ok "$1";; esac; }
 
-new()  { local s="bbt$1$RANDOM"; SLUGS+=("$s"); bb new-session "$s" >/dev/null 2>&1; sleep 7; echo "$s"; }
+new()  { local s="bbt$1$RANDOM"; bb new-session "$s" >/dev/null 2>&1; sleep 7; echo "$s"; }
 drive(){ timeout 45 playwright-cli -s="$1" run-code "$2" 2>&1 | sed -n 2p; }
 row()  { bb list 2>/dev/null | awk -v s="$1" '$1==s'; }
 
