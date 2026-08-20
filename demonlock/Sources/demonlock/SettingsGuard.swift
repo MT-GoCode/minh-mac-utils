@@ -10,12 +10,27 @@ import ApplicationServices
 /// clicked. Runs inside demonlock's agent (GUI session, needs an Accessibility TCC grant); demonlock's
 /// enforcer already respawns the agent, so no separate guard daemon is needed.
 enum SettingsGuard {
+    /// Set once we've logged "INERT"; cleared when the grant comes back, so each loss is reported once.
+    private static var loggedNoAX = false
+
     static let settingsBundle = "com.apple.systempreferences"
 
     /// Enforce once (called on the agent's fast timer): if armed + enabled and System Settings is
     /// frontmost showing a guarded pane, SIGKILL it. Cheap no-op when Settings isn't up front.
+    /// Tracks whether we've already reported a missing Accessibility grant (the tick runs every 100ms).
     static func enforce(_ settings: Settings) {
-        guard settings.guardSettingsPanes, ArmStore.isArmed(), AXIsProcessTrusted() else { return }
+        guard settings.guardSettingsPanes, ArmStore.isArmed() else { return }
+        // Without Accessibility we can't read window titles, so we can't detect a guarded pane at all —
+        // the guard is INERT and fails OPEN. Say so once per transition instead of returning in silence.
+        guard AXIsProcessTrusted() else {
+            if !loggedNoAX {
+                loggedNoAX = true
+                logStderr("settings-guard: INERT — Accessibility not granted, guarded panes are UNPROTECTED "
+                          + "while armed. Fix with `demonlock perm-ask`.")
+            }
+            return
+        }
+        loggedNoAX = false
         guard let pid = settingsFrontmostPID() else { return }
         if let hit = guardedTitle(pid: pid, triggers: settings.guardedSettingsTitles) {
             logStderr("settings-guard: guarded pane \"\(hit)\" detected — killing System Settings (pid \(pid))")

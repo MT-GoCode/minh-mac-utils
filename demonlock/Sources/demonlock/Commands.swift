@@ -217,10 +217,9 @@ func runArm() {
         let snap = StateStore.read()
         let valveReady = snap?.releaseValve?.configured == true
         let policySet  = !(snap?.policyString.isEmpty ?? true)
-        let locOK      = !(snap?.health.needsPermAsk ?? false)
         var warns: [String] = []
         if !policySet { warns.append("no policy set — you'll be BLOCKED the moment you arm (`sudo demonlock setpolicy '…'`)") }
-        if !locOK     { warns.append("Location not granted — the agent can't sense, so you fail-closed (`demonlock perm-ask`)") }
+        warns += AgentPerms.from(snap?.health).warnings   // Location AND Accessibility, one source of truth
         // The dangerous one: arm REVOKES your admin. With no release valve configured you'd have no
         // delay-gated way back to sudo (only a spare admin account). Refuse unless --force.
         if !valveReady && !force {
@@ -838,13 +837,45 @@ func dropDelayMarker(_ path: String, payload: String = "") {
     catch { fail("✗ couldn't write the marker (\(path)). Is the inbox present? Try reinstalling demonlock.\n  \(error)") }
 }
 
+// MARK: - agent permissions (shared by perm-ask and the arm readiness gate)
+
+/// The two TCC grants the agent needs. `perm-ask` and `arm`'s readiness gate both resolve them
+/// through here so they can never disagree about what's missing (they used to: arm read Location as
+/// OK when the agent wasn't reporting, perm-ask read the same silence as "needs asking").
+struct AgentPerms {
+    var location: Bool
+    var accessibility: Bool
+
+    /// Unknown (agent not reporting) ⇒ treat Location as NOT granted, matching the fail-closed rule
+    /// everywhere else. Accessibility is the live AX check settings-guard itself gates on.
+    static func from(_ h: Health?) -> AgentPerms {
+        AgentPerms(location: !(h?.needsPermAsk ?? true), accessibility: AXIsProcessTrusted())
+    }
+
+    var allGranted: Bool { location && accessibility }
+
+    /// One line per missing grant, in the imperative the arm gate wants.
+    var warnings: [String] {
+        var w: [String] = []
+        if !location {
+            w.append("Location not granted — the agent can't sense, so you fail-closed (`demonlock perm-ask`)")
+        }
+        if !accessibility {
+            w.append("Accessibility not granted — settings-guard is INERT, so the FileVault / Device "
+                     + "Management panes are UNGUARDED while armed (`demonlock perm-ask`)")
+        }
+        return w
+    }
+}
+
 // MARK: - perm-ask (user)
 
 func runPermAsk() {
     let h = StateStore.read()?.health
-    let locNeeded = h?.needsPermAsk ?? true        // unknown (agent not reporting) → ask
-    let axTrusted = AXIsProcessTrusted()           // same check settings-guard uses
-    if !locNeeded && axTrusted {
+    let perms = AgentPerms.from(h)
+    let locNeeded = !perms.location
+    let axTrusted = perms.accessibility
+    if perms.allGranted {
         print("✓ Location and Accessibility are already granted — nothing to do.")
         return
     }
