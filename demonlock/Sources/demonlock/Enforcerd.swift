@@ -111,20 +111,19 @@ final class Enforcer {
 
         if armed && settings.wifiKeepOn { Wifi.ensureOn(settings.wifiDevice) }
 
-        // SNOOZED: force-allow until the snooze time, then auto-clear.
+        // SNOOZED: enforcement stands down until the snooze time, then auto-clears. We deliberately do
+        // NOT return here. The policy still evaluates and the RELEASE VALVE still ticks below: a snooze
+        // suppresses ENFORCEMENT only, and must never freeze the delay-gated admin grant. Returning early
+        // used to strand a pending request for the whole snooze (no grant, ever) and blank the policy +
+        // valve out of `status` ("policy: (none set)" / "no state yet"). Only the block paths are skipped.
+        var snoozedUntil: Date?
         if let snooze = SnoozeStore.until() {
             if now < snooze {
+                snoozedUntil = snooze
                 clearCountdown()
-                // Keep the agent-liveness grace clock fresh while snoozed (we aren't enforcing, so the
-                // agent's silence mustn't accumulate). Otherwise a long snooze leaves lastAgentSeen stale,
-                // and a dead agent at snooze expiry would skip its 25s startup/recovery grace → an immediate
-                // nuclear WS-kill instead of the normal "let the just-kickstarted agent relaunch" window.
-                lastAgentSeen = now; nextAgentKick = nil
-                publish(phase: "snoozed", verdict: nil, reason: "snoozed until \(timeStr(snooze))",
-                        now: now, armed: armed, snoozeUntil: snooze)
-                return poll
+            } else {
+                try? SnoozeStore.set(nil)
             }
-            try? SnoozeStore.set(nil)
         }
 
         // Process the agent feed ONLY if it's reporting right now (recent packet). A stale packet (agent
@@ -174,7 +173,10 @@ final class Enforcer {
         // Watchdog: a wedged-but-alive agent (throttled / stuck) stops feeding, and KeepAlive only restarts a
         // DEAD process — so once it's been silent PAST the startup/recovery grace, force-restart it (launchctl
         // kickstart -k), rate-limited. The grace is what keeps us from killing a normally-launching agent.
-        if agentLive {
+        // Snoozed counts as "seen": we aren't enforcing, so the agent's silence mustn't accumulate.
+        // Otherwise a long snooze leaves lastAgentSeen stale and a dead agent at snooze expiry skips its
+        // startup/recovery grace → an immediate nuclear WS-kill. It also means no kickstarts while snoozed.
+        if agentLive || snoozedUntil != nil {
             lastAgentSeen = now
             nextAgentKick = nil
         } else if armed, now.timeIntervalSince(lastAgentSeen) >= settings.agentGraceSeconds,
@@ -224,6 +226,15 @@ final class Enforcer {
         health.locationTrail = locationTrail(agentLive: agentLive, locState: locState, held: held, fix: fix,
                                              stable: stableScan, scanAge: scanAgeSec, adopted: adoptedThisTick,
                                              confirmed: confirmedThisTick, inside: inside, now: nowSec)
+
+        // Snoozed: everything above still ran (sensors read, policy evaluated, release valve ticked), so
+        // `status` shows real data and a pending grant can still land. We just skip enforcement below.
+        if let snooze = snoozedUntil {
+            publish(phase: "snoozed", verdict: nil, reason: "snoozed until \(timeStr(snooze))",
+                    now: now, armed: armed, snoozeUntil: snooze, tree: tree, inside: inside,
+                    policy: policyStr, ssh: ssh, health: health, rv: rv)
+            return poll
+        }
 
         // Single block path — out-of-policy and can't-determine both arrive here.
         func enterBlock(_ reason: String) -> Double {

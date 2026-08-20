@@ -215,6 +215,10 @@ The floating **panel** (drawn by the agent) mirrors this: `● ALLOWED` (green) 
 `snooze` is the sudo, right‑now stand‑down; for a no‑sudo scheduled stand‑down use a
 [snooze‑preset](#snooze-presets).
 
+A snooze suppresses **enforcement only**. The policy is still evaluated, `status` still shows the
+live tree, and the **release valve keeps ticking** — so a pending admin request still lands on
+schedule while you're snoozed. (It never grants sudo itself; see [the admin model](#the-admin-model).)
+
 ---
 
 ## Subsystems
