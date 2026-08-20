@@ -123,6 +123,20 @@ bb work release-tab 4711                  hand a tab back out (it stays open, ju
 `bb list` statuses: **LIVE** (group is open) · **CLOSED** (profile visible, group gone — `resume`
 it) · **UNKNOWN** (that Chrome profile isn't running) · **UNTRACKED** (a `⚙` group with no record).
 
+## Playwright calls that collide with bb
+
+Most of Playwright is safely inside the fence. These are the exceptions.
+
+| call | what happens |
+|---|---|
+| `context.clearCookies()`, `clearDataForOrigin` | **Refused by bb.** Cookies are per-profile, not per-tab-group — this would sign the user out of every site. Do it by hand in Chrome if it's really wanted. |
+| `playwright-cli -s=<slug> open` | Launches a **new** browser under that session name and detaches from the user's Chrome. bb will keep re-binding, so the two fight. Never run `open`. |
+| `playwright-cli -s=<slug> close` | Kills the connection, not the session. bb re-binds within ~15s. Use `bb delete-session`. |
+| `browser.close()` | **Refused by bb** — it would quit the user's entire Chrome. |
+| `page.close()` on the last tab | Ends the session: Chrome deletes a group when its last tab leaves. `bb resume <slug>` brings it back. |
+| `context.storageState()` | Works, and dumps **every cookie in the profile** to disk. Don't, unless asked. |
+| `context.newPage()` | Safe — the new tab lands inside the session's group. |
+
 ## Things that will bite you
 
 - **The user can see and touch everything.** They may drag a tab in or out mid-run; the group is

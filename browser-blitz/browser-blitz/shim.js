@@ -46,6 +46,21 @@ const SETTLE_POLL_MS = 250;
 const EXT_CALL_TIMEOUT_MS = 20000;
 const PW = 'playwright-cli';
 
+// The tab-group fence contains TABS. It does not contain CDP: these commands act on the whole
+// Chrome profile, so a session scoped to three tabs could sign the user out of every site they
+// use. Playwright reaches them through ordinary API calls — context.clearCookies() is one line —
+// so an agent can trip this without ever meaning to.
+//
+// Refused outright rather than gated behind a flag: there is no in-fence version of "clear every
+// cookie", and a per-site reset is something the user can do in Chrome in five seconds.
+const PROFILE_WIDE = new Set([
+  'Network.clearBrowserCookies', 'Network.clearBrowserCache',
+  'Storage.clearCookies', 'Storage.clearDataForOrigin', 'Storage.clearDataForStorageKey',
+  'Storage.clearTrustTokens', 'Storage.setCookies',
+  'Browser.resetPermissions', 'Browser.grantPermissions', 'Browser.setPermission',
+  'Profiler.enable',
+]);
+
 fs.mkdirSync(STATE_DIR, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -551,6 +566,13 @@ cdpWss.on('connection', (ws, req) => {
       // Playwright sent it on a PAGE session to pick up out-of-process iframes, so chrome.debugger
       // never auto-attached the child target and every cross-origin frame stayed empty.
       if (!sessionId && handlers[method]) return reply({ result: await handlers[method](params) });
+
+      if (PROFILE_WIDE.has(method)) {
+        return reply({ error: { code: -32000, message:
+          `${method} is refused: it affects the ENTIRE Chrome profile, not just session '${slug}' ` +
+          `— it would apply to every site the user is signed into. Do it by hand in Chrome if you ` +
+          `really mean it.` } });
+      }
 
       // A browser-level command we do not implement went to "no session for <method>", which broke
       // context.cookies() and addCookies() outright. chrome.debugger has no browser target, but it
