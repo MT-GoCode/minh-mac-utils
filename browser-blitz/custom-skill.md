@@ -135,7 +135,7 @@ and yours alone. They are not.
 |---|---|
 | `open` | Launches a **brand-new** browser (Chrome for Testing) under that session name and detaches from the user's Chrome. No logins, no cookies, no extensions. bb re-binds within ~15s, so you and bb then fight over the name. **There is no open step — a bb session is already an open tab.** |
 | `attach` | bb already attached it. Re-attaching to anything else does the same damage as `open`. |
-| `close` / `detach` | Drops the connection. bb re-binds within ~15s, so this achieves nothing except confusion. To end a session: `bb delete-session <slug>`. |
+| `close` / `detach` / `browser.close()` | Drops the connection only — it does NOT quit the user's Chrome, and bb re-binds within ~15s. So it achieves nothing except confusing yourself. To end a session: `bb delete-session <slug>`. |
 | `close-all` / `kill-all` | Kills **every** session on the machine, including other agents' work in progress. Never. |
 | `delete-data` | Deletes the session's user data. |
 | `install` / `install-browser` | Already done by bb's installer. |
