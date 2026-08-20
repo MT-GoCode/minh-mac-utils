@@ -211,30 +211,25 @@ func runArm() {
     // grant targets the go-w, root-owned BUNDLE binary (not the /usr/local/bin wrapper, whose dir could
     // be user-writable → arbitrary root) [review H4]. Run as you → re-exec through `sudo -n`.
     if geteuid() != 0 {
-        // Readiness gate — runs here in the USER context (before the arg-exact passwordless re-exec, so
-        // --force never has to reach that grant). Read the world-readable published state.
-        let force = CommandLine.arguments.contains("--force")
+        // Readiness gate — runs here in the USER context, before the arg-exact passwordless re-exec.
         let snap = StateStore.read()
-        let valveReady = snap?.releaseValve?.configured == true
-        let policySet  = !(snap?.policyString.isEmpty ?? true)
-        var warns: [String] = []
-        if !policySet { warns.append("no policy set — you'll be BLOCKED the moment you arm (`sudo demonlock setpolicy '…'`)") }
-        warns += AgentPerms.from(snap?.health).warnings   // Location AND Accessibility, one source of truth
-        // The dangerous one: arm REVOKES your admin. With no release valve configured you'd have no
-        // delay-gated way back to sudo (only a spare admin account). Refuse unless --force.
-        if !valveReady && !force {
-            fail("""
-            ✗ refusing to arm: arm REVOKES your admin, and the release valve isn't configured — you'd have
-              NO delay-gated way back to sudo (only a spare admin account could recover you).
-              Configure it first:
-                sudo demonlock admin-release-valve set-gate-policy "IN_POLICY"
-                sudo demonlock admin-release-valve set-delay "30m"
-                sudo demonlock admin-release-valve set-max-request-duration "1h"
-            \(warns.isEmpty ? "" : "  Also: " + warns.joined(separator: "; ") + "\n")  Override (e.g. you keep a spare admin):  demonlock arm --force
-            """)
+        // Every check here is a HARD FAIL, and there is no override. arm revokes your admin, so arming
+        // with any of these broken leaves you armed AND without the admin needed to repair it — exactly
+        // the trap a "warn and continue" gate springs. A check you can wave through isn't a check.
+        var blockers = AgentPerms.from(snap?.health).warnings
+        if snap?.releaseValve?.configured != true {
+            blockers.append("the release valve isn't configured — you'd have NO delay-gated way back to sudo. "
+                            + "Fix: `sudo demonlock admin-release-valve set-gate-policy \"IN_POLICY\"`, then "
+                            + "`set-delay \"<dur>\"`, then `set-max-request-duration \"<dur>\"`")
         }
-        if !warns.isEmpty {
-            FileHandle.standardError.write(Data(("⚠️  arming anyway, but:\n  • " + warns.joined(separator: "\n  • ") + "\n").utf8))
+        if snap?.policyString.isEmpty ?? true {
+            blockers.append("no policy is set — you'd be BLOCKED the moment you arm. Fix: `sudo demonlock setpolicy '…'`")
+        }
+        if !blockers.isEmpty {
+            fail("""
+            ✗ refusing to arm — fix these first (arm revokes your admin, so afterwards you couldn't):
+              • \(blockers.joined(separator: "\n              • "))
+            """)
         }
         let rc = Proc.run("/usr/bin/sudo", ["-n", Paths.binaryPath, "arm"])   // plain `arm` → passwordless grant intact
         if rc != 0 { fail("✗ couldn't arm without admin — the passwordless grant may be missing (reinstall), or run `sudo demonlock arm`.") }

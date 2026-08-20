@@ -117,12 +117,18 @@ sudo demonlock setpolicy 'LOCATED_IN_ANY(["office"])'
 - **`sudo demonlock disarm`** — enforcement OFF. Everything keeps running; the countdown panel still
   *shows* but nothing gets killed.
 
-`arm` runs a **readiness check** first. It **refuses** if the release valve isn't configured (arm
-revokes your admin, so you'd have no delay‑gated way back — override with `demonlock arm --force`
-only if you keep a spare admin account), and **warns** if there's no policy, if **Location** isn't
-granted (you'd fail‑closed immediately), or if **Accessibility** isn't granted (settings‑guard would
-be inert, leaving the FileVault / Device Management panes unguarded). `demonlock perm-ask` fixes the
-permission ones.
+`arm` runs a **readiness check** first, and every item is a **hard refusal** — there is no override.
+It refuses unless all four hold:
+
+1. the **release valve is configured** (else you'd have no delay‑gated way back to sudo),
+2. a **policy is set** (else you're blocked the instant you arm),
+3. **Location** is granted (else the agent can't sense and you fail‑closed),
+4. **Accessibility** is granted (else settings‑guard is inert and the FileVault / Device Management
+   panes are unguarded).
+
+The reason none of these is a mere warning: **arm revokes your admin**, and fixing any of them needs
+admin — so arming past a warning would leave you armed *and* unable to repair it. `demonlock perm-ask`
+fixes the two permission ones.
 
 **What happens out of policy (while armed):** a **10‑second countdown** (the panel floats to front,
 menubar goes 🟠→🔴). At zero, the daemon **SIGKILLs** every GUI app that isn't spared:
