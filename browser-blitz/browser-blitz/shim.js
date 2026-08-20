@@ -698,7 +698,12 @@ async function ensureProfileReady(dir) {
 
   const token = 'bb' + Math.random().toString(36).slice(2, 10);
   log('◆ launching', { dir, token });
-  await execFile('open', ['-na', 'Google Chrome', '--args', '--new-window',
+  // -g: do not bring Chrome to the foreground. Waking a profile is bookkeeping — the extension's
+  // MV3 worker gets killed after ~30s idle and this is how we get it back — so it must not steal
+  // the user's focus mid-sentence. Without it every session created after a quiet spell yanked
+  // Chrome in front of whatever they were doing. `bb <slug> bring-to-front` is how the window
+  // gets raised, and only when someone asked for it.
+  await execFile('open', ['-g', '-na', 'Google Chrome', '--args', '--new-window',
                           `--profile-directory=${dir}`, LAUNCH_URL(token)]);
 
   // Poll for a connection that HOLDS THE TOKEN. Nothing else proves which directory a connection
