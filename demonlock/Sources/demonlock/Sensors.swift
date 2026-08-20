@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices   // AXIsProcessTrusted — reported for the AGENT itself
 import CoreLocation
 import CoreWLAN
 import Foundation
@@ -206,6 +207,7 @@ final class SensorFeeder: NSObject, CLLocationManagerDelegate {
             fixTs: loc.map { $0.timestamp.timeIntervalSince1970 },
             bssids: bssids,
             locState: state,
+            axTrusted: AXIsProcessTrusted(),
             scanTs: freshest,
             guiPids: currentGuiPids()
         )

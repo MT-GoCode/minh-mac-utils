@@ -85,6 +85,12 @@ enum SettingsGuard {
         let s = Settings.load()
         print("settings-guard : \(s.guardSettingsPanes ? "ENABLED" : "disabled") (active while armed)")
         print("  triggers     : \(s.guardedSettingsTitles.joined(separator: ", "))")
-        print("  accessibility: \(AXIsProcessTrusted() ? "granted" : "NOT granted — run `demonlock perm-ask`")")
+        // The AGENT runs enforce(), so its grant is the one that decides whether this guard works. Asking
+        // AXIsProcessTrusted() here would answer for the terminal instead — which is how this printed
+        // "granted" while both Demonlock TCC rows were denied and the guard was doing nothing.
+        let ax = StateStore.read()?.health.axTrusted
+        print("  accessibility: " + (ax == true ? "granted (agent)"
+              : ax == false ? "NOT granted — settings-guard is INERT; run `demonlock perm-ask`"
+              : "unknown — agent not reporting"))
     }
 }

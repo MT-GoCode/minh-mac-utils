@@ -425,6 +425,14 @@ demonlock settings-guard          # status: enabled/disabled, triggers, accessib
 demonlock settings-guard dump     # the window titles it sees on the current pane
 ```
 
+The Accessibility grant that matters is the **agent's** — the agent is what runs the guard. The CLI
+can't measure that itself: macOS attributes a TCC check to the **responsible process**, which for a
+command‑line tool is *the terminal you typed in*. So a `demonlock` command asking
+`AXIsProcessTrusted()` would answer for **Terminal.app** — and since Terminal usually has
+Accessibility, it would cheerfully report "granted" while Demonlock was denied and the guard sat
+inert. `perm-ask` / `settings-guard` therefore read the value the **agent publishes**, and treat
+"agent not reporting" as **not granted** (fail‑closed).
+
 ---
 
 ## Command cheat sheet

@@ -846,10 +846,12 @@ struct AgentPerms {
     var location: Bool
     var accessibility: Bool
 
-    /// Unknown (agent not reporting) ⇒ treat Location as NOT granted, matching the fail-closed rule
-    /// everywhere else. Accessibility is the live AX check settings-guard itself gates on.
+    /// Both come from what the AGENT published, never from this CLI process. Calling AXIsProcessTrusted()
+    /// here would measure the RESPONSIBLE process — the terminal you typed in — so with Accessibility
+    /// granted to Terminal.app (the default for anyone who's ever used a CLI automation tool) it reported
+    /// "granted" while Demonlock itself was denied and settings-guard sat inert. Unknown ⇒ NOT granted.
     static func from(_ h: Health?) -> AgentPerms {
-        AgentPerms(location: !(h?.needsPermAsk ?? true), accessibility: AXIsProcessTrusted())
+        AgentPerms(location: !(h?.needsPermAsk ?? true), accessibility: h?.axTrusted ?? false)
     }
 
     var allGranted: Bool { location && accessibility }
@@ -874,7 +876,7 @@ func runPermAsk() {
     let h = StateStore.read()?.health
     let perms = AgentPerms.from(h)
     let locNeeded = !perms.location
-    let axTrusted = perms.accessibility
+    let axTrusted = perms.accessibility     // the AGENT's grant, not this terminal's
     if perms.allGranted {
         print("✓ Location and Accessibility are already granted — nothing to do.")
         return

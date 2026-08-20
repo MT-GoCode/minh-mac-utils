@@ -23,6 +23,7 @@ struct Health: Codable {
     var fixReason: String?       // why location is not driving an allow (re-confirming / left-the-Wi-Fi / too-fuzzy)
     var locState = "unknown"     // ok | reduced | notDetermined | denied | restricted | noFix
     var needsPermAsk = false
+    var axTrusted: Bool?         // the AGENT's Accessibility grant (see FeedPayload.axTrusted). nil = unknown.
     var locationTrail: [String] = []   // the per-tick decision map (the user-facing detail; see locationTrail())
 }
 
@@ -66,6 +67,11 @@ struct FeedPayload: Codable {
     var fixTs: Double?           // the fix's REAL CoreLocation timestamp — the enforcer's "new fix?" key
     var bssids: [String]?        // current scan, all MACs (policy input). nil ⇒ scan unavailable/redacted
     var locState: String         // ok | reduced | notDetermined | denied | restricted | noFix
+    var axTrusted: Bool?         // AXIsProcessTrusted() AS THE AGENT — the only process whose Accessibility
+                                 // grant matters (it runs settings-guard). A CLI can't measure this: TCC
+                                 // attributes a command-line check to the RESPONSIBLE process, i.e. the
+                                 // terminal, so `demonlock perm-ask` was reporting Terminal.app's grant.
+                                 // nil ⇒ agent not reporting / older agent ⇒ unknown ⇒ treated as NOT granted.
     var scanTs: Double?
     var guiPids: [Int32]         // PIDs of the user's .regular GUI apps (NOT the agent) — the LOCKED
                                  // kill list. Root SIGKILLs these so distractions die but the sensor lives.

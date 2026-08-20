@@ -140,10 +140,12 @@ final class Enforcer {
         var locState = "unknown"
         var locReason: String?
         var needsPermAsk = false
+        var axTrusted: Bool? = nil
         if let (p, _) = feed, agentLive {
             guiKillList = p.guiPids
             locState = p.locState
             needsPermAsk = ["denied", "restricted", "notDetermined", "reduced"].contains(p.locState)
+            axTrusted = p.axTrusted
             var stable: Set<String>?
             if let b = p.bssids, !b.isEmpty, let st = p.scanTs {
                 let scanAge = nowSec - st
@@ -222,6 +224,7 @@ final class Enforcer {
         health.agentFeedFresh = agentLive
         health.locState = locState
         health.needsPermAsk = needsPermAsk
+        health.axTrusted = axTrusted
         health.fixReason = locReason
         health.locationTrail = locationTrail(agentLive: agentLive, locState: locState, held: held, fix: fix,
                                              stable: stableScan, scanAge: scanAgeSec, adopted: adoptedThisTick,
