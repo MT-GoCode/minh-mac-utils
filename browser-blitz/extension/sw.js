@@ -323,8 +323,14 @@ async function handle(m) {
       const gid = await groupForSlug(m.slug);
       if (gid == null) return { closed: false };
       const tabs = await chrome.tabs.query({ groupId: gid });
-      if (m.keepTabs) await chrome.tabs.ungroup(tabs.map((t) => t.id));
-      else if (tabs.length) await chrome.tabs.remove(tabs.map((t) => t.id));
+      const ids = tabs.map((t) => t.id);
+      // Ungroup FIRST, always. Since Chrome 131 closing a populated group saves it and pins it to
+      // the bookmarks bar, so a session per task quietly fills that bar with dead groups. Emptying
+      // the group by ungrouping deletes it instead of closing it. Chrome exposes no API for saved
+      // groups, so this is prevention only — existing ones have to be removed by hand, or hidden
+      // with right-click the bookmarks bar -> uncheck "Show tab groups".
+      if (ids.length) await chrome.tabs.ungroup(ids);
+      if (!m.keepTabs && ids.length) await chrome.tabs.remove(ids);
       owned.delete(gid); saveOwned();
       return { closed: true, tabCount: tabs.length };
     }
