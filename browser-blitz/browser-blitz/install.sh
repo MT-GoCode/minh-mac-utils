@@ -6,10 +6,11 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"           # .../browser-blitz/browser-blitz
-EXT="$(cd "$HERE/../extension" && pwd)"
+EXT="$(cd "$HERE/../extension" 2>/dev/null && pwd || echo "$HERE/../extension")"
 LABEL="com.minh.browser-blitz"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 STATE="$HOME/.local/state/browser-blitz"
+STATE_BINDIR_HINT="$STATE/bindir"
 NODE="$(command -v node || true)"
 
 if [ -z "${BINDIR:-}" ]; then
@@ -30,6 +31,11 @@ echo "browser-blitz install"; echo
 [ -d "$EXT" ]                || bad "extension/ missing (expected at $EXT)"
 [ -n "$NODE" ]               || bad "node not found — brew install node"
 ok "node $($NODE --version)"
+case "$NODE" in
+  *"/.nvm/"*|*"/.asdf/"*|*"/.volta/"*|*"/fnm/"*)
+    warn "node lives under a version manager ($NODE) — the LaunchAgent bakes this exact path in,"
+    warn "  so upgrading node will crash-loop the shim. Re-run install.sh after any node upgrade." ;;
+esac
 
 # ------------------------------------------------------------------ playwright-cli
 # The shim shells out to it to bind sessions, and it is what actually drives pages.
@@ -46,11 +52,18 @@ fi
 # editing ~/.zshrc — and the uninstaller's line arithmetic was off by one, so it deleted whatever
 # followed. A symlink works in a new shell immediately, in non-interactive shells and in scripts.
 chmod +x "$HERE/browser-blitz"
-mkdir -p "$BINDIR"
+mkdir -p "$BINDIR" "$STATE"
 for n in browser-blitz bb; do
+  # Never clobber silently: `bb` is also a real Homebrew formula, and ln -sf would replace it with
+  # no warning and no way for uninstall to put it back.
+  if [ -e "$BINDIR/$n" ] && [ "$(readlink "$BINDIR/$n" 2>/dev/null)" != "$HERE/browser-blitz" ]; then
+    warn "$BINDIR/$n already exists and is not ours — backing it up to $n.before-browser-blitz"
+    mv "$BINDIR/$n" "$BINDIR/$n.before-browser-blitz"
+  fi
   ln -sf "$HERE/browser-blitz" "$BINDIR/$n"
   ok "CLI: $BINDIR/$n"
 done
+echo "$BINDIR" > "$STATE_BINDIR_HINT" 2>/dev/null || true
 case ":$PATH:" in *":$BINDIR:"*) ;; *) warn "$BINDIR is not on your PATH";; esac
 
 # ------------------------------------------------------------------ dependency

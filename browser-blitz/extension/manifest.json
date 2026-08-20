@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "browser-blitz-bridge",
-  "version": "1.0.2",
+  "version": "1.2.0",
   "description": "Tab groups, windows and a CDP relay for browser-blitz. Playwright does the driving.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5HH3TSroRVsqIUv6rTH0sZTc9ReAE1HVeWSWWxED8ZiG7Be26G2Q5EouBOK74htQByjDJqfbNT3+erCzpcXawmfJyUXT1IUFHBIy21UI7NeZF+HLhAfZTpjyZlZnmZxcge+n5cxCEa5JvAGU+Zv72Mvf95e+x8Kr7FH1oa5PVgb2Qsc4eAX/RQZHsaSMQ/0QLDNicwfUB5N178OTN2EfY9JzVhnCPvPtfnjRkWB0a0mI/1M0wm/QfFnqGL782VOvoHJCklsdG3sRcAxvFdD7udSBhN7jVJQ7l2Yte9NqaJD/jBg5muExFtiIWzM3DANdflbFhHRRPWWFACxze+vOpwIDAQAB",
   "permissions": [

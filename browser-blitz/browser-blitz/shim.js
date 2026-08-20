@@ -382,6 +382,25 @@ function onCdpDetached(identityId, m) {
 // Browser-level CDP. Everything here is answered locally: these are questions about which
 // targets exist, which is bookkeeping the shim already owns from the extension's pushes.
 function browserLevel(slug, c) {
+  // A client-supplied targetId must resolve to a tab THIS slug actually has. tabForFrame misses
+  // for anything that is not a known frame id, and Number() then accepts any integer — so
+  // attachToTarget would mint a session for another slug's tab (verified: it drove one), and a
+  // garbage id became {sessionId:'S-NaN'}, a successful attach to nothing.
+  const tabOf = (p) => {
+    const id = tabForFrame(p && p.targetId) ?? Number(p && p.targetId);
+    if (!Number.isInteger(id) || !tabsOf(slug).some((t) => t.tabId === id)) {
+      throw new Error(`no target ${p && p.targetId} in session '${slug}'`);
+    }
+    return id;
+  };
+  // The extension is unreachable when its profile is not connected, and callExt RESOLVES with
+  // {ok:false} rather than throwing — so a discarded result reports success for work that never
+  // happened, and Playwright then waits for a targetDestroyed that never comes.
+  const ext = () => {
+    const id = liveIdFor(requireRecord(slug).profileDir);
+    if (!id) throw new Error(`session '${slug}' is not connected`);
+    return id;
+  };
   return {
     'Browser.getVersion': () => ({
       protocolVersion: '1.3', product: 'Chrome/151.0.7922.138', revision: '',
@@ -408,9 +427,7 @@ function browserLevel(slug, c) {
         return { targetInfo: { targetId: 'browser', type: 'browser', title: '', url: '',
                                attached: true, canAccessOpener: false } };
       }
-      const want = tabForFrame(p.targetId) ?? Number(p.targetId);
-      const t = tabsOf(slug).find((x) => x.tabId === want);
-      if (!t) throw new Error(`no target ${p.targetId}`);
+      const t = tabsOf(slug).find((x) => x.tabId === tabOf(p));
       return { targetInfo: targetInfo(t) };
     },
     'Target.setDiscoverTargets': async () => {
@@ -438,22 +455,21 @@ function browserLevel(slug, c) {
       return {};
     },
     'Target.attachToTarget': (p) => {
-      const tabId = tabForFrame(p.targetId) ?? Number(p.targetId);
+      const tabId = tabOf(p);
       const sid = sidFor(tabId);
       c.sessions.set(sid, tabId);
       return { sessionId: sid };
     },
     'Target.detachFromTarget': (p) => { c.sessions.delete(p.sessionId); return {}; },
     'Target.activateTarget': async (p) => {
-      const id = liveIdFor(requireRecord(slug).profileDir);
-      await callExt(id, { type: 'activateTab', tabId: tabForFrame(p.targetId) ?? Number(p.targetId) });
+      const r = await callExt(ext(), { type: 'activateTab', slug, tabId: tabOf(p) });
+      if (!r.ok) throw new Error(r.error);
       return {};
     },
     // New tabs land INSIDE the slug's group. This is the fence: a page Playwright opens cannot
     // escape into the user's ordinary browsing.
     'Target.createTarget': async (p) => {
-      const id = liveIdFor(requireRecord(slug).profileDir);
-      const r = await callExt(id, { type: 'createTabInGroup', slug, url: p.url });
+      const r = await callExt(ext(), { type: 'createTabInGroup', slug, url: p.url });
       if (!r.ok) throw new Error(r.error);
       const tabId = r.result.tabId;
       const fid = await learnFrameId(requireRecord(slug).profileDir, tabId);
@@ -471,8 +487,8 @@ function browserLevel(slug, c) {
       return { targetId: String(fid || tabId) };
     },
     'Target.closeTarget': async (p) => {
-      const id = liveIdFor(requireRecord(slug).profileDir);
-      await callExt(id, { type: 'closeTab', tabId: tabForFrame(p.targetId) ?? Number(p.targetId) });
+      const r = await callExt(ext(), { type: 'closeTab', slug, tabId: tabOf(p) });
+      if (!r.ok) throw new Error(r.error);
       return { success: true };
     },
     'Runtime.runIfWaitingForDebugger': () => ({}),
@@ -480,6 +496,9 @@ function browserLevel(slug, c) {
 }
 
 const cdpServer = http.createServer((req, res) => {
+  // Same rule as the socket below: a browser always sends Origin, a native client never does.
+  // Without it a page could read /json/list and learn every URL open in a session.
+  if (req.headers.origin) { res.writeHead(403); return res.end('{}'); }
   const url = (req.url || '').replace(/\/+$/, '');       // Playwright asks for /json/version/
   const m = /^\/([^/]+)\/json(\/version|\/list)?$/.exec(url);
   const json = (o) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
@@ -498,7 +517,19 @@ const cdpServer = http.createServer((req, res) => {
   })));
 });
 
-const cdpWss = new WebSocketServer({ server: cdpServer });
+// WebSocket handshakes are NOT subject to CORS, so without this ANY page the user visits can open
+// this socket, guess a slug (they are short words like 'work'), and speak full CDP against their
+// real logged-in Chrome — Target.getTargets to enumerate the group, then Runtime.evaluate on it.
+// A native client (playwright-cli, a node ws client) sends no Origin header; a browser always
+// does, and cannot forge or omit it. So: no Origin, or no connection.
+const cdpWss = new WebSocketServer({
+  server: cdpServer,
+  verifyClient: (info, cb) => {
+    const origin = info.origin || (info.req && info.req.headers.origin);
+    if (!origin) return cb(true);
+    cb(false, 403, 'forbidden origin');
+  },
+});
 cdpWss.on('connection', (ws, req) => {
   const m = /^\/([^/]+)\/browser$/.exec(req.url || '');
   if (!m) return ws.close();
@@ -529,7 +560,7 @@ cdpWss.on('connection', (ws, req) => {
       const extId = rec ? liveIdFor(rec.profileDir) : null;
       if (!extId) return reply({ error: { code: -32000, message: `session '${slug}' is not connected` } });
 
-      const r = await callExt(extId, { type: 'cdp', tabId, method, params, sessionId: childSid });
+      const r = await callExt(extId, { type: 'cdp', slug, tabId, method, params, sessionId: childSid });
       if (!r.ok) {
         // The tab died but this session still points at it, so every later command would fail
         // the same way forever. Retire it and tell the client, so it re-attaches to a live tab.

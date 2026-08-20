@@ -14,10 +14,23 @@ const SOCK = path.join(os.homedir(), '.local/state/browser-blitz/shim.sock');
 const LABEL = 'com.minh.browser-blitz';
 // Verbs that act INSIDE a session, written `bb <slug> <verb>`. Checked before the verb-first
 // shape so `bb new-session grab-tab` is a slug named grab-tab, not two commands.
-const SLUG_FIRST = new Set(['bring-to-front', 'grab-tab', 'release-tab']);
-const TOP_LEVEL = new Set(['new-session', 'resume', 'delete-session', 'list', 'list-tabs',
-                           'identify', 'extension-status', 'restart', 'help', '--help', '-h']);
-const FLAGS = new Set(['--profile', '--keep', '--duplicate', '--json']);
+const SLUG_FIRST_NAMES = ['bring-to-front', 'grab-tab', 'release-tab'];
+const SLUG_FIRST = new Set(SLUG_FIRST_NAMES);
+const TOP_LEVEL_NAMES = ['new-session', 'resume', 'delete-session', 'list', 'list-tabs',
+                         'identify', 'extension-status', 'restart', 'help'];
+const TOP_LEVEL = new Set([...TOP_LEVEL_NAMES, '--help', '-h']);
+// Which flags each verb actually reads. A flag the verb ignores is an error, not a silent drop:
+// `bb delete-session foo --profile Work` looked like it disambiguated a profile and did not.
+const VERB_FLAGS = {
+  'new-session': ['profile'], resume: [], 'delete-session': ['keep'], list: [],
+  'list-tabs': ['profile'], identify: ['profile'], 'extension-status': [], restart: [],
+  'bring-to-front': [], 'grab-tab': ['duplicate'], 'release-tab': ['duplicate'],
+};
+const VALUE_FLAGS = new Set(['profile']);        // take a value; the rest are booleans
+const GLOBAL_FLAGS = ['json'];                   // output shape, valid on every verb
+// Reserved on both sides: a slug named `list` shadows every slug-first verb, and a slug named
+// `grab-tab` is unreachable the other way. Rejecting at creation is the one fix for both.
+const RESERVED = new Set([...TOP_LEVEL_NAMES, ...SLUG_FIRST_NAMES]);
 
 const HELP = `browser-blitz — Chrome sessions for Playwright
 
@@ -41,21 +54,27 @@ Driving is Playwright:
 
 const die = (msg, code = 1) => { console.error(`browser-blitz: ${msg}`); process.exit(code); };
 
-function parse(argv) {
+function parse(argv, cmd) {
+  const allowed = [...(VERB_FLAGS[cmd] || []), ...GLOBAL_FLAGS];
   const opts = {}; const words = [];
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
-    if (t.startsWith('--')) {
+    // Any leading dash is a flag. Gating on '--' meant `-keep` parsed as a POSITIONAL, so
+    // `bb delete-session work -keep` silently closed the tabs it was meant to preserve.
+    if (t.startsWith('-')) {
       const eq = t.indexOf('=');
-      const name = eq < 0 ? t : t.slice(0, eq);
-      if (!FLAGS.has(name)) die(`unknown flag '${name}'`, 2);
-      if (name === '--profile') {
-        // A flag's VALUE must never be read as a positional: `--profile Work foo` once created a
-        // session named Work.
+      const raw = eq < 0 ? t : t.slice(0, eq);
+      const name = raw.replace(/^-+/, '');
+      if (!allowed.includes(name)) {
+        die(`'${cmd}' takes ${allowed.map((f) => '--' + f).join(', ')}, not '${raw}'`, 2);
+      }
+      if (!raw.startsWith('--')) die(`use '--${name}', not '${raw}'`, 2);
+      if (VALUE_FLAGS.has(name)) {
         const v = eq < 0 ? argv[++i] : t.slice(eq + 1);
-        if (v == null) die('--profile needs a value', 2);
-        opts.profile = v;
-      } else opts[name.slice(2)] = true;
+        // A value that is itself a flag means the real value was forgotten.
+        if (v == null || v === '' || v.startsWith('-')) die(`--${name} needs a value`, 2);
+        opts[name] = v;
+      } else opts[name] = true;
     } else words.push(t);
   }
   return { opts, words };
@@ -94,8 +113,11 @@ async function main() {
 
   if (cmd === 'help' || cmd === '--help' || cmd === '-h') { console.log(HELP); return; }
 
+  const { opts, words } = parse(rest, cmd);
+
   // Deliberately not sent through the shim, so it works when the shim is wedged.
   if (cmd === 'restart') {
+    if (words.length) die(`restart takes no arguments, got '${words[0]}'`, 2);
     const { execFileSync } = require('child_process');
     const fs = require('fs');
     const before = (() => { try { return fs.statSync(SOCK).ino; } catch { return 0; } })();
@@ -111,19 +133,27 @@ async function main() {
     die('shim did not come back — see ~/.local/state/browser-blitz/shim.err');
   }
 
-  const { opts, words } = parse(rest);
   const a = { cmd, slug, ...opts };
 
   if (['new-session', 'resume', 'delete-session'].includes(cmd)) {
     if (!words.length) die(`${cmd} needs a slug`, 2);
+    if (words.length > 1) die(`${cmd} takes one slug, got '${words.join(' ')}'`, 2);
     a.slug = words[0];
+    if (cmd === 'new-session' && RESERVED.has(a.slug)) {
+      die(`'${a.slug}' is a command name — a session called that would be unreachable`, 2);
+    }
+  } else if (!SLUG_FIRST.has(cmd) && words.length) {
+    die(`'${cmd}' takes no arguments, got '${words.join(' ')}'`, 2);
   }
   if (cmd === 'grab-tab' || cmd === 'release-tab') {
     // Whitespace-split: tab ids are contiguous tokens, and a pasted multi-line block arrives as
     // one argv entry.
-    const ids = words.flatMap((x) => x.split(/\s+/)).filter(Boolean).map(Number);
-    if (!ids.length || ids.some(Number.isNaN)) die(`${cmd} needs one or more numeric tab ids`, 2);
-    a.tabIds = ids;
+    const toks = words.flatMap((x) => x.split(/\s+/)).filter(Boolean);
+    // Strictly digits. Number() accepted -5, 4711.9, 0x10 and Infinity, and the shim forwarded
+    // them straight to chrome.tabs.group.
+    const bad = toks.find((t) => !/^\d+$/.test(t));
+    if (!toks.length || bad) die(`${cmd} needs whole-number tab ids (see 'bb list-tabs')${bad ? `, got '${bad}'` : ''}`, 2);
+    a.tabIds = toks.map(Number);
   }
   if (SLUG_FIRST.has(cmd) && !a.slug) die(`'${cmd}' acts on a session — use: bb <slug> ${cmd} …`, 2);
 
@@ -145,7 +175,7 @@ async function main() {
     console.log('\nconnected:'); table(res.connected.length ? res.connected : [{ identity: '(none)' }]);
     return;
   }
-  if (res && res.results) return table(res.results);
+  if (res && res.results) { table(res.results); return; }
   if (res && res.nothing) { console.log('nothing to close'); return; }
   if (Array.isArray(res)) return table(res);
   table([res]);

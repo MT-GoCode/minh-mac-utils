@@ -32,6 +32,9 @@ let owned = new Map();          // groupId -> slug   (mirror of chrome.storage.s
 // chose, it is a property of the live browser, and a worker restart re-derives it on the next push.
 const attached = new Set();     // tabId
 const failed = new Map();       // tabId -> human reason
+// Cold-launch handshake tabs we reported via findTab. Worker memory: a launch tab never outlives
+// the worker in any way that matters, and a persisted list would be a standing exemption.
+const launchTabs = new Set();
 let lastSent = null;
 let pushTimer = null;
 
@@ -101,7 +104,15 @@ function attachReason(msg) {
   return msg;   // verbatim: attach errors are free-text, not codes. Codify only what we see.
 }
 
+const attaching = new Map();    // tabId -> in-flight promise
 async function tryAttach(tabId) {
+  if (attaching.has(tabId)) return attaching.get(tabId);
+  const p = attachOnce(tabId).finally(() => attaching.delete(tabId));
+  attaching.set(tabId, p);
+  return p;
+}
+
+async function attachOnce(tabId) {
   // Clear on the early return too: if a tab reached `failed` before `ready` hydrated, nothing
   // else removes it — sweepAttach only prunes tabs that LEFT the session, and onDetach never
   // fires for an attachment we never made.
@@ -174,6 +185,18 @@ async function sweepAttach(sessionTabs) {
     if (await chrome.debugger.detach({ tabId: id }).then(() => true, () => false)) attached.delete(id);
   }
   for (const id of [...failed.keys()]) if (!sessionTabs.has(id)) failed.delete(id);
+
+  // `attached` is worker memory and starts empty after every restart, so the loop above cannot
+  // see an attachment that outlived the worker — a tab dragged out of a session while we were
+  // dead keeps our debugger session, and its banner, forever. Ask Chrome instead. detach only
+  // succeeds on a session WE hold, so this releases our orphans and leaves DevTools alone.
+  const targets = await chrome.debugger.getTargets().catch(() => []);
+  for (const t of targets) {
+    if (t.type !== 'page' || !t.attached || t.tabId == null) continue;
+    if (sessionTabs.has(t.tabId) || attached.has(t.tabId)) continue;
+    await chrome.debugger.detach({ tabId: t.tabId }).catch(() => {});
+  }
+
   for (const id of sessionTabs) await tryAttach(id);
 }
 
@@ -269,6 +292,10 @@ async function handle(m) {
     // asks every connected profile whether it has that tab. Only one does.
     case 'findTab': {
       const hit = (await chrome.tabs.query({})).find((t) => (t.url || t.pendingUrl || '').includes(m.token));
+      // Remember exactly what we handed out. The launch tab is ungrouped by definition, so the
+      // membership fence would otherwise block the shim from cleaning up its own handshake tab —
+      // and widening the fence to "any ungrouped tab" would be a hole big enough to drive through.
+      if (hit) launchTabs.add(hit.id);
       return hit ? { tabId: hit.id, windowId: hit.windowId } : { tabId: null };
     }
 
@@ -324,13 +351,16 @@ async function handle(m) {
       if (gid == null) return { closed: false };
       const tabs = await chrome.tabs.query({ groupId: gid });
       const ids = tabs.map((t) => t.id);
+      // Per-id and catch-and-continue. One tab closing between the query and the call (the user,
+      // or window.close()) used to reject the whole remove AFTER the ungroup had landed, orphaning
+      // every other tab outside any group with the session still recorded.
       // Ungroup FIRST, always. Since Chrome 131 closing a populated group saves it and pins it to
       // the bookmarks bar, so a session per task quietly fills that bar with dead groups. Emptying
       // the group by ungrouping deletes it instead of closing it. Chrome exposes no API for saved
       // groups, so this is prevention only — existing ones have to be removed by hand, or hidden
       // with right-click the bookmarks bar -> uncheck "Show tab groups".
-      if (ids.length) await chrome.tabs.ungroup(ids);
-      if (!m.keepTabs && ids.length) await chrome.tabs.remove(ids);
+      for (const id of ids) await chrome.tabs.ungroup(id).catch(() => {});
+      if (!m.keepTabs) for (const id of ids) await chrome.tabs.remove(id).catch(() => {});
       owned.delete(gid); saveOwned();
       return { closed: true, tabCount: tabs.length };
     }
@@ -342,12 +372,15 @@ async function handle(m) {
       const gid = await requireGroup(m.slug);
       const dest = (await chrome.tabs.query({ groupId: gid }))[0];
       const all = await chrome.tabs.query({});
+      // Read the slug from the group TITLE, like every other lookup in this file. `owned` is
+      // hydrated by tidy(), and a grab can land before the first push has run one.
+      const titles = new Map((await sortedGroups()).map((g) => [g.id, slugFromTitle(g.title)]));
       const sizes = new Map();
       for (const t of all) sizes.set(t.groupId, (sizes.get(t.groupId) || 0) + 1);
       const takingFrom = new Map();
       for (const id of new Set(m.tabIds)) {
         const t = all.find((x) => x.id === id);
-        if (t && t.groupId !== gid && t.groupId !== -1) {
+        if (t && t.groupId !== gid && titles.get(t.groupId)) {
           takingFrom.set(t.groupId, (takingFrom.get(t.groupId) || 0) + 1);
         }
       }
@@ -355,7 +388,7 @@ async function handle(m) {
       for (const id of new Set(m.tabIds)) {
         const t = all.find((x) => x.id === id);
         if (!t) { out.push({ tabId: id, ok: false, reason: `no tab ${id}` }); continue; }
-        const from = owned.get(t.groupId) || null;
+        const from = titles.get(t.groupId) || null;
         if (!m.duplicate && from && takingFrom.get(t.groupId) >= (sizes.get(t.groupId) || 0)) {
           out.push({ tabId: id, ok: false, reason:
             `that would take every tab of session '${from}' — delete-session it instead, or use --duplicate` });
@@ -370,7 +403,7 @@ async function handle(m) {
           out.push({ tabId: move, ok: true, from });
         } catch (e) { out.push({ tabId: id, ok: false, reason: String((e && e.message) || e) }); }
       }
-      await dropBlanks(gid);
+      await dropBlanks(gid, new Set(out.filter((o) => o.ok).map((o) => o.tabId)));
       return { results: out };
     }
 
@@ -406,7 +439,13 @@ async function handle(m) {
     }
 
     // --------------------------------------------------- CDP relay (used by the shim's endpoint)
-    case 'cdp': return { result: await sendCdp(m.tabId, m.method, m.params, m.sessionId) };
+    //
+    // Every tab-addressed command re-checks group membership HERE. The shim's per-client session
+    // map used to be the only fence, which meant anything that got a tabId into that map reached
+    // the whole profile — and sendCdp would happily tryAttach a tab we were never given.
+    // Defence in depth: the extension is the only place that can see the groups, so it is the
+    // only place the fence can actually be enforced.
+    case 'cdp': return { result: await sendCdp(await inSession(m.slug, m.tabId), m.method, m.params, m.sessionId) };
 
     case 'createTabInGroup': {
       const gid = await requireGroup(m.slug);
@@ -420,10 +459,11 @@ async function handle(m) {
       return { tabId: t.id, windowId: t.windowId };
     }
 
-    case 'closeTab': { await chrome.tabs.remove(m.tabId); return { closed: true }; }
+    case 'closeTab': { await chrome.tabs.remove(await inSession(m.slug, m.tabId)); return { closed: true }; }
     case 'activateTab': {
-      const t = await chrome.tabs.get(m.tabId);
-      await chrome.tabs.update(m.tabId, { active: true });
+      const id = await inSession(m.slug, m.tabId);
+      const t = await chrome.tabs.get(id);
+      await chrome.tabs.update(id, { active: true });
       return { changed: !t.active };
     }
 
@@ -434,12 +474,30 @@ async function handle(m) {
 // Drops the blank placeholder once a group has real tabs. Called at the END of commands that add
 // tabs, never from the push path: a push can fire mid-move, when the placeholder still reads
 // about:blank, and the sweep would close the tab about to become the first real one.
-async function dropBlanks(groupId, exceptId = null) {
-  const tabs = (await chrome.tabs.query({ groupId })).filter((t) => t.id !== exceptId);
+async function dropBlanks(groupId, keep = new Set()) {
+  // `keep` is what the caller just added and already reported success for — closing one of those
+  // would make that reply a lie.
+  const tabs = (await chrome.tabs.query({ groupId }).catch(() => [])).filter((t) => !keep.has(t.id));
   if (tabs.length < 2) return;                      // never empty a group; Chrome deletes it
   const blank = tabs.filter((t) => (t.url || t.pendingUrl || '') === 'about:blank');
   const kill = blank.length === tabs.length ? blank.slice(1) : blank;   // all blank? keep one
   if (kill.length) await chrome.tabs.remove(kill.map((t) => t.id)).catch(() => {});
+}
+
+// Returns the tabId only if it really is in that session's group. `slug` is optional: with none,
+// membership of ANY ⚙ group is enough (the launch tab during a cold-launch handshake has no slug
+// yet). Never trust a tabId that arrived over the wire.
+async function inSession(slug, tabId) {
+  const id = Number(tabId);
+  if (slug == null && launchTabs.has(id)) { launchTabs.delete(id); return id; }   // our own handshake tab, once
+  const t = await chrome.tabs.get(id).catch(() => null);
+  if (!t) throw new Error(`no tab ${tabId}`);
+  const gid = slug ? await groupForSlug(slug) : null;
+  if (slug != null && gid == null) throw new Error(`no session '${slug}' here`);
+  if (slug != null ? t.groupId !== gid : !owned.has(t.groupId)) {
+    throw new Error(`tab ${tabId} is not in ${slug ? `session '${slug}'` : 'any session'} — grab-tab it first`);
+  }
+  return id;
 }
 
 async function requireGroup(slug) {
@@ -522,6 +580,15 @@ for (const ev of [chrome.tabs.onCreated, chrome.tabs.onRemoved, chrome.tabs.onUp
 }
 // Tab creation is also the cold-launch wake signal, so it must reconnect as well as push.
 chrome.tabs.onCreated.addListener(() => connect());
+
+// A prerender or back-forward activation replaces the tab, and its id with it. Without this every
+// map here (and the shim's frameIds, keyed off the same id) keeps pointing at a tab that is gone.
+chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
+  if (attached.delete(removedTabId)) attached.add(addedTabId);
+  if (failed.has(removedTabId)) { failed.set(addedTabId, failed.get(removedTabId)); failed.delete(removedTabId); }
+  launchTabs.delete(removedTabId);
+  schedulePush();
+});
 
 // Rename defence. Chrome has no pre-update hook, so this is revert, not prevention — there is a
 // visible snap-back. It only works while the worker is running, which is why the shim pings
