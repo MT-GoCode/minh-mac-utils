@@ -27,9 +27,9 @@ things, send things or delete things without being asked to.
 
 ## Rule 1 — chain. This is the single biggest thing.
 
-`playwright-cli` costs a few hundred ms per invocation regardless of what it does, so N commands
-is N startups. **Measured: 10 calls as 10 invocations = 710 ms; the same 10 chained inside one
-call = 65 ms. 11x.**
+`playwright-cli` costs most of a second per invocation regardless of what it does, so N commands
+is N startups. **Measured on this machine: the same ten reads as ten invocations = 9.4 s; chained
+inside one `run-code` = 1.1 s. 8x.**
 
 So do not do this:
 
@@ -64,7 +64,7 @@ On an unfamiliar page take **one** snapshot first, read the real names, then wri
 `run-code`. Don't snapshot between every action.
 
 ```bash
-playwright-cli -s=work snapshot            # writes a .yml to disk, prints the path
+playwright-cli -s=work snapshot            # prints the tree INLINE — 5-15k tokens on a real page
 playwright-cli -s=work find "Add to cart"  # grep the snapshot with context — cheaper than reading it
 ```
 
@@ -79,8 +79,8 @@ page. Running it to confirm a click worked is the most common waste there is.
   expect(locator).toBeVisible()`. A failure is an error you can read, not a page you have to.
 - **`find` greps the snapshot** with surrounding context, far cheaper than reading it:
   `playwright-cli -s=<slug> find "Add to cart"`
-- **`snapshot --filename=x.yml`** writes it to disk instead of printing it, when you want it
-  saved rather than read.
+- **`snapshot --filename=x.md`** writes it to disk (as markdown) instead of returning it, when you
+  want it saved rather than read.
 
 If you really must compare two page states, save both and `diff` them — but note a full-page
 navigation makes the diff *larger* than the page, so only do this for in-page changes:
@@ -96,7 +96,7 @@ diff /tmp/before.yml /tmp/after.yml
 
 `open` launches a **new** Playwright browser and detaches the session from the user's Chrome —
 losing every login, which is the entire point of this tool. Same for `--browser`, `--profile`,
-`--persistent` and `--mobile`, which are all options of `open`.
+`--persistent`, `--mobile`, `--device` and `--headed` — they are all options of `open`.
 
 A bb session is already an open tab in the user's real browser. You navigate it with
 `page.goto(...)` inside `run-code`. There is no open step.
@@ -160,15 +160,22 @@ to the user's whole profile, and every site they are signed into.
 | `state-save` | Writes **every cookie in the profile** to a file on disk. |
 | `state-load` | Injects a cookie jar into the user's real profile. |
 | `localstorage-clear` / `sessionstorage-clear` | Wipes real site data for the current origin. |
+| `localstorage-set` / `localstorage-delete` | Edits real site data for the current origin. bb does NOT refuse these — verified: `localstorage-set` wrote and read back on a live page. |
+| `sessionstorage-set` / `sessionstorage-delete` | Same, for session storage. |
 | `network-state-set offline` | Takes the browser offline — including the tabs the user is reading. |
 | `route` / `unroute` | Intercepts and mocks requests. Fine on a throwaway browser; on the user's real one it silently changes what they see. |
 | `resize` | Resizes the user's actual window. |
 
-`cookie-list`, `cookie-get`, `localstorage-get/list` are **reads** and are fine.
+`cookie-list`, `cookie-get`, `localstorage-get/list`, `sessionstorage-get/list` and `route-list`
+are **reads** and are fine.
+
+Raw CDP is closed to you: `context.newCDPSession()` fails with `Target.attachToBrowserTarget: Not
+allowed`, so you cannot reach around the fence that way even by accident.
 
 ### Careful — these hang or surprise
 
-`pause-at`, `resume`, `step-over` are the debugger — they stop execution and wait. `show` opens a
+`pause-at`, `playwright-cli resume` and `step-over` are the debugger — they stop execution and
+wait. (Unrelated to `bb resume`, which reopens a closed session and is safe.) `show` opens a
 dashboard the user has to interact with. `dialog-accept`/`dialog-dismiss` answer a real dialog, so
 only use them when you know one is open.
 
