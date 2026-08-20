@@ -617,17 +617,27 @@ cdpServer.listen(CDP_PORT, '127.0.0.1');
 //
 // A slug is bindable exactly while its group is live. The shim owns this so the model never has
 // to run setup: `bb new-session work` and `playwright-cli -s=work run-code …` is the whole loop.
-// Slugs we have run `attach` for. ONE attempt each, for the shim's lifetime — this is not a
-// liveness record and nothing re-binds. An attach that fails is logged and left alone: retrying
-// is a hot loop, because `playwright-cli attach` opens a page as part of connecting, so a
-// failing bind mints a fresh about:blank in the user's group on every retry. If a session ends
-// up unattached, `bb resume <slug>` or `bb restart` is the fix.
-const attached = new Set();
+// Slugs we have run `attach` for. Not a liveness record — a daemon that dies is gone for good
+// (see the poisoning note in custom-skill.md), and nothing here can bring it back.
+//
+// Retries are BOUNDED, not absent. Retrying on every push is what minted a fresh about:blank in
+// the user's group several times a second, because `attach` opens a page as part of connecting —
+// but never retrying meant one transient failure (playwright-cli mid-upgrade, a shim restart
+// landing mid-attach) killed the session for the shim's lifetime, with `bb list` still
+// advertising a CDP url. A handful of spaced attempts costs at most BIND_TRIES stray tabs in the
+// worst case and recovers every transient failure.
+const attached = new Set();        // slug -> attach succeeded, or we gave up trying
+const bindTries = new Map();       // slug -> attempts so far
+const bindLastAt = new Map();      // slug -> when we last tried
+const BIND_TRIES = 3;
+const BIND_GAP_MS = 20000;
+
+const PW_TIMEOUT_MS = 20000;    // a detach on a dead slug hangs forever otherwise
 
 const cdpUrlFor = (slug) => `http://127.0.0.1:${CDP_PORT}/${encodeURIComponent(slug)}`;
 
 async function pw(args) {
-  try { const r = await execFile(PW, args); return { ok: true, out: r.stdout }; }
+  try { const r = await execFile(PW, args, { timeout: PW_TIMEOUT_MS }); return { ok: true, out: r.stdout }; }
   catch (e) {
     // stderr, not e.message: execFile's message is the command line, which says nothing.
     // stderr first. Falling back to stdout stored playwright-cli's SUCCESS banner as the failure
@@ -640,13 +650,22 @@ async function pw(args) {
 
 async function bind(slug) {
   if (attached.has(slug)) return;
-  attached.add(slug);                    // marked before the await: one attempt even if it fails
+  const n = bindTries.get(slug) || 0;
+  if (n >= BIND_TRIES) return;
+  const last = bindLastAt.get(slug) || 0;
+  if (n && Date.now() - last < BIND_GAP_MS) return;   // spaced out, so a push storm is one try
+  bindTries.set(slug, n + 1);
+  bindLastAt.set(slug, Date.now());
+  attached.add(slug);                                 // held during the await: pushes race here
   const r = await pw(['-s=' + slug, 'attach', '--cdp=' + cdpUrlFor(slug)]);
-  if (r.ok) log('◆ attached', { slug });
-  else log('! attach failed', { slug, error: r.error });
+  if (r.ok) { log('◆ attached', { slug }); return; }
+  attached.delete(slug);
+  const giveUp = n + 1 >= BIND_TRIES;
+  log(giveUp ? '! attach failed, giving up' : '! attach failed, will retry', { slug, error: r.error });
 }
 
 async function unbind(slug) {
+  bindTries.delete(slug); bindLastAt.delete(slug);
   if (!attached.delete(slug)) return;
   await pw(['-s=' + slug, 'detach']);
   log('◆ detached', { slug });
@@ -764,9 +783,11 @@ const cli = {
       if (p.launchTabId != null) used.consumed = true;
       state.sessions.push({ slug: a.slug, profileDir: dir, createdAt: new Date().toISOString(), tabs: [] });
       saveState();
-      // Not ...r.result: that spreads the extension's groupId/tabId/windowId/tabCount into
-      // the CLI table, which is debug output for a command whose answer is 'here is your session'.
-      return { slug: a.slug, profile: dir, cdp: cdpUrlFor(a.slug) };
+      // Not ...r.result: groupId/tabId/windowId/tabCount are debug output for a command whose
+      // answer is 'here is your session'. `adopted` is NOT debug output — it is the only sign
+      // that Chrome handed us a pre-existing ⚙ group full of the user's tabs rather than a fresh
+      // one, and resume reports it for the same reason.
+      return { slug: a.slug, profile: dir, adopted: !!(r.result && r.result.adopted), cdp: cdpUrlFor(a.slug) };
     });
   }),
 
@@ -822,13 +843,19 @@ const cli = {
       const status = !connected ? 'UNKNOWN' : live ? 'LIVE' : 'CLOSED';
       return { slug: rec.slug, profile: rec.profileDir, status,
                tabs: live ? live.tabs.length : (rec.tabs.length ? `${rec.tabs.length} saved` : ''),
+               // A CONNECTED CDP SOCKET, not a remembered intention. The old BOUND column read
+               // from `bound`, which only recorded that `attach` once exited 0 — so it said yes
+               // for a daemon that had since died, and the session hung with no warning. This
+               // drops the moment the daemon's socket closes, which is the only honest signal
+               // the shim has.
+               driver: clientsOf(rec.slug).size ? 'connected' : '',
                cdp: status === 'LIVE' ? cdpUrlFor(rec.slug) : '' };
     });
     const known = new Set(state.sessions.map((s) => s.slug));
     for (const [dir, m] of mirrors) {
       if (!isConnected(dir)) continue;
       for (const s of m.sessions) {
-        if (!known.has(s.slug)) rows.push({ slug: s.slug, profile: dir, status: 'UNTRACKED', tabs: s.tabs.length, cdp: '' });
+        if (!known.has(s.slug)) rows.push({ slug: s.slug, profile: dir, status: 'UNTRACKED', tabs: s.tabs.length, driver: '', cdp: '' });
       }
     }
     return rows;

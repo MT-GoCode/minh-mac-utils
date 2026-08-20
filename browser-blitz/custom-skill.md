@@ -144,7 +144,7 @@ right there, which is the whole reason you are driving their browser and not a h
 bb new-session work [--profile Default]   open a ⚙ group and bind playwright-cli -s=work
 bb resume work                            bring a closed session back (adopts it if Chrome restored it)
 bb delete-session work [--keep]           close the group; --keep leaves the tabs, ungrouped
-bb list                                   slug, profile, status, tab count, CDP url
+bb list                                   slug, profile, status, tab count, driver, CDP url
 bb list-tabs [--profile Default]          every tab in the profile + which session owns it
                                           — the ONLY way to find a tabId for grab-tab
 bb identify [--profile "Profile 1"]       wake and identify a profile, create nothing
@@ -157,7 +157,9 @@ bb work grab-tab 4711                     MOVE it — it leaves the user's windo
 bb work release-tab 4711                  hand a tab back out (it stays open, just ungrouped)
 ```
 
-`bb list` statuses: **LIVE** (group is open) · **CLOSED** (profile visible, group gone — `resume`
+`bb list`'s **DRIVER** column says `connected` when a playwright-cli daemon is holding the
+session's CDP socket right now. Empty means nothing is driving it — the session is poisoned and
+`delete-session` + `new-session` is the way back. Statuses: **LIVE** (group is open) · **CLOSED** (profile visible, group gone — `resume`
 it) · **UNKNOWN** (that Chrome profile isn't running) · **UNTRACKED** (a `⚙` group with no record).
 
 ## Commands you must NOT run
