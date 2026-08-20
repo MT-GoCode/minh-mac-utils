@@ -1,0 +1,133 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - link [ref=e5] [cursor=pointer]:
+        - /url: /
+        - img "Homepage" [ref=e6]
+      - generic [ref=e7]:
+        - list:
+          - listitem [ref=e8]:
+            - link "Domains" [ref=e9] [cursor=pointer]:
+              - /url: /domains
+          - listitem [ref=e10]:
+            - link "Protocols" [ref=e11] [cursor=pointer]:
+              - /url: /protocols
+          - listitem [ref=e12]:
+            - link "Numbers" [ref=e13] [cursor=pointer]:
+              - /url: /numbers
+          - listitem [ref=e14]:
+            - link "About" [ref=e15] [cursor=pointer]:
+              - /url: /about
+  - article [ref=e17]:
+    - main [ref=e18]:
+      - list [ref=e19]:
+        - listitem [ref=e20]:
+          - link "← Instructions and Guides" [ref=e21] [cursor=pointer]:
+            - /url: /help
+      - heading "Example Domains" [level=1] [ref=e22]
+      - generic [ref=e24]:
+        - paragraph [ref=e25]:
+          - text: As described in
+          - link "RFC 2606" [ref=e26] [cursor=pointer]:
+            - /url: /go/rfc2606
+          - text: and
+          - link "RFC 6761" [ref=e27] [cursor=pointer]:
+            - /url: /go/rfc6761
+          - text: ", a number of domains such as example.com and example.org are maintained for documentation purposes. These domains may be used as illustrative examples in documents without prior coordination with us. They are not available for registration or transfer."
+        - paragraph [ref=e28]: We provide a web service on the example domain hosts to provide basic information on the purpose of the domain. These web services are provided as best effort, but are not designed to support production applications. While incidental traffic for incorrectly configured applications is expected, please do not design applications that require the example domains to have operating HTTP service.
+        - heading "Further Reading" [level=2] [ref=e29]
+        - list [ref=e30]:
+          - listitem [ref=e31]:
+            - link "IANA-managed Reserved Domains" [ref=e32] [cursor=pointer]:
+              - /url: /domains/reserved
+        - generic [ref=e33]:
+          - text: Last revised
+          - time [ref=e34]: 9 years ago
+          - text: .
+    - navigation
+  - contentinfo [ref=e35]:
+    - generic [ref=e36]:
+      - table [ref=e37]:
+        - rowgroup [ref=e38]:
+          - row [ref=e39]:
+            - cell [ref=e40]:
+              - link "Domain Names" [ref=e41] [cursor=pointer]:
+                - /url: /domains
+            - cell [ref=e42]:
+              - list:
+                - listitem [ref=e43]:
+                  - link "Root Zone Registry" [ref=e44] [cursor=pointer]:
+                    - /url: /domains/root
+                - listitem [ref=e45]:
+                  - link ".INT Registry" [ref=e46] [cursor=pointer]:
+                    - /url: /domains/int
+                - listitem [ref=e47]:
+                  - link ".ARPA Registry" [ref=e48] [cursor=pointer]:
+                    - /url: /domains/arpa
+                - listitem [ref=e49]:
+                  - link "IDN Repository" [ref=e50] [cursor=pointer]:
+                    - /url: /domains/idn-tables
+          - row [ref=e51]:
+            - cell [ref=e52]:
+              - link "Number Resources" [ref=e53] [cursor=pointer]:
+                - /url: /numbers
+            - cell [ref=e54]:
+              - list:
+                - listitem [ref=e55]:
+                  - link "Number Registries" [ref=e56] [cursor=pointer]:
+                    - /url: /numbers/registries
+                - listitem [ref=e57]:
+                  - link "RIR Allocation Data" [ref=e58] [cursor=pointer]:
+                    - /url: /numbers/allocations/
+                - listitem [ref=e59]:
+                  - link "Abuse Information" [ref=e60] [cursor=pointer]:
+                    - /url: /help/abuse
+          - row [ref=e61]:
+            - cell [ref=e62]:
+              - link "Protocols" [ref=e63] [cursor=pointer]:
+                - /url: /protocols
+            - cell [ref=e64]:
+              - list:
+                - listitem [ref=e65]:
+                  - link "Protocol Registries" [ref=e66] [cursor=pointer]:
+                    - /url: /protocols
+                - listitem [ref=e67]:
+                  - link "Time Zone Database" [ref=e68] [cursor=pointer]:
+                    - /url: /time-zones
+          - row [ref=e69]:
+            - cell [ref=e70]:
+              - link "About Us" [ref=e71] [cursor=pointer]:
+                - /url: /about
+            - cell [ref=e72]:
+              - list:
+                - listitem [ref=e73]:
+                  - link "News" [ref=e74] [cursor=pointer]:
+                    - /url: /news
+                - listitem [ref=e75]:
+                  - link "Performance" [ref=e76] [cursor=pointer]:
+                    - /url: /performance
+                - listitem [ref=e77]:
+                  - link "The Organization" [ref=e78] [cursor=pointer]:
+                    - /url: /about/organization
+                - listitem [ref=e79]:
+                  - link "Archive" [ref=e80] [cursor=pointer]:
+                    - /url: /archive
+                - listitem [ref=e81]:
+                  - link "Contact Us" [ref=e82] [cursor=pointer]:
+                    - /url: /contact
+      - paragraph [ref=e84]:
+        - text: The IANA functions coordinate the Internet’s globally unique identifiers, and are provided by
+        - link "Public Technical Identifiers" [ref=e85] [cursor=pointer]:
+          - /url: https://pti.icann.org
+        - text: ", an affiliate of"
+        - link "ICANN" [ref=e86] [cursor=pointer]:
+          - /url: https://www.icann.org/
+        - text: .
+      - generic [ref=e87]:
+        - list:
+          - listitem [ref=e88]:
+            - link "Privacy Policy" [ref=e89] [cursor=pointer]:
+              - /url: https://www.icann.org/privacy/policy
+          - listitem [ref=e90]:
+            - link "Terms of Service" [ref=e91] [cursor=pointer]:
+              - /url: https://www.icann.org/privacy/tos

@@ -254,7 +254,7 @@ function onSessions(identityId, sessions) {
   // live; anything else and `playwright-cli -s=<slug>` should not be pointing at a dead endpoint.
   syncPlaywright(dir, new Set(sessions.map((s) => s.slug)));
   // A tab that joined or left an attached slug has to be announced to the connected client.
-  for (const s of sessions) reconcileTargets(s.slug, s.tabs);
+  for (const s of sessions) reconcileTargets(s.slug, s.tabs).catch(() => {});
 }
 
 // ---------------------------------------------------------------- CDP endpoint
@@ -266,23 +266,55 @@ function onSessions(identityId, sessions) {
 const clients = new Map();    // slug -> Set<{ ws, sessions:Map<sessionId,tabId>, autoAttach:bool }>
 
 const sidFor = (tabId) => 'S-' + tabId;
+
+// Chrome guarantees a page target's id EQUALS its main frame's id, and Playwright depends on it:
+// crPage.js keys _sessions by frame id but registers the main session under the TARGET id, then
+// _sessionForFrame walks up from the frame and throws "Frame has been detached." when the lookup
+// misses. Using tabId as the targetId broke that invariant, so every page was born detached.
+// So: learn each tab's real main-frame id and use THAT as its target id.
+const frameIds = new Map();     // tabId -> main frame id
+const tabForFrame = (fid) => [...frameIds].find(([, f]) => f === fid)?.[0] ?? null;
+
+async function learnFrameId(dir, tabId) {
+  if (frameIds.has(tabId)) return frameIds.get(tabId);
+  const eid = liveIdFor(dir);
+  if (!eid) return null;
+  const r = await callExt(eid, { type: 'cdp', tabId, method: 'Page.getFrameTree', params: {} });
+  const fid = r.ok && r.result && r.result.result && r.result.result.frameTree
+    && r.result.result.frameTree.frame && r.result.result.frameTree.frame.id;
+  if (fid) frameIds.set(tabId, fid);
+  return fid || null;
+}
+
+// Resolve the main frame id for every tab of a slug before announcing any of them.
+async function learnFrames(slug) {
+  const rec = sessionRecord(slug);
+  if (!rec) return;
+  await Promise.all(tabsOf(slug).map((t) => learnFrameId(rec.profileDir, t.tabId)));
+}
+
+const targetIdOf = (t) => String(frameIds.get(t.tabId) || t.tabId);
 const targetInfo = (t) => ({
-  targetId: String(t.tabId), type: 'page', title: t.title || '', url: t.url || '',
+  targetId: targetIdOf(t), type: 'page', title: t.title || '', url: t.url || '',
   attached: true, canAccessOpener: false, browserContextId: 'CTX',
 });
 
 function clientsOf(slug) { return clients.get(slug) || new Set(); }
 
+// BB_TRACE=1 logs the CDP conversation. It is how the stray-about:blank bug was found: the
+// trace showed Target.createTarget arriving 8ms after setAutoAttach, before our announce.
 function toClient(c, payload) {
+  if (process.env.BB_TRACE && payload.method) log('→ evt', { m: payload.method, sid: payload.sessionId });
   try { if (c.ws.readyState === 1) c.ws.send(JSON.stringify(payload)); } catch {}
 }
 
 // Announce tabs that joined or left a slug to every client attached to it. Playwright learns
 // about new pages ONLY through Target.attachedToTarget, so a tab opened by a click is invisible
 // to it until this fires.
-function reconcileTargets(slug, tabs) {
+async function reconcileTargets(slug, tabs) {
   const cs = clientsOf(slug);
   if (!cs.size) return;
+  await learnFrames(slug);          // same invariant as the handshake: targetId IS the frame id
   const live = new Set(tabs.map((t) => t.tabId));
   for (const c of cs) {
     if (!c.autoAttach) continue;
@@ -338,46 +370,53 @@ function browserLevel(slug, c) {
     'Target.createBrowserContext': () => ({ browserContextId: 'CTX' }),
     'Target.disposeBrowserContext': () => ({}),
     'Target.getTargets': () => ({ targetInfos: tabsOf(slug).map(targetInfo) }),
+    // No targetId means Playwright is asking about the BROWSER target, not a page. Answering
+    // with a page made it register that page AS the browser, after which the real page never got
+    // a frame model — page.url() came back '' and every goto failed "Frame has been detached".
     'Target.getTargetInfo': (p) => {
-      const tabs = tabsOf(slug);
-      const t = p && p.targetId ? tabs.find((x) => String(x.tabId) === String(p.targetId)) : tabs[0];
-      if (!t) throw new Error('no such target');
+      if (!p || !p.targetId) {
+        return { targetInfo: { targetId: 'browser', type: 'browser', title: '', url: '',
+                               attached: true, canAccessOpener: false } };
+      }
+      const want = tabForFrame(p.targetId) ?? Number(p.targetId);
+      const t = tabsOf(slug).find((x) => x.tabId === want);
+      if (!t) throw new Error(`no target ${p.targetId}`);
       return { targetInfo: targetInfo(t) };
     },
-    'Target.setDiscoverTargets': () => {
-      setTimeout(() => {
-        for (const t of tabsOf(slug)) toClient(c, { method: 'Target.targetCreated', params: { targetInfo: targetInfo(t) } });
-      }, 10);
+    'Target.setDiscoverTargets': async () => {
+      await learnFrames(slug);
+      for (const t of tabsOf(slug)) toClient(c, { method: 'Target.targetCreated', params: { targetInfo: targetInfo(t) } });
       return {};
     },
-    // THE handshake step. Playwright sends this with flatten:true and then waits for
-    // Target.attachedToTarget before it believes any page exists. The old shim answered {} and
-    // Playwright would hang here forever.
-    'Target.setAutoAttach': (p) => {
+    // THE handshake step. Playwright sends this with flatten:true and waits for
+    // Target.attachedToTarget before it believes any page exists — and gives up after ~8ms,
+    // calling Target.createTarget and minting a stray tab. So the announce goes out BEFORE this
+    // command's own response, not on a timer: frame ids are resolved first, then the events, then
+    // the reply. Anything slower loses the race.
+    'Target.setAutoAttach': async (p) => {
       if (!p || !p.autoAttach) { c.autoAttach = false; return {}; }
       c.autoAttach = true;
-      setTimeout(() => {
-        for (const t of tabsOf(slug)) {
-          if (c.sessions.has(sidFor(t.tabId))) continue;
-          c.sessions.set(sidFor(t.tabId), t.tabId);
-          toClient(c, { method: 'Target.attachedToTarget',
-            // waitingForDebugger false even though Playwright asks for true: we have no way to
-            // pause a target through chrome.debugger, and it sends runIfWaitingForDebugger next
-            // regardless. Measured working.
-            params: { sessionId: sidFor(t.tabId), targetInfo: targetInfo(t), waitingForDebugger: false } });
-        }
-      }, 10);
+      await learnFrames(slug);
+      for (const t of tabsOf(slug)) {
+        if (c.sessions.has(sidFor(t.tabId))) continue;
+        c.sessions.set(sidFor(t.tabId), t.tabId);
+        toClient(c, { method: 'Target.attachedToTarget',
+          // waitingForDebugger false even though Playwright asks for true: chrome.debugger gives
+          // us no way to pause a target, and it sends runIfWaitingForDebugger next regardless.
+          params: { sessionId: sidFor(t.tabId), targetInfo: targetInfo(t), waitingForDebugger: false } });
+      }
       return {};
     },
     'Target.attachToTarget': (p) => {
-      const sid = sidFor(p.targetId);
-      c.sessions.set(sid, Number(p.targetId));
+      const tabId = tabForFrame(p.targetId) ?? Number(p.targetId);
+      const sid = sidFor(tabId);
+      c.sessions.set(sid, tabId);
       return { sessionId: sid };
     },
     'Target.detachFromTarget': (p) => { c.sessions.delete(p.sessionId); return {}; },
     'Target.activateTarget': async (p) => {
       const id = liveIdFor(requireRecord(slug).profileDir);
-      await callExt(id, { type: 'activateTab', tabId: Number(p.targetId) });
+      await callExt(id, { type: 'activateTab', tabId: tabForFrame(p.targetId) ?? Number(p.targetId) });
       return {};
     },
     // New tabs land INSIDE the slug's group. This is the fence: a page Playwright opens cannot
@@ -386,11 +425,24 @@ function browserLevel(slug, c) {
       const id = liveIdFor(requireRecord(slug).profileDir);
       const r = await callExt(id, { type: 'createTabInGroup', slug, url: p.url });
       if (!r.ok) throw new Error(r.error);
-      return { targetId: String(r.result.tabId) };
+      const tabId = r.result.tabId;
+      const fid = await learnFrameId(requireRecord(slug).profileDir, tabId);
+      // Announce it NOW, not on the next push. newPage() waits for Target.attachedToTarget right
+      // after createTarget returns; a 120ms debounced push is far too late and it fails with
+      // "Cannot read properties of undefined (reading '_page')".
+      if (c.autoAttach && !c.sessions.has(sidFor(tabId))) {
+        c.sessions.set(sidFor(tabId), tabId);
+        toClient(c, { method: 'Target.attachedToTarget', params: {
+          sessionId: sidFor(tabId),
+          targetInfo: { targetId: String(fid || tabId), type: 'page', title: '', url: p.url || '',
+                        attached: true, canAccessOpener: false, browserContextId: 'CTX' },
+          waitingForDebugger: false } });
+      }
+      return { targetId: String(fid || tabId) };
     },
     'Target.closeTarget': async (p) => {
       const id = liveIdFor(requireRecord(slug).profileDir);
-      await callExt(id, { type: 'closeTab', tabId: Number(p.targetId) });
+      await callExt(id, { type: 'closeTab', tabId: tabForFrame(p.targetId) ?? Number(p.targetId) });
       return { success: true };
     },
     'Runtime.runIfWaitingForDebugger': () => ({}),
@@ -425,11 +477,13 @@ cdpWss.on('connection', (ws, req) => {
   if (!clients.has(slug)) clients.set(slug, new Set());
   clients.get(slug).add(c);
   const handlers = browserLevel(slug, c);
+  learnFrames(slug).catch(() => {});          // warm the cache before the handshake asks
   log('◆ cdp client', { slug });
 
   ws.on('message', async (buf) => {
     let msg; try { msg = JSON.parse(buf.toString()); } catch { return; }
     const { id, method, params = {}, sessionId } = msg;
+    if (process.env.BB_TRACE) log('← cdp', { m: method, sid: sessionId, n: tabsOf(slug).length });
     const reply = (payload) => toClient(c, { id, ...payload, ...(sessionId ? { sessionId } : {}) });
     try {
       if (handlers[method]) return reply({ result: await handlers[method](params) });
@@ -475,23 +529,35 @@ cdpServer.listen(CDP_PORT, '127.0.0.1');
 // A slug is bindable exactly while its group is live. The shim owns this so the model never has
 // to run setup: `bb new-session work` and `playwright-cli -s=work run-code …` is the whole loop.
 const bound = new Set();
+// A bind that failed is NOT retried on the next push. It used to be, and since every push
+// retries every slug that is a hot loop: `playwright-cli attach` opens a page as part of
+// connecting, so a failing bind minted a fresh about:blank in the user's group several times a
+// second. Cleared when the session goes away, so the next new-session/resume tries again.
+const bindFailed = new Map();   // slug -> reason
 
 const cdpUrlFor = (slug) => `http://127.0.0.1:${CDP_PORT}/${encodeURIComponent(slug)}`;
 
 async function pw(args) {
-  try { return { ok: true, out: (await execFile(PW, args)).stdout }; }
-  catch (e) { return { ok: false, error: String((e && e.message) || e).split('\n')[0] }; }
+  try { const r = await execFile(PW, args); return { ok: true, out: r.stdout }; }
+  catch (e) {
+    // stderr, not e.message: execFile's message is the command line, which says nothing.
+    const why = (e.stderr || e.stdout || String(e.message || e)).trim().split('\n').slice(0, 3).join(' | ');
+    return { ok: false, error: why.slice(0, 300) };
+  }
 }
 
 async function bind(slug) {
-  if (bound.has(slug)) return;
+  if (bound.has(slug) || bindFailed.has(slug)) return;
   bound.add(slug);                                   // added first: two pushes can race here
   const r = await pw(['-s=' + slug, 'attach', '--cdp=' + cdpUrlFor(slug)]);
-  if (r.ok) log('◆ bound', { slug, cdp: cdpUrlFor(slug) });
-  else { bound.delete(slug); log('! bind failed', { slug, error: r.error }); }
+  if (r.ok) { log('◆ bound', { slug }); return; }
+  bound.delete(slug);
+  bindFailed.set(slug, r.error);
+  log('! bind failed', { slug, error: r.error });    // logged ONCE, not every push
 }
 
 async function unbind(slug) {
+  bindFailed.delete(slug);
   if (!bound.has(slug)) return;
   bound.delete(slug);
   await pw(['-s=' + slug, 'detach']);
@@ -499,10 +565,14 @@ async function unbind(slug) {
 }
 
 function syncPlaywright(dir, liveSlugs) {
-  for (const slug of liveSlugs) if (!bound.has(slug)) bind(slug).catch(() => {});
-  for (const slug of [...bound]) {
+  // Only slugs WE own. An UNTRACKED ⚙ group — one whose record is gone, or a group the user
+  // titled by hand — is not ours to bind, and binding it opened tabs in a group nobody asked
+  // us to touch.
+  const ours = new Set(state.sessions.filter((s) => s.profileDir === dir).map((s) => s.slug));
+  for (const slug of liveSlugs) if (ours.has(slug)) bind(slug).catch(() => {});
+  for (const slug of [...bound, ...bindFailed.keys()]) {
     const rec = sessionRecord(slug);
-    if (rec && rec.profileDir !== dir) continue;      // another profile's push says nothing here
+    if (rec && rec.profileDir !== dir) continue;     // another profile's push says nothing here
     if (!liveSlugs.has(slug)) unbind(slug).catch(() => {});
   }
 }
@@ -657,7 +727,7 @@ const cli = {
       const status = !connected ? 'UNKNOWN' : live ? 'LIVE' : 'CLOSED';
       return { slug: rec.slug, profile: rec.profileDir, status,
                tabs: live ? live.tabs.length : (rec.tabs.length ? `${rec.tabs.length} saved` : ''),
-               bound: bound.has(rec.slug) ? 'yes' : '', cdp: status === 'LIVE' ? cdpUrlFor(rec.slug) : '' };
+               bound: bound.has(rec.slug) ? 'yes' : (bindFailed.get(rec.slug) ? 'FAILED' : ''), cdp: status === 'LIVE' ? cdpUrlFor(rec.slug) : '' };
     });
     const known = new Set(state.sessions.map((s) => s.slug));
     for (const [dir, m] of mirrors) {
