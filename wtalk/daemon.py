@@ -207,8 +207,10 @@ def prime_mic_permission():
     try:
         s = sd.InputStream(channels=1, samplerate=16000)
         s.start(); sleep(0.15); s.stop(); s.close()
-    except Exception:
-        pass
+        _log(f"mic permission primed (authorized={mic_authorized()})")
+    except Exception as e:
+        # Silently passing here meant "no dialog appeared" was indistinguishable from "it worked".
+        _log(f"WARNING: could not open the mic to trigger the TCC prompt: {e}")
 
 
 def paste(text):
@@ -451,6 +453,14 @@ class Session:
         if not len(audio):
             return {"text": "", "marked": "", "duration": 0.0, "pauses": [], "confidence": 0.0,
                     "peak": 0.0}
+        # Digital silence (an ungranted/dead mic) → skip Parakeet entirely. Inference costs the same
+        # seconds whether the audio has speech or nothing, which is why a broken mic still "buffered"
+        # for ages before showing nothing. A live mic's noise floor sits far above SILENCE_PEAK, so a
+        # genuinely quiet room is never skipped here.
+        peak = float(np.max(np.abs(audio)))
+        if peak < SILENCE_PEAK:
+            return {"text": "", "marked": "", "duration": self.duration, "pauses": [],
+                    "confidence": 0.0, "peak": peak}
         tmp = Path(tempfile.gettempdir()) / "wtalk_capture.wav"
         _write_wav(tmp, self._to16k(audio), config.TARGET_SR)
         kw = ({"chunk_duration": 300.0, "overlap_duration": 15.0}
@@ -462,7 +472,7 @@ class Session:
         conf = min((t.confidence for t in toks), default=0.0)
         out = {"text": plain, "marked": marked, "duration": self.duration,
                "pauses": pauses, "confidence": conf,
-               "peak": float(np.max(np.abs(audio)))}
+               "peak": peak}
         self.result = None          # drop refs to any MLX arrays before releasing the pool
         _clear_mlx_cache()          # return Metal buffers to the OS (else IOAccelerator grows to GBs)
         return out
