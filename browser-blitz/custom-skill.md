@@ -25,6 +25,8 @@ playwright-cli -s=work run-code "async page => { await page.goto('https://exampl
 land inside the `⚙` group and cannot escape it — but everything you do there is real. Don't buy
 things, send things or delete things without being asked to.
 
+# Do NOT run playwright attach, close, detach, browser.close, close-all, kill-all, delete-data, install, or install-browser... the browser and tab setup is ALREADY COMPLETE FOR YOU.
+
 ## Rule 1 — chain. This is the single biggest thing.
 
 `playwright-cli` costs most of a second per invocation regardless of what it does, so N commands
@@ -54,7 +56,7 @@ playwright-cli -s=work run-code "async page => {
 `run-code` gets the whole Playwright API and returns whatever you return. Loops and conditionals
 work, so a repeated sequence is written once instead of predicted N times.
 
-## Rule 2 — ground your locators, then guess
+## Rule 2 — ground your locators, then speculate
 
 `getByRole('button', { name: 'Search' })` addresses an element you have never seen, and Playwright
 resolves it at runtime with auto-waiting. On a page you know (Google, GitHub, Amazon) just write
@@ -67,6 +69,10 @@ On an unfamiliar page take **one** snapshot first, read the real names, then wri
 playwright-cli -s=work snapshot            # prints the tree INLINE — 5-15k tokens on a real page
 playwright-cli -s=work find "Add to cart"  # grep the snapshot with context — cheaper than reading it
 ```
+
+## IMPORTANT RULE 2.5 - INTELLIGENTLY SPECULATE and transform inputs and outputs
+
+Never idiotically speculate URLs or tags whatsoever on a page without some signal as to what it might be. You can use regex or other fuzzy-matching techniques, translate inputs and outputs into formats that are more easily parse-able for you such as JSON or whatever to navigate, understand, get the success, etc.
 
 ## Rule 3 — return the answer from inside the code, don't re-read the page
 
@@ -92,7 +98,7 @@ playwright-cli -s=work --raw snapshot > /tmp/after.yml
 diff /tmp/before.yml /tmp/after.yml
 ```
 
-## Rule 4 — never run `playwright-cli open`
+## Rule 4 — never run `playwright-cli open` or kill-all or any other primitive that destructively mutates the user's CDP setup.
 
 `open` launches a **new** Playwright browser and detaches the session from the user's Chrome —
 losing every login, which is the entire point of this tool. Same for `--browser`, `--profile`,
@@ -103,7 +109,7 @@ A bb session is already an open tab in the user's real browser. You navigate it 
 
 ## Rule 5 — files in and out
 
-Screenshots: pass a path.
+# Screenshots: pass a path. 
 
 ```bash
 playwright-cli -s=work run-code "async page => { await page.screenshot({ path: '/tmp/shot.png' }); return 'ok' }"
@@ -112,7 +118,9 @@ playwright-cli -s=work run-code "async page => { await page.screenshot({ path: '
 The bare `playwright-cli screenshot` saves into the shim's working directory, which is never where
 you wanted it.
 
-Downloads: if the file is public, use `curl` and skip the browser.
+# Do not try to take a screenshot of the user's Mac to diagnose the browser. That's probably not helpful because they're probably in another window.
+
+# Downloads: if the file is public, use `curl` and skip the browser, as it doesn't disrupt browser interaction and is more CLI-friendly.
 
 ```bash
 curl -fL -o /tmp/paper.pdf https://example.com/paper.pdf
@@ -169,6 +177,8 @@ A bb session is a tab group in the user's **real, logged-in Chrome**, already bo
 categories of `playwright-cli` command assume the opposite — that the browser is yours, disposable,
 and yours alone. They are not.
 
+# Do NOT run playwright attach, close, detach, browser.close, close-all, kill-all, delete-data, install, or install-browser... the browser and tab setup is ALREADY COMPLETE FOR YOU.
+
 ### Never — these break the session binding, permanently
 
 A slug is **poisoned** the moment its playwright-cli daemon is detached or killed. Re-attaching
@@ -177,16 +187,6 @@ under the same name never works: `playwright-cli list` will report `status: open
 stdout and empty stderr. Nothing re-binds — bb does not try, because trying cannot work.
 `bb resume` and `bb restart` do **not** fix it either. The only recovery is
 `bb delete-session <slug>` then `bb new-session <slug>`, which loses the tabs.
-
-
-| command | what it actually does |
-|---|---|
-| `open` | Launches a **brand-new** browser (Chrome for Testing) under that session name and detaches from the user's Chrome. No logins, no cookies, no extensions — and the slug is now poisoned. **There is no open step — a bb session is already an open tab.** |
-| `attach` | bb already attached it. Re-attaching to anything else does the same damage as `open`. |
-| `close` / `detach` / `browser.close()` | Drops the connection. It does NOT quit the user's Chrome — but it poisons the slug, and the tabs are then only reachable by deleting and recreating the session. To end a session: `bb delete-session <slug>`. |
-| `close-all` / `kill-all` | Kills **every** session on the machine, including other agents' work in progress. Never. |
-| `delete-data` | Deletes the session's user data. |
-| `install` / `install-browser` | Already done by bb's installer. |
 
 ### Never — these reach past the tab-group fence into the whole profile
 
@@ -219,7 +219,7 @@ wait. (Unrelated to `bb resume`, which reopens a closed session and is safe.) `s
 dashboard the user has to interact with. `dialog-accept`/`dialog-dismiss` answer a real dialog, so
 only use them when you know one is open.
 
-### Everything else is safe
+### Everything else is safe - use these mostly
 
 `goto` `click` `dblclick` `fill` `type` `press` `hover` `select` `check` `uncheck` `drag` `drop`
 `upload` `go-back` `go-forward` `reload` `snapshot` `find` `eval` `run-code` `screenshot` `pdf`
