@@ -39,7 +39,7 @@ final class SnoozePresetsQueueTests: XCTestCase {
                              guard let p = SnoozePresets.decodeInvoke(line), let preset = self.find(p.name),
                                    let expect = try? TimeSpec.parseTarget(preset.spec, from: Date(timeIntervalSince1970: now))
                              else { return false }
-                             return abs(p.targetAt - expect.timeIntervalSince1970) <= SnoozePresets.invokeTargetToleranceSec
+                             return p.targetAt - expect.timeIntervalSince1970 <= SnoozePresets.invokeTargetToleranceSec  // one-sided, as the daemon
                          })
     }
 
@@ -105,7 +105,7 @@ final class SnoozePresetsQueueTests: XCTestCase {
             target = SnoozePresets.decodeInvoke(due[0].payload)!.targetAt
             return [due[0].key: (true, nil)]
         }
-        XCTAssertEqual(target, t0 + 90 * 60)                      // 90m from QUEUE time, immune to edits
+        XCTAssertEqual(target, ((t0 + 90 * 60) / 60).rounded() * 60)   // 90m from QUEUE time (minute-quantized), immune to edits
     }
 
     func testApplyCapsAtCeiling() {

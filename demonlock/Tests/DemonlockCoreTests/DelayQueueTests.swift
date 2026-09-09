@@ -177,7 +177,7 @@ final class DelayQueueTests: XCTestCase {
         _ = MarkerIO.append(abortM, lines: ["", "k:nope"])     // blank must NOT wipe the queue
         XCTAssertEqual(consume(q, now: 1001), ["k:nope"])      // returned for app-side effects (relock)
         XCTAssertEqual(q.status().rows.count, 1)               // pending untouched
-        XCTAssertEqual(q.status().recent.first?.reason, "nothing pending (side effects only)")
+        XCTAssertEqual(q.status().recent.first?.reason, "no such pending key")   // typo'd key must READ as rejected
     }
 
     func testAbortedKeysReturned() {
