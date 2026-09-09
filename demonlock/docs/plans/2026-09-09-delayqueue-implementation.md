@@ -71,15 +71,16 @@ final class SmokeTests: XCTestCase {
 }
 ```
 
-- [ ] **Step 4:** Test seam: change `Paths`' path constants from `static let` to computed
-  `static var` off a single `static var root = ProcessInfo.processInfo.environment["DEMONLOCK_ROOT"] ?? ""`
-  prefix (e.g. `supportDir { root + "/Library/Application Support/Demonlock" }`). Zero behavior
-  change installed (root=""); tests set `Paths.root` to a temp dir so `Settings.mutate`,
+- [ ] **Step 4:** Test seam: `static var root = ""` on `Paths` (NO env-var read — an env override
+  would compile a path-redirect primitive into a security tool for zero benefit; tests set the var
+  directly), with ONLY `supportDir` and `rvInboxDir` becoming computed off it (`socketPath` stays
+  fixed — a temp-dir prefix can blow sockaddr_un's 104-byte limit under test). Zero behavior change
+  installed; tests set `Paths.root` to a temp dir so `Settings.mutate`,
   `LockboxStore`, `SPFile`, `SafeApps.Registry` — all Paths-hardcoded — become writable
   unprivileged. Without this, Tasks 8-10's store/flush/migration tests silently assert nothing
   (e.g. `Settings.mutate` returns silently when its lock open fails as non-root).
 - [ ] **Step 5:** Push; on Mac: `swift build && swift test` — both green, binary behaves (`.build/debug/demonlock help` prints help). (This exact restructure was trial-run in /tmp on 2026-09-09: build 2.08s, SmokeTests 1/1 passed, help prints — expect the same.)
-- [ ] **Step 5:** Commit `refactor: split DemonlockCore library + test target (no behavior change)`.
+- [ ] **Step 6:** Commit `refactor: split DemonlockCore library + test target (no behavior change)`.
 
 ### Task 2: MarkerIO — append, NDJSON consume, LOCK_NB, escaping
 
@@ -362,8 +363,14 @@ static func zonesQueue() -> DelayQueue    // kind "zones", .file(Paths.delayedZo
     is absolute and throws on ANY unknown zone; the live policy already references "451 niantic ave",
     so absolute landing validation would reject every queued doc forever, and it would disagree with
     fold's differential phase 2): `validate = { doc in syntax-parses && (unresolvedZones(doc, live) ⊆ unresolvedZones(livePolicy, live)) }`
-    using `PolicyEngine.referencedZones` (Task 6 adds it — hoist that tiny addition HERE).
+    using `PolicyEngine.referencedZones` (Task 6 adds it — hoist that tiny addition HERE), extracted
+    once as `PolicyEngine.acceptsDifferentially(_ doc: String, zones: [Zone], baseline: String?) -> Bool`.
     `apply = { (try? PolicyStore.write($0)) != nil }`, `delaySec = { _ in Bounds.clamp(settings.policyDelaySec, Bounds.policyDelay) }`.
+    **The CLI gates switch to the SAME predicate**: `runDelaySetPolicy` (Commands.swift:770) and
+    `rvDelayGatePolicy` (:727) currently run absolute `PolicyEngine.validate` and fail() before
+    writing the marker — on the real machine (dangling "451 niantic ave") the CLI would refuse the
+    very docs the daemon now accepts, leaving the headline no-sudo path broken. Both call
+    `acceptsDifferentially` instead.
   - gate-policy analogous with `allowInPolicy: true`, apply into `ReleaseValveConfig`.
 - [ ] **Step 3:** CLI: `runDelaySetPolicy` writes via `dropDelayMarker` (now append+escape — no other change); `handleRequestFlags` signature changes from `(_ first: String?, …)` to `(_ args: [String], …)` so `--abort <key>` can see its argument (every caller updated in this task — Commands.swift:34-ish, gate-policy, delayzones); bare `--abort` keeps writing the zero-byte file; `--abort <key>` writes the key as a line. Same for gate-policy and (Task 6) delayzones. Status printers switch to `printQueueStatus` (defined in Task 4.5) with
 format:
@@ -420,7 +427,7 @@ consumeMarkers this tick removes the doomed doc BEFORE zones' fold peeks at it):
 
 - [ ] **Step 1:** Failing tests (pure `fold`): move-edit lands (del+add same name, policy references it); add-collision dropped; del-missing no-op-dropped; bad-geometry dropped, siblings proceed; whole-batch drop names the orphaned reference; pre-existing dangling ref ("451 niantic ave" fixture) does NOT block; add-zone + due-policy-referencing-it → both land (fold ok under due doc; policy lands its own tick — assert fold verdict ok); del-zone + due-doc-referencing-it → doc wins, batch dropped w/ "conflicts with landing policy"; doc invalid against live too → batch retried against live docs.
 - [ ] **Step 2:** FAIL → implement `ZoneOps` + `PolicyEngine.referencedZones` → PASS.
-- [ ] **Step 3:** Wire Enforcerd (zones→policy→gate-policy order stays at Enforcerd.swift:84, before standby guards — do not move); delete `DelayedChange.swift`; update `runDelayZones` (bare/`--status` → `printQueueStatus(dpZonesStatus-from-state.json…` — CLI reads `StateSnapshot`; see Task 11 for the field). CLI `--abort <key>` writes the key line.
+- [ ] **Step 3:** Wire Enforcerd (zones→policy→gate-policy order stays at Enforcerd.swift:84, before standby guards — do not move); delete `DelayedChange.swift`; update `runDelayZones` (bare/`--status` → `printQueueStatus` over the `delayedZones` QStatus field of `StateSnapshot`, present since Task 4.5). CLI `--abort <key>` writes the key line.
 - [ ] **Step 4:** Build + full `swift test` green. Commit `feat: zones as ops with two-phase fold + joint projection`.
 
 ### Task 7: ZonesUI — queue ops, show pending, admin-save aborts
@@ -428,7 +435,7 @@ consumeMarkers this tick removes the doomed doc BEFORE zones' fold peeks at it):
 **Files:**
 - Modify: `demonlock/Sources/DemonlockCore/ZonesUI.swift` (`saveZone`, `deleteSelected`, `saveWithDelay`, `reload`, instr text; `isSimplePolygon` moved out in Task 6 — import from ZoneOps)
 
-**Interfaces:** Consumes `ZoneOp`, `MarkerIO.append`, `StateStore.read()?.delayedZones` (QStatus, Task 11 field — until Task 11 lands, read may be nil; code must tolerate nil).
+**Interfaces:** Consumes `ZoneOp`, `MarkerIO.append`, `StateStore.read()?.delayedZones` (QStatus — the field exists since Task 4.5; tolerate nil, the daemon may predate the relaunch).
 
 - [ ] **Step 1:** `saveWithDelay(_ op: ZoneOp) -> Bool` = `MarkerIO.append(Paths.dzRequestMarker, line: opJSON)`. `saveZone` delayed branch queues `ZoneOp(op:"add", zone: newZone)`; `deleteSelected` delayed branch queues `ZoneOp(op:"del", name: name)` **and calls `reload()`** (the missing reload). Instr strings: include exact abort command `demonlock delayzones --abort "add:<name>"`.
 - [ ] **Step 2:** Pending display: `reload()` also reads `StateStore.read()?.delayedZones?.rows` and appends a line per pending op to the instr/label area (`⏳ add:730 moreno — lands in 35h 12m · abort: demonlock delayzones --abort "add:730 moreno"`). Minimal text UI, no new views.
@@ -447,6 +454,7 @@ consumeMarkers this tick removes the doomed doc BEFORE zones' fold peeks at it):
 
 **Files:**
 - Modify: `demonlock/Sources/DemonlockCore/SnoozePresets.swift`
+- Modify: `demonlock/Sources/DemonlockCore/TimeSpec.swift` (thread `from now: Date = Date()` through `parseTarget`/`nextHHMM`/`nextWeekdayHHMM` at :51/:81/:99 — default preserves all callers)
 - Test: `demonlock/Tests/DemonlockCoreTests/SnoozePresetsQueueTests.swift`
 
 **Interfaces (Produces):**
@@ -460,7 +468,13 @@ struct SPFile: Codable {
     var addsQ: DelayQueue.QState? = nil
 }
 // Produces: `SnoozePresets.invokeQueue() -> DelayQueue` and `SnoozePresets.addsQueue() -> DelayQueue`
-// (QStateStore closures over SPFile load/save; each queue loads/saves its own sub-object — fine, the file is tiny):
+// (QStateStore closures over SPFile load/save; each queue loads/saves its own sub-object).
+// `SnoozePresets.tick` calls `consumeMarkers` then `applyDue` on BOTH its queues itself (the
+// Task 5 orchestrator covers only the zones/policy/gate-policy projection trio).
+// COMPOSITE-FILE CONTRACT: the bespoke half of tick (spRemove/spInvokeAbort handling) must
+// RE-LOAD SPFile after every queue call and never hold a snapshot across one — a stale
+// `st.save()` after a queue's own load-mutate-save of the same file silently erases pending
+// rows. Test: preset-remove and a queued add land in the same tick, both effects survive.
 //   invoke: kind "snooze-invoke", markers spInvoke*, key = {_ in "invocation"},
 //     payloadIsJSON: false, PAYLOAD = THE PRESET NAME ONLY (adversarial ruling: no transform
 //     hook on the vendored abstraction). The frozen target is resolved AT APPLY TIME from the
@@ -508,9 +522,12 @@ static func unlocksQueue() -> DelayQueue       // Produces (Task 10 flush + Enfo
 static func relockAll()                        // clears unlockedUntil (grant path; Task 10)
 // ABORT MUST STILL RELOCK (today Lockbox.swift:78-82 cancels AND relocks; the queue's abort
 // consumes the marker so Lockbox.tick never sees the name): Lockbox.tick calls
-// `let aborted = unlocksQueue.consumeMarkers(…).abortedKeys` and clears `unlockedUntil` for each
+// `let aborted = unlocksQueue.consumeMarkers(…)` and clears `unlockedUntil` for each key
 // — the returned-keys channel exists precisely for this (a copyable secret surviving an explicit
-// abort is a fail-open).
+// abort is a fail-open). Lockbox.tick then calls `applyDue` on the unlocks queue itself.
+// COMPOSITE-FILE CONTRACT (same as SPFile): the bespoke add/remove/copy/auto-relock code
+// re-loads LBFile after every queue call, never saving a snapshot taken before one — else the
+// queue's pending rows are silently clobbered. Test: abort-an-unlock + add-a-secret same tick.
 ```
 
 Copy / remove / add / auto-relock stay bespoke in `Lockbox.tick` (spec do-not-unify), reading markers via `consumeLast`. `Status`/`EntryView` unchanged except `unlockAtEpoch` now read from `unlocksQ` rows.
@@ -521,7 +538,7 @@ Copy / remove / add / auto-relock stay bespoke in `Lockbox.tick` (spec do-not-un
 ### Task 10: Safe-apps port + grant flush wiring
 
 **Files:**
-- Modify: `demonlock/Sources/DemonlockCore/SafeApps.swift` (Produces: `SafeApps.queue() -> DelayQueue`; kind "safe-apps", markers saRegister*/saAbort*, key = `app.name`, payloadIsJSON: true, validate = existing register checks (blocklist, team rules — reuse the current register-path validation function), apply = today's registration `Settings.mutate`; immediate remove stays bespoke incl. `clearPending(bid:)` → abort-line append)
+- Modify: `demonlock/Sources/DemonlockCore/SafeApps.swift` (Produces: `SafeApps.queue() -> DelayQueue`; `SafeApps.tick` calls `consumeMarkers` then `applyDue` on it itself; kind "safe-apps", markers saRegister*/saAbort*, key = `app.name`, payloadIsJSON: true, validate = existing register checks (blocklist, team rules — reuse the current register-path validation function), apply = today's registration `Settings.mutate`; immediate remove stays bespoke incl. `clearPending(bid:)` → abort-line append)
 - Modify: `demonlock/Sources/DemonlockCore/ReleaseValve.swift:161-179` (`flushSelfServeQueues`)
 - Delete old `consume(_:enforcedUID:) -> Data?` from MarkerIO (last caller gone).
 - Test: `demonlock/Tests/DemonlockCoreTests/SafeAppsQueueTests.swift`, extend `DelayQueueTests` for flush.
@@ -608,6 +625,7 @@ var lockbox: Lockbox.Status? = nil            // window/lock state only (kept)
 
 - Spec coverage: every spec section mapped — Census (Tasks 5,6,8,9,10,12), Abstraction semantics (3), Marker contract (2), Boundary layer (2, 7), knobs (3,8), Zones (6,7), Cross-queue (6), Restart (3,9), Migration (4,8,9,12), bespoke list (8,9 keep-out respected), Testing (each bullet has a named test above), Rollout (13,14 + gate note).
 - Deviations from spec, all declared: (1) `legacyDecode` widened to return `(rows, lastAppliedAt)` (spec said `[String: Item]?` — lastAppliedAt must survive migration); (2) applyDue's due tuples carry `requestedAt` (spec's apply closure took only the payload — snooze-invoke resolves its frozen target from the daemon-stamped time, per adversary-1 finding 10, which REJECTED the earlier `enqueueTransform` knob: payload = preset name keeps invoke idempotent AND the knob set closed); (3) tick split into consumeMarkers/applyDue phases (spec described one tick — the split is required so cross-queue joint projection sees this tick's aborts first, finding 9). Fold these three into the spec at its next touch.
+- Confirmatory re-review (adversary-1 on v2/v2.1): folds verified faithful; 6 new defects + 3 stale cross-refs folded in v2.2. Both flagged designs ruled SOUND (invoke-from-requestedAt traced equivalent to today's frozen target; phase split correct, sidecar single-queue tick fine). Accepted residual (recorded, not coded): the preset `spec` is re-read from Settings at apply, so a delayed-add landing for the same preset during the invoke window can shift the resolved target — bounded by the existing 18h re-cap; freeze `spec` into the payload later if exactness ever matters.
 - Adversary-1 pass (spec semantics, verdict NO on v1, 14 blockers): overlapping findings (Task 4.5 sequencing, --all literal, O_TRUNC, vendor identity) were already folded; NEW findings folded in v1.6 — atomic multi-line append + UI edit path (the spec's core scenario had no implementing step), all marker consumers converted in Task 2 (escape-timing corruption window), ReleaseValve:84/88 port + rv round-trip test + consumeFlag reimpl as explicit steps. Spec header corrected v4.3→v4.4 (a rename replace had silently no-opped). Remaining findings folded from the full report.
 - Adversary-2 pass COMPLETE (verdict NO on v1; all 10 confirmed + 4 speculative findings folded across v1.4/v1.5). Accepted-risk note: a user-held blocking flock on a request marker starves that queue indefinitely — fail-closed (nothing lands sooner, abort-all still possible after release), mitigation is the ≤1/min skip log; recorded, not fixed. Folded: Task 4.5 field-name collision fixed via legacy* renames; Task 5 stray delete line removed; vendored-file self-containment contract + `auditLog` init parameter added (byte-identical test now satisfiable). Remaining truncated findings folded on full report.
 - Pass-3 (self) finding folded: Task 4.5 added — without it, Tasks 6-10 could not compile (DelayedStatus consumers). Joint-projection staleness note: zones' `peekDue` runs before policy/gate consume THIS tick's markers — safe for requests (a request consumed this tick gets applyAt=now+delay, never due now) but an abort consumed this tick could arrive after zones already deferred to a doc being aborted. Fail-closed (batch dropped, re-queue) and rare; if either adversary confirms it matters, fix = consume phase for all queues before any apply phase.
