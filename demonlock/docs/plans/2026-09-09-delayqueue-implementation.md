@@ -202,7 +202,7 @@ struct DelayQueue {
 ```
 
 Tick semantics (implement exactly; spec section "Semantics"):
-1. **Abort:** `consumeLines(abortMarker)`. `[]` (zero-byte) ⇒ abort ALL (one `flushed` event, reason "abort --all"). Non-empty ⇒ for each non-blank line, drop that key (+`aborted` outcome each; unknown key ⇒ `rejected` outcome reason "no such pending key"). Blank lines skipped.
+1. **Abort:** `consumeLines(abortMarker)`. `[]` (zero-byte) ⇒ abort ALL (one `flushed` event, reason "abort --all"). A line that is exactly `--all` ALSO aborts all (sidecar CLI and safe-apps CLI write the literal `--all` as contents today — spec census/struct comment covers it; without this, shipped `--all` aborts break on upgrade). Other non-blank lines each drop that key (+`aborted` outcome each; unknown key ⇒ `rejected` outcome reason "no such pending key"). Blank lines skipped.
 2. **Requests:** `consumeLines(requestMarker)`, in file order. Per line: `key(line)` nil ⇒ `rejected` ("unkeyable"); `validate` false ⇒ `rejected` ("invalid at queue"); existing key + `canonical` equal ⇒ silently ignore (no outcome — double-click); existing key + different ⇒ replace payload, `requestedAt=now`, `applyAt=now+delaySec(line)`, new seq, `replaced` outcome; new key at cap ⇒ `rejected` ("queue full 64/64"); else insert Item(now, now+delay, seq: nextSeq++), `queued` outcome.
 3. **Clock guard:** any pending `requestedAt > now + 300` ⇒ re-stamp `requestedAt=now, applyAt=now+delaySec(payload)`, log.
 4. **Apply-due:** due = pending where `now >= applyAt` (for `.retry` also `now >= nextRetryAt ?? 0`), seq-sorted. Re-`validate` each; invalid ⇒ remove + `rejected` ("invalid at landing"). Then:
@@ -216,7 +216,7 @@ Tick semantics (implement exactly; spec section "Semantics"):
   - `testQueueLandsAfterDelay`, `testSeqOrderDeterministicAcrossReload` (queue del+add same tick, reload QState from disk between every tick, assert order 100×)
   - `testIdenticalPayloadIdempotent_JSONWhitespace` (pretty vs compact JSON, clock kept), `testIdenticalNonJSONBytes`
   - `testDifferentPayloadReplacesAndResets`, `testReplaceAcceptedAtCap`, `test65thKeyRejected`, `testAbortAcceptedAtCap`
-  - `testAbortByKey`, `testAbortAllOnZeroByteFile`, `testAbortBlankLinesSkipped`, `testAbortUnknownKeyRejectedOutcome`
+  - `testAbortByKey`, `testAbortAllOnZeroByteFile`, `testAbortAllLiteralLine`, `testAbortBlankLinesSkipped`, `testAbortUnknownKeyRejectedOutcome`
   - `testSaveBeforeApply_crashLosesRowNeverReapplies` (simulate: run tick with applyBatch that records call then "crash" = discard post-state; new DelayQueue over same store; assert row gone, apply not re-called, `unconfirmed` in recent)
   - `testApplyFalseRecordsFailed`, `testLastAppliedAtOnlyOnSuccess` (unchanged by applying/failed/unconfirmed)
   - `testRetryKeepsRowWithBackoff` (5,10,20…300 ceiling), `testRetryFailedOutcomeAtTen`, `testRetryNeverApplying`, `testRetryCrashAfterSuccessReappliesOnce_setLikeSafe`
@@ -251,7 +251,7 @@ enum Legacy {
 
 (snooze-presets & lockbox migrate inside their composite containers — Tasks 8/9.)
 
-- [ ] **Step 1:** Failing tests: feed byte-exact legacy JSON fixtures (copy real shapes from `DelayedChange.swift`/`SafeApps.swift`/sidecar `Daemon.swift` structs) → decode → assert rows/keys/times/lastAppliedAt; `testZonesLegacyPendingDroppedAndLogged`; `testNextSeqAboveAllMigrated`; `testNewShapeRoundTripsUntouched`; `testCorruptFileYieldsEmptyQState` (fail-closed, like today's loadJSON).
+- [ ] **Step 1:** Failing tests: feed byte-exact legacy JSON fixtures (copy real shapes from `DelayedChange.swift`/`SafeApps.swift`/sidecar `Daemon.swift` structs) → decode → assert rows/keys/times/lastAppliedAt; `testZonesLegacyPendingDroppedAndLogged`; `testNextSeqAboveAllMigrated`; `testNewShapeRoundTripsUntouched`; `testCorruptFileYieldsEmptyQState` (fail-closed, like today's loadJSON); `testDowngradeDecodeFailsClosed` (a test-local byte-copy of the OLD `DelayedState` struct fails to decode new-shape QState JSON and falls back to empty — proving the spec's downgrade direction).
 - [ ] **Step 2:** FAIL → implement → PASS → commit `feat: DelayQueue legacy migration`.
 
 ### Task 4.5: Status-surface skeleton (keeps every later commit compiling)
