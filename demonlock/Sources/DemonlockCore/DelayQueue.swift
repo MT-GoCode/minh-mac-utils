@@ -156,10 +156,12 @@ struct DelayQueue {
             if let lines = MarkerIO.consumeLines(requestMarker, enforcedUID: euid) {
                 for line in lines where !line.trimmingCharacters(in: .whitespaces).isEmpty {
                     guard let k = key(line) else {
-                        record(&st, Outcome(key: preview(line), what: "rejected", reason: "unkeyable", at: now)); continue
+                        record(&st, Outcome(key: preview(line), what: "rejected", reason: "unkeyable", at: now))
+                        dirty = true; continue
                     }
                     guard validate(line) else {
-                        record(&st, Outcome(key: k, what: "rejected", reason: "invalid at queue", at: now)); continue
+                        record(&st, Outcome(key: k, what: "rejected", reason: "invalid at queue", at: now))
+                        dirty = true; continue
                     }
                     if let existing = st.pending[k] {
                         if canonical(existing.payload) == canonical(line) { continue }   // idempotent: clock kept
@@ -168,9 +170,11 @@ struct DelayQueue {
                         st.pending[k] = Item(payload: line, requestedAt: now, applyAt: now + delaySec(line), seq: st.nextSeq)
                         st.nextSeq += 1
                         record(&st, Outcome(key: k, what: "replaced", reason: "delay restarted", at: now), payload: line)
+                        dirty = true
                     } else if st.pending.count >= Self.cap {
                         // New keys only — replaces and aborts are always accepted at the cap.
                         record(&st, Outcome(key: k, what: "rejected", reason: "queue full (\(Self.cap)/\(Self.cap))", at: now))
+                        dirty = true
                     } else {
                         st.pending[k] = Item(payload: line, requestedAt: now, applyAt: now + delaySec(line), seq: st.nextSeq)
                         st.nextSeq += 1
