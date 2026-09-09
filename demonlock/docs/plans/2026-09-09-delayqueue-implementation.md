@@ -35,7 +35,7 @@
 **Files:**
 - Modify: `demonlock/Package.swift`
 - Create: `demonlock/Sources/DemonlockCore/` (git mv of every file from `Sources/demonlock/` except `main.swift`)
-- Create: `demonlock/Sources/DemonlockCore/Main.swift` (the old `main.swift` body as `public func demonlockMain()`)
+- Create: `demonlock/Sources/DemonlockCore/CLI.swift` (the old `main.swift` body as `public func demonlockMain()`). **NOT `Main.swift`** — macOS's case-insensitive filesystem makes SwiftPM match it as `main.swift` and treat the library as an executable (undefined `_DemonlockCore_main` link failure; verified in a scratch trial on the Mac 2026-09-09).
 - Modify: `demonlock/Sources/demonlock/main.swift` → `import DemonlockCore; demonlockMain()`
 - Create: `demonlock/Tests/DemonlockCoreTests/SmokeTests.swift`
 
@@ -60,7 +60,7 @@ let package = Package(
 )
 ```
 
-- [ ] **Step 2:** `git mv` all sources except `main.swift` into `Sources/DemonlockCore/`. Move the `main.swift` switch body into `Sources/DemonlockCore/Main.swift` wrapped as `public func demonlockMain() { let argv = Array(CommandLine.arguments.dropFirst()); ... }` (body unchanged). New `Sources/demonlock/main.swift`: `import DemonlockCore\ndemonlockMain()`.
+- [ ] **Step 2:** `git mv` all sources except `main.swift` into `Sources/DemonlockCore/`. Move the `main.swift` switch body into `Sources/DemonlockCore/CLI.swift` wrapped as `public func demonlockMain() { let argv = Array(CommandLine.arguments.dropFirst()); ... }` (body unchanged). New `Sources/demonlock/main.swift`: `import DemonlockCore\ndemonlockMain()`.
 - [ ] **Step 3:** `SmokeTests.swift`:
 
 ```swift
@@ -71,7 +71,7 @@ final class SmokeTests: XCTestCase {
 }
 ```
 
-- [ ] **Step 4:** Push; on Mac: `swift build && swift test` — both green, binary behaves (`.build/debug/demonlock help` prints help).
+- [ ] **Step 4:** Push; on Mac: `swift build && swift test` — both green, binary behaves (`.build/debug/demonlock help` prints help). (This exact restructure was trial-run in /tmp on 2026-09-09: build 2.08s, SmokeTests 1/1 passed, help prints — expect the same.)
 - [ ] **Step 5:** Commit `refactor: split DemonlockCore library + test target (no behavior change)`.
 
 ### Task 2: MarkerIO — append, NDJSON consume, LOCK_NB, escaping
