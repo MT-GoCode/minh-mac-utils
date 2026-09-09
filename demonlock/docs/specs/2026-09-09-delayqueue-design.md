@@ -66,9 +66,16 @@ Semantics, identical everywhere:
 
 - **Multi-item.** `pending` is a map; every queued thing is its own row with its
   own clock.
-- **Idempotent requeue.** Same key already pending → request ignored, original
-  clock kept. (Double-clicks are harmless; nothing silently replaced. A
-  *different* payload gets a different key, so nothing is lost either.)
+- **Requeue rule.** Same key + byte-identical payload → ignored, original
+  clock kept (double-clicks harmless). Same key + *different* payload →
+  replace the pending payload AND reset its clock, logged ("replaced pending
+  <key> — delay restarted"). Reset is mandatory: replace-keeping-the-clock
+  would let a mild pending request be swapped for an aggressive one at hour
+  35 and land at 36 — a commitment bypass. Variant-payload surfaces: safe-apps
+  (bid/tid/rootOwned), zones add (geometry), preset add (spec/invokeDelay),
+  preset invoke (which preset, under the constant key — today's silent-ignore
+  of a second preset becomes replace+reset). Lockbox/sidecar payload==key;
+  policy docs are hash-keyed (different doc = different row, by design).
 - **Ordered landing.** Due items apply in `requestedAt` order, so interacting
   ops (add X then delete X) resolve the way they were requested.
 - **Abort** by key or `--all`, consumed before requests (abort+requeue in one
@@ -90,8 +97,12 @@ Semantics, identical everywhere:
 - **Flush.** `flushAll()` empties `pending` (logged, listing dropped keys).
   The release-valve grant calls it on every demonlock queue — flush means
   *discard*, not apply: the queue is the no-admin path; with admin in hand you
-  change things deliberately via sudo. Sidecar is a separate trust domain;
-  demonlock's grant does not reach its queue.
+  change things deliberately via sudo (`snooze` itself is root-only). This now
+  INCLUDES a pending snooze-preset invocation — a deliberate behavior change:
+  today a waiting invocation survives the grant and lands its snooze later,
+  which contradicts "the grant supersedes the impulse queue". An already-
+  ACTIVE snooze is untouched (it's suppression, not a queue). Sidecar is a
+  separate trust domain; demonlock's grant does not reach its queue.
 
 Marker format: the request marker is NDJSON — one payload per line, appended
 by writers (the user owns the inbox, so append is fine). The daemon consumes
@@ -169,6 +180,18 @@ Lenient decoding on first run of the new daemon:
   `targetAt`, computed at queue time by app code).
 - All validation and apply logic: policy parsing, zone geometry, NextDNS API,
   Admin grant — per-app closures.
+
+## Restart safety
+
+All state is on disk, tick-driven, no timers — the current architecture,
+preserved. Daemon restart / reboot / sleep: overdue items land on the first
+tick after wake, in requestedAt order. Marker NDJSON appended while the
+daemon is down is consumed on the first tick up. State writes are atomic
+(saveJSON), markers consumed via MarkerIO unlink-verify. Crash between
+`apply` succeeding and the state save could re-apply once on the next tick;
+every apply is idempotent under re-execution (zone add re-collides → drop,
+del re-noops, policy rewrite same doc, sidecar allowlist add is set-like) —
+the adversarial review must verify this claim per surface.
 
 ## Testing
 
