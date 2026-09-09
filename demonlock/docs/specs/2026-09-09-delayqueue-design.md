@@ -15,8 +15,9 @@ There are eight commitment-delay systems across two daemons, hand-rolled in
 three shapes with inconsistent semantics. This spec replaces the queue
 MECHANICS with one abstraction, keeping each app's validation/apply bespoke.
 
-An adversarial review (2026-09-09) found 15 defects in the v1 draft; all fixes
-are folded in below and marked **[AR#n]** where the reasoning isn't obvious.
+Four adversarial passes (2026-09-09) found 15 + 10 + 5 + 5 defects across
+drafts v1–v4.2; all fixes are folded in, marked **[AR#n] / [AR2#n] /
+[AR3#n] / [R#n]** where the reasoning isn't obvious.
 
 ## Census
 
@@ -59,13 +60,16 @@ struct DelayQueue {
     struct QState: Codable { var pending: [String: Item] = [:]
                              var nextSeq: UInt64 = 0
                              var lastAppliedAt: Double?
-                             var recent: [Outcome] = [] }   // last 8, newest first
+                             var recent: [Outcome] = [] }   // last 8 EVENTS, newest first
+                                                            // (batch/flush = one event; its key joins the affected keys)
 
     let kind: String            // log/status label, e.g. "zones"
     let stateFile: String       // root-owned JSON: QState
     let requestMarker: String   // user inbox, NDJSON: one payload per line
     let abortMarker: String     // user inbox: key per line; empty or "--all" = all
     let onFailure: Failure      // .drop | .retry
+    let payloadIsJSON: Bool     // canonicalisation mode [AR3#4]
+    let legacyDecode: (Data) -> [String: Item]?   // migration [AR#9]
     enum Failure { case drop, retry }
 
     /// One daemon tick. Order: abort → request → apply-due (by seq).
@@ -93,8 +97,10 @@ Semantics, identical everywhere:
   newlines (a multi-line policy expression tokenizes fine today) — writers
   escape `\n` as `\\n` on append and consumers unescape [R2], else NDJSON
   splitting would shred a multi-line policy into N individually-rejected
-  fragments and the primary no-sudo path silently breaks — else a repeated `delay-set-policy` shell
-  command would replace+reset and restart the longest clock in the system. Same key +
+  fragments and the primary no-sudo path silently breaks. (Byte comparison
+  for non-JSON also keeps a repeated `delay-set-policy` shell command
+  idempotent — a canonicaliser that threw on non-JSON would replace+reset
+  and restart the longest clock in the system.) Same key +
   different payload → replace payload AND reset clock, logged. Reset is
   mandatory: replace-keeping-the-clock would let a mild pending request be
   swapped for an aggressive one at hour 35 and land at 36.
@@ -319,7 +325,8 @@ Restart / reboot / sleep: overdue items land on the first tick after wake,
 in seq order. NDJSON appended while the daemon is down is consumed on the
 first tick up. State writes atomic; markers consumed under flock with
 unlink-verify. Crash windows: save-before-apply means a crash can lose an
-about-to-land request (fail-closed, logged absent) but never re-apply one.
+about-to-land request — fail-closed, surfaced as an `unconfirmed` outcome
+in `recent` [AR3#5] — but never re-apply one.
 
 ## Migration [AR#9, #15]
 
@@ -376,14 +383,14 @@ early).
 - requeue: identical payload keeps clock; different payload replaces + resets;
   canonicalisation (CLI whitespace vs UI pretty-print) treated as identical.
 - abort: by key, `--all`, empty payload = all; accepted at cap.
-- batch fold: policy-referenced zone edit succeeds; offending-op drop +
-  fold-retry; add-collision; del-missing.
+- batch fold: policy-referenced zone edit succeeds; per-op precondition
+  drop (bad geometry / add-collision / del-missing); phase-2 whole-batch
+  drop names the new unresolved reference.
 - save-before-apply: simulated crash between save and apply loses the row,
   never double-applies (checked for lockbox-shaped and invoke-shaped applies).
 - marker I/O: flock append vs consume race; partial trailing line discarded;
   1 MiB overflow rejects whole file; poison line rejected individually.
 - cap: 65th new key rejected; replace of existing key accepted at 64.
-- cross-queue: add-zone + referencing-policy land same tick.
 - migration: every legacy shape; snooze-presets/lockbox sibling fields
   survive; zones legacy snapshot dropped + logged; downgrade clobber is
   fail-closed.
@@ -394,7 +401,7 @@ early).
 - abort: zero-byte file = all; file with blank lines skips them; listed
   keys only.
 - outcome phases: `applying` row after simulated crash reports
-  `lost in crash`, never re-applies; `apply`-returns-false records `failed`.
+  `unconfirmed`, never re-applies; `apply`-returns-false records `failed`.
 - joint validation: both cross-queue pairs (see above); differential
   phase 2 lands a batch despite a pre-existing dangling policy reference;
   `.retry` rows never get an `applying` outcome; backoff floor respected.
@@ -412,9 +419,18 @@ abort commands printed by UI match working keys.
 
 ## Rollout
 
-1. Land DelayQueue + demonlock port + tests; build, reinstall, verify live.
+Install requires admin, which arrives only at the next release-valve gate
+window — build, tests, and commits proceed anytime; the reinstall steps
+below are batched into a gate window. Note the grant that authorizes the
+install also flushes all pending queues (by design), so nothing pending is
+lost *by the migration itself* — the queues are already empty when the new
+daemon first runs; re-queueing (step 2) happens after.
+
+1. Land DelayQueue + demonlock port + tests; build; at the gate window:
+   reinstall, verify live.
 2. Re-queue the two lost zone edits (add 730 moreno, del imbue office) as ops.
-3. Vendor into nextdns-sidecar, port delay-add, reinstall.
+3. Vendor into nextdns-sidecar, port delay-add; reinstall in the same (or
+   next) gate window.
 4. Separately: policy still references `451 niantic ave`, which doesn't
    exist in zones.json (predates this work) — fix by admin edit or queued
    op. NOT a prerequisite: phase-2 validation is differential, so the
