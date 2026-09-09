@@ -49,6 +49,7 @@ final class Enforcer {
     func run() {
         if geteuid() != 0 { log("WARNING: not running as root — the GUI lockout (kill) will fail") }
         log("enforcerd starting (uid \(getuid()))")
+        unlink(Paths.supportDir + "/delayed-snooze.json")   // orphan from a retired system (spec Migration)
         server.start()
         while true {
             let interval = autoreleasepool { tick() }   // drain any autoreleased objects each tick (defensive)

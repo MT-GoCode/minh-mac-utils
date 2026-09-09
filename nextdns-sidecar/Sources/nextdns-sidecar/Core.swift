@@ -128,12 +128,13 @@ func fail(_ msg: String) -> Never {
     exit(1)
 }
 
-/// Drop a marker into the user-owned inbox (no sudo). ponytail: single-file marker, so two invocations
-/// of the same verb inside one ~5s daemon tick clobber (last wins) — upgrade to unique-named markers if
-/// that ever bites. Matches demonlock's dropDelayMarker.
+/// Drop a marker into the user-owned inbox (no sudo). One escaped line per newline-separated token;
+/// empty payload ⇒ zero-byte TRUNCATE (the abort-all signal must clear stale key lines). All inbox
+/// writes go through MarkerIO — same contract as demonlock.
 func dropMarker(_ path: String, _ payload: String = "") {
-    do { try Data(payload.utf8).write(to: URL(fileURLWithPath: path)) }
-    catch { fail("error: couldn't write marker \(path) — is the inbox present? Reinstall nextdns-sidecar.\n  \(error)") }
+    let lines = payload.split(separator: "\n").map(String.init)
+    let ok = lines.isEmpty ? MarkerIO.append(path, line: nil) : MarkerIO.append(path, lines: lines)
+    if !ok { fail("error: couldn't write marker \(path) — is the inbox present? Reinstall nextdns-sidecar.") }
 }
 
 /// Small process helpers. `run` discards output; `capture` returns stdout (stderr discarded).

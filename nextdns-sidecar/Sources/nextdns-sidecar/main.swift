@@ -116,15 +116,16 @@ func cmdAbort(_ ds: [String]) {
 
 /// future — no sudo, read-only. Pending delayed ADDS only (not the whole NextDNS domain list).
 func cmdFuture() {
-    let reg = Registry.load()
-    if reg.pending.isEmpty { print("delay-add: nothing queued."); return }
+    let st = delayAddQueue().status()
+    if st.rows.isEmpty { print("delay-add: nothing queued."); return }
     let now = nowEpoch()
     let f = DateFormatter(); f.dateFormat = "EEE yyyy-MM-dd HH:mm"
-    print("pending delayed allows (\(reg.pending.count)):")
-    for (d, p) in reg.pending.sorted(by: { $0.key < $1.key }) {
-        let left = max(0, Int(p.applyAt - now))
-        print("  \(d.padding(toLength: max(d.count, 40), withPad: " ", startingAt: 0)) lands \(f.string(from: Date(timeIntervalSince1970: p.applyAt)))  (\(left / 3600)h \(left % 3600 / 60)m left)")
+    print("pending delayed allows (\(st.rows.count)):")
+    for r in st.rows {
+        let left = max(0, Int(r.applyAt - now))
+        print("  \(r.key.padding(toLength: max(r.key.count, 40), withPad: " ", startingAt: 0)) lands \(f.string(from: Date(timeIntervalSince1970: r.applyAt)))  (\(left / 3600)h \(left % 3600 / 60)m left)  abort: nextdns-sidecar domains abort \(r.key)")
     }
+    if let o = st.recent.first { print("  last: \(o.key) \(o.what.uppercased())\(o.reason.map { " (\($0))" } ?? "")") }
 }
 
 /// test — no sudo, read-only. Resolve each domain through the SYSTEM resolver and report BLOCKED vs

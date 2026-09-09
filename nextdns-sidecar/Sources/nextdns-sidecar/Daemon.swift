@@ -1,22 +1,14 @@
 import Foundation
 
-/// A queued delayed allow (root-owned). Absent key ⇒ nothing queued for that domain.
-struct Pending: Codable { var requestedAt: Double; var applyAt: Double }
-
-/// Domain-keyed pending registry — the delay-add queue. Keyed by domain so a repeat delay-add keeps the
-/// ORIGINAL landing time (can't be used to shorten the wait), matching the C tool's dedupe.
-struct Registry: Codable {
-    var pending: [String: Pending] = [:]
-
-    static func load() -> Registry {
-        guard let d = try? Data(contentsOf: URL(fileURLWithPath: Paths.pendingFile)),
-              let r = try? JSONDecoder().decode(Registry.self, from: d) else { return Registry() }
-        return r
-    }
-    func save() {
-        let e = JSONEncoder(); e.outputFormatting = [.sortedKeys]
-        try? e.encode(self).write(to: URL(fileURLWithPath: Paths.pendingFile), options: .atomic)
-    }
+/// The delay-add DelayQueue (vendored abstraction): domain-keyed, idempotent re-request, .retry
+/// with backoff on API failure (a failed allow keeps the domain blocked — retrying is safe/idempotent).
+/// NOTE: the pending cap drops 4096 → DelayQueue.cap (64) — spec-mandated; >64 pending is unrealistic.
+func delayAddQueue() -> DelayQueue {
+    DelayQueue(kind: "delay-add",
+               store: .file(Paths.pendingFile, legacyDecode: Legacy.keyOnlyMap()),
+               requestMarker: Paths.mDelayAdd, abortMarker: Paths.mAbort,
+               onFailure: .retry, payloadIsJSON: false,
+               auditLog: Paths.supportDir + "/queue-audit.log")
 }
 
 /// The merged root enforcer — one daemon does BOTH jobs the two source tools split across two daemons:
@@ -43,10 +35,9 @@ final class Daemon {
         let euid = cfg.enforcedUID()
 
         // Markers + delayed applies run BEFORE enforcement and regardless of arm state (a scheduled
-        // allow lands on time no matter what). abort is consumed before delay-add so abort+requeue in
-        // one tick is clean (mirrors demonlock's order).
-        processMarkers(now: now, euid: euid, delay: cfg.clampedDelay)
-        applyDueAdds(now: now)
+        // allow lands on time no matter what). The queue consumes abort before requests internally.
+        processMarkers(now: now, euid: euid)
+        runDelayQueue(now: now, euid: euid, delay: cfg.clampedDelay)
 
         if isArmedFlag() {
             Lockdown.assertPF()
@@ -58,7 +49,7 @@ final class Daemon {
 
     /// Consume the four inbox markers (owner-checked via MarkerIO). No enforced uid (fresh install) ⇒
     /// nothing to trust ⇒ skip; the time-based apply still runs.
-    private func processMarkers(now: Double, euid: uid_t?, delay: Double) {
+    private func processMarkers(now: Double, euid: uid_t?) {
         guard let euid = euid else { return }
 
         // arm (tightening, no sudo): create the root-owned armed flag — but only if the DoH profile is
@@ -74,8 +65,8 @@ final class Daemon {
 
         // block (immediate tighten, no sudo): call the API now. A consumed marker isn't retried across
         // ticks, but callRetry already retries transient failures 4× within the call.
-        if let data = MarkerIO.consume(Paths.mBlock, enforcedUID: euid) {
-            let doms = dedupCap(data)
+        if let lines = MarkerIO.consumeLines(Paths.mBlock, enforcedUID: euid) {
+            let doms = dedupCap(Data(lines.joined(separator: "\n").utf8))
             if !doms.isEmpty, let api = NextDNSAPI.load() {
                 for d in doms {
                     let r = api.block(d)
@@ -86,25 +77,6 @@ final class Daemon {
             }
         }
 
-        // abort (tightening): drop pending delayed allows by domain, or "--all".
-        if let data = MarkerIO.consume(Paths.mAbort, enforcedUID: euid) {
-            var reg = Registry.load()
-            let arg = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            if arg.isEmpty || arg == "--all" { reg.pending.removeAll() }
-            else { for d in parseDomains(data) { reg.pending.removeValue(forKey: d) } }
-            reg.save()
-            logLine("delay-add aborted (\(arg.isEmpty ? "--all" : arg))")
-        }
-
-        // delay-add (no sudo, lands after the delay): queue, stamping the daemon's own clock so the wait
-        // can't be backdated. Dedupe by domain keeps the original landing time.
-        if let data = MarkerIO.consume(Paths.mDelayAdd, enforcedUID: euid) {
-            var reg = Registry.load(); var added = 0
-            for d in dedupCap(data) where reg.pending[d] == nil && reg.pending.count < Daemon.maxPending {
-                reg.pending[d] = Pending(requestedAt: now, applyAt: now + delay); added += 1
-            }
-            if added > 0 { reg.save(); logLine("delay-add queued \(added) domain(s) — land in \(Int(delay / 3600))h") }
-        }
     }
 
     static let maxDomainsPerTick = 256   // per-tick synchronous-API cap (block + delayed-apply)
@@ -120,19 +92,28 @@ final class Daemon {
         return out
     }
 
-    /// Apply delayed allows whose time has come. A failed API call keeps the entry to retry next tick
-    /// (fail-closed on loosening: a domain stays blocked until the allow actually sticks). Capped per tick
-    /// so a huge queue can't wedge enforcement; the remainder applies on following ticks.
-    private func applyDueAdds(now: Double) {
-        var reg = Registry.load()
-        let due = reg.pending.filter { now >= $0.value.applyAt }.prefix(Daemon.maxDomainsPerTick)
-        guard !due.isEmpty else { return }
-        guard let api = NextDNSAPI.load() else { logLine("delayed adds due but credentials unavailable — retrying"); return }
-        for (d, _) in due {
-            let r = api.allow(d)
-            if r.ok { reg.pending.removeValue(forKey: d); logLine("delay-add APPLIED \(d) allowlist+=\(r.add)") }
-            else { logLine("delay-add FAILED \(d) (allowlist+=\(r.add)) — retry next tick") }
+    /// One queue turn: consume markers (abort → requests, daemon-stamped clocks), then apply due
+    /// allows via the API. .retry semantics: a failed call keeps the row (exponential backoff to
+    /// 5 min) — fail-closed on loosening, the domain stays blocked until the allow actually sticks.
+    private func runDelayQueue(now: Double, euid: uid_t?, delay: Double) {
+        let q = delayAddQueue()
+        q.consumeMarkers(now: now, enforcedUID: euid,
+                         delaySec: { _ in delay },
+                         key: { validDomain($0) ? $0 : nil },
+                         validate: validDomain)
+        _ = q.applyDue(now: now, validate: validDomain) { due in
+            guard let api = NextDNSAPI.load() else {
+                logLine("delayed adds due but credentials unavailable — retrying")
+                return [:]                                   // no verdicts ⇒ all retry with backoff
+            }
+            var out: [String: (ok: Bool, reason: String?)] = [:]
+            for (i, d) in due.enumerated() {
+                guard i < Daemon.maxDomainsPerTick else { break }   // per-tick API cap; rest retry
+                let r = api.allow(d.payload)
+                out[d.key] = (r.ok, r.ok ? nil : "allowlist+=\(r.add) failed")
+                logLine("delay-add \(r.ok ? "APPLIED" : "FAILED") \(d.payload) allowlist+=\(r.add)")
+            }
+            return out
         }
-        reg.save()
     }
 }
