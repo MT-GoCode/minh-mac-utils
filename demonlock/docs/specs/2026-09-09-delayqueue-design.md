@@ -1,6 +1,6 @@
 # DelayQueue — one abstraction for every commitment-delayed change
 
-**Date:** 2026-09-09 · **Status:** v4 — final; three adversarial passes (15 + 10 + 5 findings folded)
+**Date:** 2026-09-09 · **Status:** v4.3 — final; four adversarial passes (15 + 10 + 5 + 5 findings folded)
 
 ## Why
 
@@ -89,7 +89,11 @@ Semantics, identical everywhere:
   `payloadIsJSON: Bool` knob — never sniffed from content [AR3#4]: JSON
   queues (zones, safe-apps, invoke) re-encode sorted-keys unpretty;
   non-JSON queues (policy, gate-policy, lockbox, sidecar domains) compare
-  as trimmed UTF-8 bytes [AR2#7] — else a repeated `delay-set-policy` shell
+  as trimmed UTF-8 bytes [AR2#7]. Non-JSON payloads may legally contain
+  newlines (a multi-line policy expression tokenizes fine today) — writers
+  escape `\n` as `\\n` on append and consumers unescape [R2], else NDJSON
+  splitting would shred a multi-line policy into N individually-rejected
+  fragments and the primary no-sudo path silently breaks — else a repeated `delay-set-policy` shell
   command would replace+reset and restart the longest clock in the system. Same key +
   different payload → replace payload AND reset clock, logged. Reset is
   mandatory: replace-keeping-the-clock would let a mild pending request be
@@ -192,11 +196,18 @@ the daemon's later `unlink` would delete a file it never read).
 
 All user→root inbox I/O lives in MarkerIO, both directions, no duplication:
 
-- **`MarkerIO.append(path, line)`** (new): O_WRONLY|O_CREAT|O_APPEND|
-  O_NOFOLLOW under flock(LOCK_EX). `dropDelayMarker` (Commands.swift:830 —
-  already the single writer funnel for EVERY marker, delay and immediate:
-  rv request/abort, lockbox copy, arm, removes) becomes a call to it. The
-  one raw write in the codebase, `ZonesUI.saveWithDelay`, switches to it.
+- **`MarkerIO.append(path, line, mode: mode_t = 0o644)`** (new):
+  O_WRONLY|O_CREAT|O_APPEND|O_NOFOLLOW under flock(LOCK_EX), created with
+  the given mode from the START. `dropDelayMarker` (Commands.swift:830 —
+  the writer funnel for nearly every marker: rv request/abort, lockbox
+  copy, removes, invoke) becomes a call to it, as does the raw write in
+  `ZonesUI.saveWithDelay`. **Lockbox add is the second bespoke writer**
+  [R1]: it carries a plaintext secret and today creates its marker 0600
+  from the start (no umask-0644 window another local account could read);
+  it calls append with `mode: 0o600` and MUST NOT concatenate — a pending
+  add marker is single-value last-line like its siblings. A mechanical
+  0644 port here would publish the secret; test asserts the marker is
+  never readable by other.
   No code outside MarkerIO touches the inbox, ever.
 - **`MarkerIO.consume`** gains LOCK_NB + NDJSON complete-line parsing once;
   every consumer — delay queues and immediate tightening paths alike —
@@ -293,8 +304,11 @@ this preference lands one change where a doc-first cascade would destroy
 both. Tests assert: add-zone+referencing-policy lands together;
 del-zone+doc-referencing-that-zone lands the doc, drops the del.
 
-The release-valve tick (and thus a grant's `flushAll`) runs AFTER the
-queue ticks: an item due in the same tick a grant lands applies first —
+Queue ticks stay WHERE THEY ARE in `Enforcerd.tick`: before the standby
+guards, so due items land regardless of who is logged in [R8] — moving
+them into the evaluation path would strand every queue while logged out,
+contradicting the "due items still apply" invariant. The release-valve
+tick (and thus a grant's `flushAll`) runs AFTER the queue ticks: an item due in the same tick a grant lands applies first —
 correct, since it landed before the grant existed; the audit may show an
 apply and a flush in the same second.
 
@@ -387,6 +401,11 @@ early).
 - migration nextSeq strictly above all migrated seqs.
 - single-value markers: two appends between ticks → last wins (today's
   semantics); rv request round-trips under the new writer.
+- lockbox add marker: created 0600, never other-readable, single-value.
+- multi-line policy expression round-trips (escape/unescape) and stays
+  idempotent on resubmit.
+- lastAppliedAt: unchanged by pre-apply save, by `failed`, by
+  `unconfirmed`; bumps only on success.
 
 Manual on the Mac after install: queue rows round-trip, status/audit output,
 abort commands printed by UI match working keys.
