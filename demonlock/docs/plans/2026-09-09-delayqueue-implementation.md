@@ -254,6 +254,35 @@ enum Legacy {
 - [ ] **Step 1:** Failing tests: feed byte-exact legacy JSON fixtures (copy real shapes from `DelayedChange.swift`/`SafeApps.swift`/sidecar `Daemon.swift` structs) → decode → assert rows/keys/times/lastAppliedAt; `testZonesLegacyPendingDroppedAndLogged`; `testNextSeqAboveAllMigrated`; `testNewShapeRoundTripsUntouched`; `testCorruptFileYieldsEmptyQState` (fail-closed, like today's loadJSON).
 - [ ] **Step 2:** FAIL → implement → PASS → commit `feat: DelayQueue legacy migration`.
 
+### Task 4.5: Status-surface skeleton (keeps every later commit compiling)
+
+**Why:** `DelayedStatus` is consumed by `Agent.swift:77`, `Commands.swift:101`,
+`Enforcerd.swift:32-34`, `State.swift:50-52`. Deleting `DelayedChange.swift`
+in Task 6 before the consumers are retyped would break every intermediate
+commit between Tasks 6 and 11. This task makes the migration ADDITIVE.
+
+**Files:**
+- Modify: `demonlock/Sources/DemonlockCore/State.swift` (add the seven new
+  `DelayQueue.QStatus?` fields from Task 11's interface block, all `= nil`;
+  KEEP the legacy fields for now)
+- Modify: `demonlock/Sources/DemonlockCore/Agent.swift:77-91`
+  (`handleDelayedApplied(_ items: [(String, Double?)])` — retyped ONCE here;
+  call sites pass `legacy?.lastAppliedEpoch` until each port task switches
+  its tuple to `qstatus?.lastAppliedAt`)
+- Modify: `demonlock/Sources/DemonlockCore/Commands.swift` (add
+  `printQueueStatus` from Task 5 Step 3 here instead; `statusBody` renders a
+  new-field section only when non-nil, legacy lines otherwise)
+
+- [ ] **Step 1:** Make the additive changes above; `swift build && swift test` green.
+- [ ] **Step 2:** Commit `refactor: additive QStatus surface (legacy status kept alive)`.
+
+**Rule for Tasks 5-10:** each port task (a) fills its new StateSnapshot
+field, (b) switches ITS consumers (statusBody section, handleDelayedApplied
+tuple, CLI reader) to the new field, and (c) deletes ITS legacy Status
+type/field in the same task. `DelayedStatus` + `DelayedChange.swift` die in
+Task 6 (their last consumer, zones, converts there). Task 11 shrinks to a
+sweep: assert no legacy status type remains, delete stragglers.
+
 ### Task 5: Policy + gate-policy port
 
 **Files:**
@@ -277,13 +306,13 @@ static func zonesQueue() -> DelayQueue    // kind "zones", .file(Paths.delayedZo
   - zones tick FIRST, then policy, then gate-policy (spec order; zones' applyBatch arrives in Task 6 — until then wire zones with a temporary per-item apply that whole-file-writes, kept compiling, replaced next task).
   - policy: `key = { _ in "policy" }`, `validate = { (try? PolicyEngine.validate($0, zones: ZoneStore.load())) != nil }`, `apply = { (try? PolicyStore.write($0)) != nil }`, `delaySec = { _ in Bounds.clamp(settings.policyDelaySec, Bounds.policyDelay) }`.
   - gate-policy analogous with `allowInPolicy: true`, apply into `ReleaseValveConfig`.
-- [ ] **Step 3:** CLI: `runDelaySetPolicy` writes via `dropDelayMarker` (now append+escape — no other change); `handleRequestFlags` unchanged for `--abort` (zero-byte = all, already correct); ADD `--abort <key>` passthrough: if an arg follows `--abort`, write it as the line. Same for gate-policy and (Task 6) delayzones. Status printers move to QStatus rendering — shared helper in Commands.swift:
+- [ ] **Step 3:** CLI: `runDelaySetPolicy` writes via `dropDelayMarker` (now append+escape — no other change); `handleRequestFlags` unchanged for `--abort` (zero-byte = all, already correct); ADD `--abort <key>` passthrough: if an arg follows `--abort`, write it as the line. Same for gate-policy and (Task 6) delayzones. Status printers switch to `printQueueStatus` (defined in Task 4.5) with
+format:
 
-```swift
-func printQueueStatus(_ q: DelayQueue.QStatus?, abortCmd: String)  // rows in seq order:
-//  "  1. <key>   lands <fmtWhen> (<Xh Ym left>)   abort: <abortCmd> \"<key>\""
-//  "  last: <key> <WHAT> (<reason>) <rel time>"  (from recent)
-//  "  last landed <rel>" (lastAppliedAt) · "  queue full (64/64)" when full
+```
+  1. <key>   lands <fmtWhen> (<Xh Ym left>)   abort: <abortCmd> "<key>"
+  last: <key> <WHAT> (<reason>) <rel time>      (from recent)
+  last landed <rel>   ·   queue full (64/64) when full
 ```
 - [ ] **Step 4:** `swift build && swift test` green. Commit `feat: policy + gate-policy on DelayQueue`.
 
@@ -431,7 +460,7 @@ private static func flushSelfServeQueues() {
 - [ ] **Step 1:** Failing tests: safe-app same-name different `rootOwned` ⇒ replace+reset (the user's flag case); blocklisted bid rejected at queue AND landing; flush empties all seven queues + relocks windows + a pending invocation (assert each), one `flushed` event per queue.
 - [ ] **Step 2:** FAIL → implement → PASS. Full suite green. Commit `feat: safe-apps on DelayQueue; grant flushes all queues + relocks`.
 
-### Task 11: Status surface — StateSnapshot, Agent, statusBody, CLI
+### Task 11: Status surface — final sweep (most work moved to Task 4.5 + per-port tasks)
 
 **Files:**
 - Modify: `demonlock/Sources/DemonlockCore/State.swift:51-57` (QStatus fields), `Enforcerd.swift:432-441` (publish), `Agent.swift:77-91` (`handleDelayedApplied`), `Commands.swift:61+` (`statusBody` delayed sections → `printQueueStatus` output), `runDelayZones`/`runDelaySetPolicy --status`/safe-apps `show`/snooze-preset `show`/lockbox `show` readers.
@@ -485,5 +514,6 @@ var lockbox: Lockbox.Status? = nil            // window/lock state only (kept)
 ## Self-review (author-run, per writing-plans)
 
 - Spec coverage: every spec section mapped — Census (Tasks 5,6,8,9,10,12), Abstraction semantics (3), Marker contract (2), Boundary layer (2, 7), knobs (3,8), Zones (6,7), Cross-queue (6), Restart (3,9), Migration (4,8,9,12), bespoke list (8,9 keep-out respected), Testing (each bullet has a named test above), Rollout (13,14 + gate note).
-- Known deviation recorded: `enqueueTransform` knob added (Task 8) beyond the spec's closed knob set — required to freeze invoke's `targetAt` at queue time (spec demands both the freeze and the closed set; the set loses). Flag to user at review.
+- Known deviation recorded: `enqueueTransform` knob added (Task 8) beyond the spec's closed knob set — required to freeze invoke's `targetAt` at queue time. Alternative considered and REJECTED: CLI-computed targetAt would let a hand-written marker choose an arbitrary stand-down target (preset-spec-only is the current, stricter semantics; queue-time recompute-and-compare is clock-fragile). The daemon-side transform is the smallest compliant design. Spec's closed-knob sentence should gain this knob at next spec touch.
+- Pass-3 (self) finding folded: Task 4.5 added — without it, Tasks 6-10 could not compile (DelayedStatus consumers). Joint-projection staleness note: zones' `peekDue` runs before policy/gate consume THIS tick's markers — safe for requests (a request consumed this tick gets applyAt=now+delay, never due now) but an abort consumed this tick could arrive after zones already deferred to a doc being aborted. Fail-closed (batch dropped, re-queue) and rare; if either adversary confirms it matters, fix = consume phase for all queues before any apply phase.
 - Type consistency: `QStatus` field names in Task 11 match Task 3; `Legacy.*` signatures match Task 4 consumers in 5/12.
