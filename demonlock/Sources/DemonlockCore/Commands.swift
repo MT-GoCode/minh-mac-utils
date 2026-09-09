@@ -447,7 +447,7 @@ func runSnoozePreset(_ args: [String]) {
 }
 
 private func snoozePresetShow() {
-    let inv = StateStore.read()?.snoozePresets
+    let inv = StateStore.read()?.legacySnoozePresets   // legacy until Task 8 ports this reader
     let presets = SnoozePresets.effective()
     let rows = presets.map { p -> [String] in
         let active = (inv?.invocationName == p.name)
@@ -563,7 +563,7 @@ private func safeAppsShow() {
     let rows = apps.map { [$0.name, $0.bid, $0.tid, $0.rootOwned ? "yes" : "no"] }
     print(Table.section("SAFE APPS — spared from the lockout kill", ["name", "bundle id", "team", "root-req"], rows))
     let delayH = Int(Bounds.clamp(Settings.load().safeAppsDelaySec, Bounds.safeAppsDelay) / 3600)
-    let pend = StateStore.read()?.safeApps?.pending ?? []
+    let pend = StateStore.read()?.legacySafeApps?.pending ?? []   // legacy until Task 10 ports this reader
     let prows = pend.map { [$0.name, $0.bid, TimeSpec.fmtLeft($0.applyAtEpoch - nowEpoch())] }
     print("\n" + Table.section("PENDING REGISTRATIONS — land after \(delayH)h", ["name", "bundle id", "lands in"], prows))
 }
