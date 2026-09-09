@@ -62,7 +62,7 @@ struct DelayQueue {
                     else if let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
                             let legacy = legacyDecode?(data) {
                         st = QState(pending: legacy.rows, nextSeq: 0, lastAppliedAt: legacy.lastAppliedAt, recent: [])
-                        logStderr("delay-\(path): migrated legacy state (\(legacy.rows.count) pending)")
+                        logStderr("delay-queue \(path): migrated legacy state (\(legacy.rows.count) pending)")
                     } else { st = QState() }
                     let maxSeq = st.pending.values.map(\.seq).max()
                     if let m = maxSeq, st.nextSeq <= m { st.nextSeq = m + 1 }
