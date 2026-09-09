@@ -58,8 +58,7 @@ enum DelayedChange {
             }
             // 2. request marker (contents = payload) → validate + (re)queue, resetting the delay. A repeat
             //    request just pushes the landing further out (stricter), so it can't be used to shorten it.
-            if let data = MarkerIO.consume(requestMarker, enforcedUID: euid) {
-                let p = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if let p = MarkerIO.consumeLast(requestMarker, enforcedUID: euid) {
                 if !p.isEmpty, validate(p) {
                     st.pending = PendingChange(payload: p, requestedAt: now, applyAt: now + delaySec)
                     st.save(stateFile)

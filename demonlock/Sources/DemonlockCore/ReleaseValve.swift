@@ -85,8 +85,7 @@ enum ReleaseValve {
                 if st.isGranted, let u = username { _ = Admin.revoke(u) }   // abort closes a live grant now
                 st = ReleaseValveState(); ReleaseValveState.write(st)
             }
-            if let data = MarkerIO.consume(Paths.rvRequestMarker, enforcedUID: euid) {
-                let durText = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if let durText = MarkerIO.consumeLast(Paths.rvRequestMarker, enforcedUID: euid) {
                 let asked = TimeSpec.parseDuration(durText) ?? 0
                 let dur = min(max(asked, 0), cfg.effectiveMaxDuration)
                 if cfg.isComplete, dur > 0 {

@@ -346,20 +346,13 @@ private func lockboxAdd(_ args: [String]) {
         var all = LockboxStore.load(); all.removeAll { $0.name == name }; all.append(entry); LockboxStore.save(all)
         print("✓ added '\(name)' (unlock delay \(TimeSpec.fmtLeft(delaySec))).")
     } else {
-        guard let data = try? JSONEncoder().encode(entry) else { fail("✗ couldn't encode") }
-        // The marker holds the plaintext secret: create it 0600 from the START (temp+O_EXCL+rename), not
-        // write-then-chmod, so there's no umask-0644 window in which another local user could read it.
-        let tmp = Paths.lbAddMarker + ".tmp.\(getpid())"
-        let fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard fd >= 0 else { fail("✗ couldn't create the marker (is the inbox present?)") }
-        let ok = data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Bool in
-            guard var base = raw.baseAddress else { return true }
-            var left = raw.count
-            while left > 0 { let n = write(fd, base, left); if n <= 0 { return false }; base = base.advanced(by: n); left -= n }
-            return true
-        }
-        close(fd)
-        guard ok, rename(tmp, Paths.lbAddMarker) == 0 else { unlink(tmp); fail("✗ couldn't place the marker") }
+        guard let data = try? JSONEncoder().encode(entry), let json = String(data: data, encoding: .utf8)
+        else { fail("✗ couldn't encode") }
+        // The marker holds the plaintext secret: MarkerIO.append with mode 0600 creates it 0600 from
+        // the START (unlink + O_EXCL — an attacker-precreated 0644 file can't keep its mode), so
+        // there's no window in which another local user could read it. Single-value: never appended-to.
+        guard MarkerIO.append(Paths.lbAddMarker, line: json, mode: 0o600)
+        else { fail("✗ couldn't place the marker (is the inbox present?)") }
         print("✓ '\(name)' queued — added on the next tick (no sudo).")
     }
 }
@@ -828,8 +821,11 @@ func runDelayZones(_ args: [String]) {
 /// Drop a delayed-change marker in the user-owned inbox (non-root). `payload` (the new policy/zones)
 /// becomes the request marker's contents; the daemon reads, validates, and stamps the real time itself.
 func dropDelayMarker(_ path: String, payload: String = "") {
-    do { try Data(payload.utf8).write(to: URL(fileURLWithPath: path)) }
-    catch { fail("✗ couldn't write the marker (\(path)). Is the inbox present? Try reinstalling demonlock.\n  \(error)") }
+    // Empty payload ⇒ zero-byte TRUNCATE (the abort-all signal must clear stale key lines);
+    // otherwise append one escaped line. All inbox writes go through MarkerIO.
+    guard MarkerIO.append(path, line: payload.isEmpty ? nil : payload) else {
+        fail("✗ couldn't write the marker (\(path)). Is the inbox present? Try reinstalling demonlock.")
+    }
 }
 
 // MARK: - agent permissions (shared by perm-ask and the arm readiness gate)

@@ -121,20 +121,18 @@ enum SafeApps {
 
         if let euid = enforcedUID {
             // remove (immediate, tightening): drop the app from the user set / tombstone a default.
-            if let data = MarkerIO.consume(Paths.saRemoveMarker, enforcedUID: euid) {
-                let name = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if let name = MarkerIO.consumeLast(Paths.saRemoveMarker, enforcedUID: euid) {
                 applyRemove(name: name)
                 reg.pending.removeValue(forKey: name); reg.save()
             }
             // abort a pending delayed registration.
-            if let data = MarkerIO.consume(Paths.saAbortMarker, enforcedUID: euid) {
-                let arg = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if let arg = MarkerIO.consumeLast(Paths.saAbortMarker, enforcedUID: euid) {
                 if arg == "--all" { reg.pending.removeAll() } else { reg.pending.removeValue(forKey: arg) }
                 reg.save()
             }
             // register (delayed): validate + (re)queue by name.
-            if let data = MarkerIO.consume(Paths.saRegisterMarker, enforcedUID: euid),
-               let app = try? JSONDecoder().decode(SafeApp.self, from: data),
+            if let line = MarkerIO.consumeLast(Paths.saRegisterMarker, enforcedUID: euid),
+               let app = try? JSONDecoder().decode(SafeApp.self, from: Data(line.utf8)),
                rejectReason(app, settings: Settings.load()) == nil {
                 reg.pending[app.name] = Pending(app: app, requestedAt: now, applyAt: now + delaySec)
                 reg.save()

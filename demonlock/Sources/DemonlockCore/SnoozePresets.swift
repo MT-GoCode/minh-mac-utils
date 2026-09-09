@@ -75,8 +75,7 @@ enum SnoozePresets {
 
         if let euid = enforcedUID {
             // invoke: start the single in-flight invocation (freeze the resolved target NOW).
-            if let data = MarkerIO.consume(Paths.spInvokeMarker, enforcedUID: euid) {
-                let name = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if let name = MarkerIO.consumeLast(Paths.spInvokeMarker, enforcedUID: euid) {
                 if st.invocation == nil, let p = find(name), let target = try? TimeSpec.parseTarget(p.spec) {
                     st.invocation = Invocation(name: name, requestedAt: now,
                                                applyAt: now + Bounds.clamp(p.invokeDelaySec, Bounds.snoozePresetInvokeDelay),
@@ -86,19 +85,17 @@ enum SnoozePresets {
             }
             if MarkerIO.consumeFlag(Paths.spInvokeAbort, enforcedUID: euid) { st.invocation = nil; st.save() }
             // remove (immediate, tightening): drop a preset.
-            if let data = MarkerIO.consume(Paths.spRemoveMarker, enforcedUID: euid) {
-                let name = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if let name = MarkerIO.consumeLast(Paths.spRemoveMarker, enforcedUID: euid) {
                 applyRemove(name: name); st.adds.removeValue(forKey: name); st.save()
             }
             // delayed-add abort.
-            if let data = MarkerIO.consume(Paths.spAddAbort, enforcedUID: euid) {
-                let arg = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if let arg = MarkerIO.consumeLast(Paths.spAddAbort, enforcedUID: euid) {
                 if arg == "--all" { st.adds.removeAll() } else { st.adds.removeValue(forKey: arg) }
                 st.save()
             }
             // delayed-add: queue a new preset.
-            if let data = MarkerIO.consume(Paths.spAddMarker, enforcedUID: euid),
-               let p = try? JSONDecoder().decode(SnoozePreset.self, from: data), rejectReason(p) == nil {
+            if let line = MarkerIO.consumeLast(Paths.spAddMarker, enforcedUID: euid),
+               let p = try? JSONDecoder().decode(SnoozePreset.self, from: Data(line.utf8)), rejectReason(p) == nil {
                 st.adds[p.name] = AddPending(preset: p, requestedAt: now, applyAt: now + addDelaySec)
                 st.save()
             }

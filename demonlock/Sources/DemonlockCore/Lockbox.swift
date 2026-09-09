@@ -56,8 +56,8 @@ enum Lockbox {
 
         if let euid = enforcedUID {
             // add (no sudo): the secret transits the user-owned inbox marker (acceptable — self-binding).
-            if let data = MarkerIO.consume(Paths.lbAddMarker, enforcedUID: euid),
-               let e = try? JSONDecoder().decode(LockboxEntry.self, from: data),
+            if let line = MarkerIO.consumeLast(Paths.lbAddMarker, enforcedUID: euid),
+               let e = try? JSONDecoder().decode(LockboxEntry.self, from: Data(line.utf8)),
                rejectReason(e.name, delaySec: e.delaySec, secretLen: e.secret.utf8.count,
                             entryCount: entries.count, nameExists: entries.contains(where: { $0.name == e.name })) == nil {
                 entries.removeAll { $0.name == e.name }
@@ -67,27 +67,23 @@ enum Lockbox {
                 st.pending.removeValue(forKey: e.name); st.unlockedUntil.removeValue(forKey: e.name); st.save()
             }
             // unlock (no sudo): start the per-entry delay if the entry exists and isn't already unlocked.
-            if let data = MarkerIO.consume(Paths.lbUnlockMarker, enforcedUID: euid) {
-                let name = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if let name = MarkerIO.consumeLast(Paths.lbUnlockMarker, enforcedUID: euid) {
                 if let e = entries.first(where: { $0.name == name }), st.unlockedUntil[name] == nil, st.pending[name] == nil {
                     let delay = max(e.delaySec, Bounds.lockboxUnlockDelayMin)
                     st.pending[name] = Pending(requestedAt: now, applyAt: now + delay); st.save()
                 }
             }
             // abort: cancel a pending unlock AND relock if unlocked.
-            if let data = MarkerIO.consume(Paths.lbAbortMarker, enforcedUID: euid) {
-                let name = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if let name = MarkerIO.consumeLast(Paths.lbAbortMarker, enforcedUID: euid) {
                 st.pending.removeValue(forKey: name); st.unlockedUntil.removeValue(forKey: name); st.save()
             }
             // remove (tightening): delete the entry from the vault entirely + clear any lock state.
-            if let data = MarkerIO.consume(Paths.lbRemoveMarker, enforcedUID: euid) {
-                let name = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if let name = MarkerIO.consumeLast(Paths.lbRemoveMarker, enforcedUID: euid) {
                 if entries.contains(where: { $0.name == name }) { entries.removeAll { $0.name == name }; LockboxStore.save(entries) }
                 st.pending.removeValue(forKey: name); st.unlockedUntil.removeValue(forKey: name); st.save()
             }
             // copy: if unlocked, write the secret to a fresh 0600 user-owned outbox, then relock now.
-            if let data = MarkerIO.consume(Paths.lbCopyMarker, enforcedUID: euid) {
-                let name = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if let name = MarkerIO.consumeLast(Paths.lbCopyMarker, enforcedUID: euid) {
                 if let until = st.unlockedUntil[name], now < until, let e = entries.first(where: { $0.name == name }) {
                     writeOutbox(e.secret, ownerUID: euid)
                     st.unlockedUntil.removeValue(forKey: name); st.save()   // relock immediately on copy

@@ -275,7 +275,7 @@ final class ZonesController: NSObject, NSApplicationDelegate, MKMapViewDelegate,
     private func saveWithDelay(_ zs: [Zone]) -> Bool {
         let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? enc.encode(zs), let json = String(data: data, encoding: .utf8) else { return false }
-        return (try? json.write(toFile: Paths.dzRequestMarker, atomically: true, encoding: .utf8)) != nil
+        return MarkerIO.append(Paths.dzRequestMarker, line: json)   // escaped single line; Task 7 swaps to ops
     }
 
     // MARK: rendering
