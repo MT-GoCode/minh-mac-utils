@@ -17,6 +17,7 @@ enum Paths {
     static let enforcedUIDCacheFile = supportDir + "/enforced-uid"   // last-resolved enforced uid, survives restart
     static let logsDir         = supportDir + "/logs"
     static let enforcerdLog    = logsDir + "/enforcerd.log"
+    static let queueAuditLog   = logsDir + "/queue-audit.log"   // append-only DelayQueue event trail
 
     // Release valve. Config + lifecycle state are root-owned (only `--set-*`/the daemon write them);
     // the inbox is a USER-owned subdir so `--request`/`abort` can drop a marker without sudo (the

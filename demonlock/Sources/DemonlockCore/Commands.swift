@@ -23,16 +23,22 @@ private func fail(_ msg: String) -> Never {
 /// Returns true when it consumed the arg (the caller should `return`); false to fall through to that
 /// command's own verb (its request / enqueue / --set-*). Reserving these words as subcommands stops a
 /// bare `status`/`help` from being mis-parsed as a payload (the bug that queued "status"/"help").
-private func handleRequestFlags(_ first: String?, usage: String, abortMarker: String,
+private func handleRequestFlags(_ args: [String], usage: String, abortMarker: String,
                                 abortNote: String = "", status: () -> Void) -> Bool {
-    switch first {
+    switch args.first {
     case "--help", "help", "-h":
         print(usage)
     case "--status", "status":
         status()
     case "--abort", "abort":
-        dropDelayMarker(abortMarker)
-        print("✓ abort sent — cancels a pending request on the next tick.")
+        if args.count > 1 {
+            let key = args.dropFirst().joined(separator: " ")
+            _ = MarkerIO.append(abortMarker, line: key)
+            print("✓ abort sent for \"\(key)\" — cancels that pending row on the next tick.")
+        } else {
+            dropDelayMarker(abortMarker)   // zero-byte file = abort ALL
+            print("✓ abort sent — cancels every pending request on the next tick.")
+        }
         if !abortNote.isEmpty { print("  " + abortNote) }
     default:
         return false
@@ -743,9 +749,9 @@ private func rvSetMaxDuration(_ durText: String) {
 private func rvDelayGatePolicy(_ arg: String) {
     let s = arg.trimmingCharacters(in: .whitespacesAndNewlines)
     if s.isEmpty || s == "status" || s == "--status" {
-        if let pc = DelayedState.load(Paths.delayedGatePolicyFile).pending {
-            print("delayed gate-policy: QUEUED — lands \(TimeSpec.fmtWhen(pc.applyAt))  (\(TimeSpec.fmtLeft(pc.applyAt - nowEpoch())) left)\n  \(pc.payload)")
-        } else { print("delayed gate-policy: none queued.") }
+        printQueueStatus(Enforcer.gatePolicyQueue().status(), label: "delayed gate-policy",
+                         abortCmd: "demonlock admin-release-valve delay-set-gate-policy abort",
+                         emptyHint: "delayed gate-policy: none queued.")
         return
     }
     if s == "abort" || s == "--abort" { dropDelayMarker(Paths.dgpAbortMarker); print("✓ abort sent — cancels a queued gate-policy change next tick."); return }
@@ -758,7 +764,10 @@ private func rvDelayGatePolicy(_ arg: String) {
         print("✓ gate-policy delay set to \(Int(secs/3600))h.")
         return
     }
-    do { try PolicyEngine.validate(s, zones: ZoneStore.load(), allowInPolicy: true) } catch { fail("✗ invalid gate policy: \(error)") }
+    guard PolicyEngine.acceptsDifferentially(s, zones: ZoneStore.load(),
+                                             baseline: ReleaseValveConfig.load().gatePolicy, allowInPolicy: true) else {
+        fail("✗ invalid gate policy (syntax error, or it introduces a NEW unknown-zone reference).")
+    }
     dropDelayMarker(Paths.dgpRequestMarker, payload: s)
     let delayH = Int(Bounds.clamp(Settings.load().gatePolicyDelaySec, Bounds.gatePolicyDelay) / 3600)
     print("✓ queued — the release-valve gate policy changes in \(delayH)h (no sudo). abort: `admin-release-valve delay-set-gate-policy abort`.")
@@ -795,32 +804,31 @@ func runDelaySetPolicy(_ args: [String]) {
         print("✓ delay-set-policy delay set to \(Int(secs/3600))h.")
         return
     }
-    if handleRequestFlags(args.first, usage: dspUsage, abortMarker: Paths.dspAbortMarker,
+    if handleRequestFlags(args, usage: dspUsage, abortMarker: Paths.dspAbortMarker,
                           status: printDelayedPolicyStatus) { return }
     let delayH = Int(Bounds.clamp(Settings.load().policyDelaySec, Bounds.policyDelay) / 3600)
     let p = args.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
     if p.isEmpty { print(dspUsage); return }
     if p.hasPrefix("--") { fail("✗ unknown option '\(args[0])'.\n" + dspUsage) }
-    do { try PolicyEngine.validate(p, zones: ZoneStore.load()) } catch { fail("✗ invalid policy: \(error)\n\n(fix it, then re-queue.)") }
-    if let cur = DelayedState.load(Paths.delayedPolicyFile).pending {
-        print("⚠️  replacing an already-queued policy (its \(delayH)h timer restarts):\n    \(cur.payload)\n")
+    // DIFFERENTIAL gate — same predicate the daemon uses at queue AND landing; an absolute gate
+    // here would refuse docs the daemon accepts whenever the live policy already dangles a zone.
+    guard PolicyEngine.acceptsDifferentially(p, zones: ZoneStore.load(), baseline: PolicyStore.text()) else {
+        fail("✗ invalid policy (syntax error, or it introduces a NEW unknown-zone reference).\n\n(fix it, then re-queue.)")
+    }
+    if let cur = Enforcer.policyQueue().status().rows.first {
+        print("⚠️  a policy is already queued (a DIFFERENT doc replaces it and restarts its \(delayH)h timer):\n    \(cur.preview)\n")
     }
     dropDelayMarker(Paths.dspRequestMarker, payload: p)
     print("✓ queued — this policy applies in \(delayH)h (re-validated then). It takes effect with NO sudo.")
     print("  Watch it: `demonlock status`  ·  cancel: `demonlock delay-set-policy --abort`")
 }
 
-/// Print the queued delayed-policy state (from the published snapshot, else the on-disk pending file).
+/// Print the queued delayed-policy state (reads the root-owned queue state file, 0644).
 private func printDelayedPolicyStatus() {
     let delayH = Int(Bounds.clamp(Settings.load().policyDelaySec, Bounds.policyDelay) / 3600)
-    if let pc = DelayedState.load(Paths.delayedPolicyFile).pending {
-        let left = max(0, Int(pc.applyAt - nowEpoch()))
-        print("delayed policy: QUEUED — lands \(TimeSpec.fmtWhen(pc.applyAt))" +
-              "  (\(left/3600)h \(left%3600/60)m left)")
-        print("  \(pc.payload)")
-    } else {
-        print("delayed policy: none queued.  Queue one with `demonlock delay-set-policy \"<policy>\"` (lands in \(delayH)h).")
-    }
+    printQueueStatus(Enforcer.policyQueue().status(), label: "delayed policy",
+                     abortCmd: "demonlock delay-set-policy --abort",
+                     emptyHint: "delayed policy: none queued.  Queue one with `demonlock delay-set-policy \"<policy>\"` (lands in \(delayH)h).")
 }
 
 private let dzUsage = """
@@ -853,7 +861,7 @@ func runDelayZones(_ args: [String]) {
         print("✓ delayzones delay set to \(Int(secs/3600))h.")
         return
     }
-    if handleRequestFlags(args.first, usage: dzUsage, abortMarker: Paths.dzAbortMarker,
+    if handleRequestFlags(args, usage: dzUsage, abortMarker: Paths.dzAbortMarker,
                           status: printDelayZonesStatus) { return }
     if let a = args.first { fail("✗ unknown argument '\(a)'.\n" + dzUsage) }
     printDelayZonesStatus()

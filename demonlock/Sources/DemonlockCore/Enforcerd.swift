@@ -29,9 +29,9 @@ final class Enforcer {
     private var nextNuclear: Date?          // rate-limit for the nuclear (agent-dead) WindowServer kill
     private var nextAgentKick: Date?        // rate-limit for force-restarting a wedged-but-alive agent
     private var lastAgentSeen = Date()      // last fresh feed — gates the startup/recovery grace below
-    private var dpPolicyStatus: DelayedStatus?   // last-computed delayed-policy status (published every tick)
+    private var dpPolicyStatus: DelayQueue.QStatus?    // delayed-policy queue status (published every tick)
     private var dpZonesStatus: DelayedStatus?    // last-computed delayed-zones status (published every tick)
-    private var dpGatePolicyStatus: DelayedStatus?  // last-computed delayed gate-policy status
+    private var dpGatePolicyStatus: DelayQueue.QStatus?  // delayed gate-policy queue status
     private var safeAppsStatus: SafeApps.Status? // last-computed safe-apps pending registrations
     private var snoozePresetsStatus: SnoozePresets.Status?  // in-flight invocation + pending adds
     private var lockboxStatus: Lockbox.Status?   // password-lockbox lock state
@@ -431,9 +431,9 @@ final class Enforcer {
             sshAddr: ssh,
             health: health,
             releaseValve: rv,
-            legacyDelayedPolicy: dpPolicyStatus,
+            delayedPolicy: dpPolicyStatus,
+            delayedGatePolicy: dpGatePolicyStatus,
             legacyDelayedZones: dpZonesStatus,
-            legacyDelayedGatePolicy: dpGatePolicyStatus,
             legacySafeApps: safeAppsStatus,
             legacySnoozePresets: snoozePresetsStatus,
             lockbox: lockboxStatus))
@@ -448,14 +448,22 @@ final class Enforcer {
     /// Drive both delayed-change slots (policy + zones) one tick. Each validates its payload against the
     /// CURRENT zones/syntax at both queue and apply time, and applies as root (this daemon). Runs before
     /// the tick's own policy read so a change that lands this tick takes effect immediately.
+    /// Queue factories — one per delayed surface (Tasks 6-10 add the rest).
+    static func policyQueue() -> DelayQueue {
+        DelayQueue(kind: "policy",
+                   store: .file(Paths.delayedPolicyFile, legacyDecode: Legacy.singleSlot(constKey: "policy")),
+                   requestMarker: Paths.dspRequestMarker, abortMarker: Paths.dspAbortMarker,
+                   onFailure: .drop, payloadIsJSON: false, auditLog: Paths.queueAuditLog)
+    }
+    static func gatePolicyQueue() -> DelayQueue {
+        DelayQueue(kind: "gate-policy",
+                   store: .file(Paths.delayedGatePolicyFile, legacyDecode: Legacy.singleSlot(constKey: "gate-policy")),
+                   requestMarker: Paths.dgpRequestMarker, abortMarker: Paths.dgpAbortMarker,
+                   onFailure: .drop, payloadIsJSON: false, auditLog: Paths.queueAuditLog)
+    }
+
     private func runDelayedChanges(_ nowSec: Double, enforcedUID: uid_t?) {
-        dpPolicyStatus = DelayedChange.tick(
-            kind: "policy", now: nowSec, stateFile: Paths.delayedPolicyFile,
-            requestMarker: Paths.dspRequestMarker, abortMarker: Paths.dspAbortMarker,
-            delaySec: Bounds.clamp(settings.policyDelaySec, Bounds.policyDelay),
-            enforcedUID: enforcedUID,
-            validate: { (try? PolicyEngine.validate($0, zones: ZoneStore.load())) != nil },
-            apply: { (try? PolicyStore.write($0)) != nil })
+        // Zones stay on the legacy single-slot path until Task 6 (the map still writes snapshots).
         dpZonesStatus = DelayedChange.tick(
             kind: "zones", now: nowSec, stateFile: Paths.delayedZonesFile,
             requestMarker: Paths.dzRequestMarker, abortMarker: Paths.dzAbortMarker,
@@ -466,13 +474,36 @@ final class Enforcer {
                 do { try payload.write(toFile: Paths.zonesFile, atomically: true, encoding: .utf8)
                      chmod(Paths.zonesFile, 0o644); return true } catch { return false }
             })
-        dpGatePolicyStatus = DelayedChange.tick(
-            kind: "gate-policy", now: nowSec, stateFile: Paths.delayedGatePolicyFile,
-            requestMarker: Paths.dgpRequestMarker, abortMarker: Paths.dgpAbortMarker,
-            delaySec: Bounds.clamp(settings.gatePolicyDelaySec, Bounds.gatePolicyDelay),
-            enforcedUID: enforcedUID,
-            validate: { (try? PolicyEngine.validate($0, zones: ZoneStore.load(), allowInPolicy: true)) != nil },
-            apply: { var c = ReleaseValveConfig.load(); c.gatePolicy = $0; try? c.save(); return true })
+
+        // Policy + gate-policy on DelayQueue. Validation is DIFFERENTIAL against the live baseline
+        // (absolute validation would reject every doc forever once the live policy dangles a zone).
+        // Phase split: consume BOTH queues' markers before EITHER applies — an abort consumed this
+        // tick must be visible before a sibling defers to a doomed doc (zones joins in Task 6).
+        let policyQ = Enforcer.policyQueue(), gateQ = Enforcer.gatePolicyQueue()
+        let pDelay = Bounds.clamp(settings.policyDelaySec, Bounds.policyDelay)
+        let gDelay = Bounds.clamp(settings.gatePolicyDelaySec, Bounds.gatePolicyDelay)
+        let pValidate: (String) -> Bool = {
+            PolicyEngine.acceptsDifferentially($0, zones: ZoneStore.load(), baseline: PolicyStore.text())
+        }
+        let gValidate: (String) -> Bool = {
+            PolicyEngine.acceptsDifferentially($0, zones: ZoneStore.load(),
+                                               baseline: ReleaseValveConfig.load().gatePolicy, allowInPolicy: true)
+        }
+        policyQ.consumeMarkers(now: nowSec, enforcedUID: enforcedUID,
+                               delaySec: { _ in pDelay }, key: { _ in "policy" }, validate: pValidate)
+        gateQ.consumeMarkers(now: nowSec, enforcedUID: enforcedUID,
+                             delaySec: { _ in gDelay }, key: { _ in "gate-policy" }, validate: gValidate)
+        dpPolicyStatus = policyQ.applyDue(now: nowSec, validate: pValidate) { due in
+            Dictionary(uniqueKeysWithValues: due.map { d in
+                (d.key, ((try? PolicyStore.write(d.payload)) != nil, String?.none))
+            })
+        }
+        dpGatePolicyStatus = gateQ.applyDue(now: nowSec, validate: gValidate) { due in
+            Dictionary(uniqueKeysWithValues: due.map { d in
+                var c = ReleaseValveConfig.load(); c.gatePolicy = d.payload
+                return (d.key, ((try? c.save()) != nil, String?.none))
+            })
+        }
     }
 }
 

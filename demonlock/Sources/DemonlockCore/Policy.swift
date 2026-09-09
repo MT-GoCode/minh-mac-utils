@@ -158,6 +158,44 @@ enum PolicyEngine {
         }
         return p
     }
+
+    /// All zone names an expression references (parse-only — no existence check). Enforces the
+    /// IN_POLICY placement rule like `validate`. Throws on syntax errors.
+    static func referencedZones(_ s: String, allowInPolicy: Bool = false) throws -> Set<String> {
+        let p = try parse(s)
+        var names: Set<String> = []
+        var usedInPolicy = false
+        func walk(_ p: Policy) {
+            switch p {
+            case .and(let a), .or(let a): a.forEach(walk)
+            case .not(let n): walk(n)
+            case .locatedInAny(let ns): names.formUnion(ns)
+            case .foundInNearbyBSSID, .timeIsAny: break
+            case .inPolicy: usedInPolicy = true
+            }
+        }
+        walk(p)
+        if usedInPolicy && !allowInPolicy {
+            throw PolicyError(message: "IN_POLICY is only valid in the release-valve window policy, not the main policy.")
+        }
+        return names
+    }
+
+    /// DIFFERENTIAL acceptance for the delayed no-sudo paths: the doc must parse, and must introduce
+    /// no NEW unresolved zone reference beyond what the live `baseline` doc already dangles. Absolute
+    /// validation would reject every queued doc forever on a machine whose live policy already has a
+    /// dangling reference — the silent-drop failure mode this system exists to kill. Fail-closed on
+    /// any parse error (doc OR baseline).
+    static func acceptsDifferentially(_ doc: String, zones: [Zone], baseline: String?,
+                                      allowInPolicy: Bool = false) -> Bool {
+        guard let refs = try? referencedZones(doc, allowInPolicy: allowInPolicy) else { return false }
+        let unresolved = refs.filter { !ZoneStore.hasZone(named: $0, in: zones) }
+        guard !unresolved.isEmpty else { return true }
+        let baseUnresolved = baseline
+            .flatMap { try? referencedZones($0, allowInPolicy: allowInPolicy) }?
+            .filter { !ZoneStore.hasZone(named: $0, in: zones) } ?? []
+        return unresolved.isSubset(of: Set(baseUnresolved))
+    }
 }
 
 // MARK: - Tokenizer
