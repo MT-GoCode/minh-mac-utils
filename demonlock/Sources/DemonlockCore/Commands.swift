@@ -817,9 +817,10 @@ private func printDelayedPolicyStatus() {
 }
 
 private let dzUsage = """
-usage (no sudo — a zones change is CREATED from the map's "Save in …h" button; here you view / cancel it):
-  demonlock delayzones --status   # show a queued zones change and when it lands
-  demonlock delayzones --abort    # cancel a queued zones change
+usage (no sudo — zone OPS are queued from the map's "Save/Delete in …h" buttons; here you view / cancel):
+  demonlock delayzones --status            # every pending op (add:<name> / del:<name>) and when it lands
+  demonlock delayzones --abort "<key>"     # cancel one pending op, e.g. --abort "add:730 moreno"
+  demonlock delayzones --abort             # cancel ALL pending ops
   sudo demonlock delayzones set-delay "<dur>"   # tune the delayed zone-change delay (must be 12h–168h)
   demonlock delayzones --help     # this help   (--status / --abort / --help also work bare)
 """
