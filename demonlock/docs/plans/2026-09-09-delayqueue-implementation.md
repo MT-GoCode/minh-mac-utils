@@ -71,7 +71,14 @@ final class SmokeTests: XCTestCase {
 }
 ```
 
-- [ ] **Step 4:** Push; on Mac: `swift build && swift test` — both green, binary behaves (`.build/debug/demonlock help` prints help). (This exact restructure was trial-run in /tmp on 2026-09-09: build 2.08s, SmokeTests 1/1 passed, help prints — expect the same.)
+- [ ] **Step 4:** Test seam: change `Paths`' path constants from `static let` to computed
+  `static var` off a single `static var root = ProcessInfo.processInfo.environment["DEMONLOCK_ROOT"] ?? ""`
+  prefix (e.g. `supportDir { root + "/Library/Application Support/Demonlock" }`). Zero behavior
+  change installed (root=""); tests set `Paths.root` to a temp dir so `Settings.mutate`,
+  `LockboxStore`, `SPFile`, `SafeApps.Registry` — all Paths-hardcoded — become writable
+  unprivileged. Without this, Tasks 8-10's store/flush/migration tests silently assert nothing
+  (e.g. `Settings.mutate` returns silently when its lock open fails as non-root).
+- [ ] **Step 5:** Push; on Mac: `swift build && swift test` — both green, binary behaves (`.build/debug/demonlock help` prints help). (This exact restructure was trial-run in /tmp on 2026-09-09: build 2.08s, SmokeTests 1/1 passed, help prints — expect the same.)
 - [ ] **Step 5:** Commit `refactor: split DemonlockCore library + test target (no behavior change)`.
 
 ### Task 2: MarkerIO — append, NDJSON consume, LOCK_NB, escaping
@@ -183,11 +190,6 @@ struct DelayQueue {
     let onFailure: Failure; let payloadIsJSON: Bool
     let auditLog: String                          // audit file path — a PARAMETER, not a Paths
                                                   // reference, so the file vendors byte-identical
-    let enqueueTransform: ((String) -> String?)?  // nil for all queues except snooze-invoke (Task 8):
-                                                  // maps raw request line → stored payload at queue
-                                                  // time, nil ⇒ reject. Declared HERE so Task 3 ships
-                                                  // it with its test (testEnqueueTransformAppliedOnce);
-                                                  // Task 8 only USES it.
 
     static let cap = 64
     static let clockSlackSec = 300.0
@@ -201,17 +203,26 @@ struct DelayQueue {
     /// Read-only: the due payloads at `now`, seq order, without consuming anything (joint projection).
     func peekDue(now: Double) -> [(key: String, payload: String)]
 
-    /// One tick. Order (spec): abort → request → clock-guard → apply-due (seq order).
-    /// `applyBatch` receives ALL due items (seq order) and returns per-key verdicts; keys absent
-    /// from the result are treated as (ok: false, reason: "no verdict") — fail-closed.
-    func tick(now: Double, enforcedUID: uid_t?,
-              delaySec: @escaping (String) -> Double,
-              key: @escaping (String) -> String?,
-              validate: @escaping (String) -> Bool,
-              applyBatch: @escaping (_ due: [(key: String, payload: String)]) -> [String: (ok: Bool, reason: String?)]
+    /// PHASE 1 — consume markers: crash sweep (step 0) → abort → requests → clock guard.
+    /// Returns the keys aborted by THIS call so app code can mirror side effects (lockbox must
+    /// relock an aborted name's OPEN window — the 8-slot `recent` ring is never the transport,
+    /// a batch event would lose the names).
+    func consumeMarkers(now: Double, enforcedUID: uid_t?,
+                        delaySec: @escaping (String) -> Double,
+                        key: @escaping (String) -> String?,
+                        validate: @escaping (String) -> Bool) -> (abortedKeys: [String], ())
+
+    /// PHASE 2 — apply due rows (seq order). Separate from PHASE 1 so the ORCHESTRATOR runs
+    /// consumeMarkers on ALL queues before ANY queue applies: an abort dropped this tick must be
+    /// visible to a sibling queue's joint projection BEFORE it defers to a doomed doc (else the
+    /// user aborts one change and loses two). Due tuples carry the daemon-stamped `requestedAt`
+    /// (snooze-invoke resolves its frozen target from it).
+    func applyDue(now: Double,
+                  validate: @escaping (String) -> Bool,
+                  applyBatch: @escaping (_ due: [(key: String, payload: String, requestedAt: Double)]) -> [String: (ok: Bool, reason: String?)]
     ) -> QStatus
 
-    /// Per-item convenience: wraps `apply` into an applyBatch.
+    /// Single-queue convenience (sidecar): consumeMarkers + applyDue with a per-item `apply`.
     func tick(now: Double, enforcedUID: uid_t?, delaySec: @escaping (String) -> Double,
               key: @escaping (String) -> String?, validate: @escaping (String) -> Bool,
               apply: @escaping (String) -> Bool) -> QStatus
@@ -224,18 +235,26 @@ struct DelayQueue {
 ```
 
 Tick semantics (implement exactly; spec section "Semantics"):
+0. **Crash sweep (unconditional, in consumeMarkers):** any `recent` Outcome still `applying`
+   from a previous tick is rewritten `unconfirmed` + logged. It must NOT live inside apply-due:
+   post-crash there are no due rows, so an apply-side sweep would never run and the audit would
+   show `applying` forever.
 1. **Abort:** `consumeLines(abortMarker)`. `[]` (zero-byte) ⇒ abort ALL (one `flushed` event, reason "abort --all"). A line that is exactly `--all` ALSO aborts all (sidecar CLI and safe-apps CLI write the literal `--all` as contents today — spec census/struct comment covers it; without this, shipped `--all` aborts break on upgrade). Other non-blank lines each drop that key (+`aborted` outcome each; unknown key ⇒ `rejected` outcome reason "no such pending key"). Blank lines skipped.
 2. **Requests:** `consumeLines(requestMarker)`, in file order. Per line: `key(line)` nil ⇒ `rejected` ("unkeyable"); `validate` false ⇒ `rejected` ("invalid at queue"); existing key + `canonical` equal ⇒ silently ignore (no outcome — double-click); existing key + different ⇒ replace payload, `requestedAt=now`, `applyAt=now+delaySec(line)`, new seq, `replaced` outcome; new key at cap ⇒ `rejected` ("queue full 64/64"); else insert Item(now, now+delay, seq: nextSeq++), `queued` outcome.
 3. **Clock guard:** any pending `requestedAt > now + 300` ⇒ re-stamp `requestedAt=now, applyAt=now+delaySec(payload)`, log.
 4. **Apply-due:** due = pending where `now >= applyAt` (for `.retry` also `now >= nextRetryAt ?? 0`), seq-sorted. Re-`validate` each; invalid ⇒ remove + `rejected` ("invalid at landing"). Then:
-   - `.drop`: remove ALL surviving due rows from `pending`, write `applying` outcomes, **save state** (spec save-before-apply); call `applyBatch`; rewrite each outcome to `applied` (bump `lastAppliedAt=now`, success only) or `failed(reason)`; save again. On next tick, any lingering `applying` outcome (only possible after a crash) is rewritten `unconfirmed` and logged — never re-applied.
-   - `.retry`: call `applyBatch` with rows still in `pending`; ok ⇒ remove + `applied` + bump `lastAppliedAt`; !ok ⇒ `retries += 1`, `nextRetryAt = now + min(300, 5 * pow(2, retries))`, log throttled, `failed` outcome once at `retries == 10`. Rows never get `applying`.
+   - `.drop`: remove ALL surviving due rows from `pending`, write ONE `applying` BATCH Outcome
+     (key = joined keys — [AR2#10]: a 20-row batch must not evict the whole `recent` ring),
+     **save state** (spec save-before-apply); call `applyBatch`; rewrite the batch outcome to
+     per-result form — one `applied` event (keys joined; bump `lastAppliedAt=now` iff ≥1 success)
+     plus one `failed` event listing failed keys+reasons if any; save again. (The `applying`→`unconfirmed` rewrite is step 0, not here.)
+   - `.retry`: call `applyBatch` with rows still in `pending`; ok ⇒ remove + `applied` + bump `lastAppliedAt`; !ok ⇒ `nextRetryAt = now + min(300, 5 * pow(2, Double(retries ?? 0)))` computed BEFORE `retries = (retries ?? 0) + 1` → intervals 5, 10, 20, …, capped 300; log throttled; `failed` outcome once at retries == 10. Rows never get `applying`.
 5. `enforcedUID == nil` ⇒ skip steps 1–2, still run 3–4 (spec: due items must land on a cold uid cache).
 6. Every outcome also appends an audit line to `Paths.queueAuditLog` (0644 root; `preview()` = first 90 chars, newlines→spaces — reuse the shape of `DelayedChange.preview`).
 7. `recent` = last 8 outcomes, newest first, where one batch/flush = one Outcome.
 
 - [ ] **Step 1:** Write failing tests (all pure: temp files, injected closures, no root):
-  - `testQueueLandsAfterDelay`, `testItemDecodesWithoutRetriesField`, `testSeqOrderDeterministicAcrossReload` (queue del+add same tick, reload QState from disk between every tick, assert order 100×)
+  - `testQueueLandsAfterDelay`, `testItemDecodesWithoutRetriesField`, `testSeqOrderIsSeqContract` (queue del+add same tick with varied key sets, reload QState from disk between ticks, assert apply order == seq order — NOT a repeat-100× loop: Dictionary hash seeding is per-process, so in-process repetition proves nothing; the seq contract itself is the guarantee)
   - `testIdenticalPayloadIdempotent_JSONWhitespace` (pretty vs compact JSON, clock kept), `testIdenticalNonJSONBytes`
   - `testDifferentPayloadReplacesAndResets`, `testReplaceAcceptedAtCap`, `test65thKeyRejected`, `testAbortAcceptedAtCap`
   - `testAbortByKey`, `testAbortAllOnZeroByteFile`, `testAbortAllLiteralLine`, `testAbortBlankLinesSkipped`, `testAbortUnknownKeyRejectedOutcome`
@@ -245,7 +264,7 @@ Tick semantics (implement exactly; spec section "Semantics"):
   - `testClockBackward400sRestamps`, `testClockBackward100sDoesNot`, `testForwardJumpLands`
   - `testRecentIsEightEvents_flushIsOne` (flush 20 rows → 1 event), `testAuditLineWritten`
   - `testNilEnforcedUIDStillApplies`, `testPeekDueMatchesApplyOrder`, `testPoisonLineRejectedIndividually` (key() nil for one of three lines; other two queue)
-  - `testEnqueueTransformAppliedOnce` (transform output is what's stored/compared; replace/idempotent decided on TRANSFORMED payload)
+  - `testAbortedKeysReturned` (consumeMarkers surfaces aborted keys), `testApplyingSweepRunsWithoutDueRows` (crash-sim then empty tick → `unconfirmed`)
 - [ ] **Step 2:** `swift test --filter DelayQueueTests` — FAIL.
 - [ ] **Step 3:** Implement `DelayQueue.swift` (~250 lines) per interfaces + semantics above. Add `Paths.queueAuditLog`.
 - [ ] **Step 4:** `swift test` green (Mac). Commit `feat: DelayQueue core`.
@@ -332,10 +351,21 @@ static func zonesQueue() -> DelayQueue    // kind "zones", .file(Paths.delayedZo
 
 - [ ] **Step 1:** Failing tests: policy queue end-to-end with temp Paths override (inject store/markers directly — construct DelayQueue with temp paths, don't touch real Paths): constant key ⇒ second different doc replaces+resets; identical resubmit idempotent; multi-line doc round-trips (escaping from Task 2) and validates; landing validates against injected zones list; apply writes the doc.
 - [ ] **Step 2:** Implement `runDelayedChanges` using the three queues:
-  - zones tick FIRST, then policy, then gate-policy (spec order; zones' applyBatch arrives in Task 6 — until then wire zones with a temporary per-item apply that whole-file-writes, kept compiling, replaced next task).
-  - policy: `key = { _ in "policy" }`, `validate = { (try? PolicyEngine.validate($0, zones: ZoneStore.load())) != nil }`, `apply = { (try? PolicyStore.write($0)) != nil }`, `delaySec = { _ in Bounds.clamp(settings.policyDelaySec, Bounds.policyDelay) }`.
+  - Orchestration (finding-9 shape, final here even though zones' real applyBatch arrives in
+    Task 6): `consumeMarkers` on zones → policy → gate-policy first, THEN `applyDue` in the same
+    order.
+  - Zones do NOT convert in this task: they stay on the untouched `DelayedChange.tick` until
+    Task 6 converts them wholesale. (Rationale: the map UI still writes a pretty-printed
+    multi-line whole-file snapshot until Task 7 — putting zones on the NDJSON queue now would
+    shred that marker into ~40 rejected fragments and silently kill "Save in 36h" for two tasks.)
+  - policy: `key = { _ in "policy" }`; **differential validation** (finding 15 — `PolicyEngine.validate`
+    is absolute and throws on ANY unknown zone; the live policy already references "451 niantic ave",
+    so absolute landing validation would reject every queued doc forever, and it would disagree with
+    fold's differential phase 2): `validate = { doc in syntax-parses && (unresolvedZones(doc, live) ⊆ unresolvedZones(livePolicy, live)) }`
+    using `PolicyEngine.referencedZones` (Task 6 adds it — hoist that tiny addition HERE).
+    `apply = { (try? PolicyStore.write($0)) != nil }`, `delaySec = { _ in Bounds.clamp(settings.policyDelaySec, Bounds.policyDelay) }`.
   - gate-policy analogous with `allowInPolicy: true`, apply into `ReleaseValveConfig`.
-- [ ] **Step 3:** CLI: `runDelaySetPolicy` writes via `dropDelayMarker` (now append+escape — no other change); `handleRequestFlags` unchanged for `--abort` (zero-byte = all, already correct); ADD `--abort <key>` passthrough: if an arg follows `--abort`, write it as the line. Same for gate-policy and (Task 6) delayzones. Status printers switch to `printQueueStatus` (defined in Task 4.5) with
+- [ ] **Step 3:** CLI: `runDelaySetPolicy` writes via `dropDelayMarker` (now append+escape — no other change); `handleRequestFlags` signature changes from `(_ first: String?, …)` to `(_ args: [String], …)` so `--abort <key>` can see its argument (every caller updated in this task — Commands.swift:34-ish, gate-policy, delayzones); bare `--abort` keeps writing the zero-byte file; `--abort <key>` writes the key as a line. Same for gate-policy and (Task 6) delayzones. Status printers switch to `printQueueStatus` (defined in Task 4.5) with
 format:
 
 ```
@@ -385,7 +415,8 @@ enum ZoneOps {
 5. Else → re-run step 3 with live docs only; if still new unresolved → whole batch `(false, "would orphan policy reference <name>")`, `final = nil`.
 `unresolved(zones, policy, gate)` = zone names referenced by either doc that aren't in `zones` (expose a small `PolicyEngine.referencedZones(_ s: String) -> Set<String>` — parse-only, add to Policy.swift).
 
-Enforcerd wiring: zones tick uses `applyBatch = { due in let r = ZoneOps.fold(due: due, live: ZoneStore.load(), livePolicy: PolicyStore.text(), liveGatePolicy: ReleaseValveConfig.load().gatePolicy, duePolicyDoc: policyQ.peekDue(now:).first?.payload, dueGateDoc: gateQ.peekDue(now:).first?.payload); if let f = r.final { write zones.json atomically (existing write shape, chmod 644) or mark all failed on write error }; return r.verdicts }`.
+Enforcerd wiring (consume-all THEN apply-all — an abort consumed by the policy queue's
+consumeMarkers this tick removes the doomed doc BEFORE zones' fold peeks at it): zones applyDue uses `applyBatch = { due in let r = ZoneOps.fold(due: due, live: ZoneStore.load(), livePolicy: PolicyStore.text(), liveGatePolicy: ReleaseValveConfig.load().gatePolicy, duePolicyDoc: policyQ.peekDue(now:).first?.payload, dueGateDoc: gateQ.peekDue(now:).first?.payload); if let f = r.final { write zones.json atomically (existing write shape, chmod 644) or mark all failed on write error }; return r.verdicts }`.
 
 - [ ] **Step 1:** Failing tests (pure `fold`): move-edit lands (del+add same name, policy references it); add-collision dropped; del-missing no-op-dropped; bad-geometry dropped, siblings proceed; whole-batch drop names the orphaned reference; pre-existing dangling ref ("451 niantic ave" fixture) does NOT block; add-zone + due-policy-referencing-it → both land (fold ok under due doc; policy lands its own tick — assert fold verdict ok); del-zone + due-doc-referencing-it → doc wins, batch dropped w/ "conflicts with landing policy"; doc invalid against live too → batch retried against live docs.
 - [ ] **Step 2:** FAIL → implement `ZoneOps` + `PolicyEngine.referencedZones` → PASS.
@@ -401,7 +432,7 @@ Enforcerd wiring: zones tick uses `applyBatch = { due in let r = ZoneOps.fold(du
 
 - [ ] **Step 1:** `saveWithDelay(_ op: ZoneOp) -> Bool` = `MarkerIO.append(Paths.dzRequestMarker, line: opJSON)`. `saveZone` delayed branch queues `ZoneOp(op:"add", zone: newZone)`; `deleteSelected` delayed branch queues `ZoneOp(op:"del", name: name)` **and calls `reload()`** (the missing reload). Instr strings: include exact abort command `demonlock delayzones --abort "add:<name>"`.
 - [ ] **Step 2:** Pending display: `reload()` also reads `StateStore.read()?.delayedZones?.rows` and appends a line per pending op to the instr/label area (`⏳ add:730 moreno — lands in 35h 12m · abort: demonlock delayzones --abort "add:730 moreno"`). Minimal text UI, no new views.
-- [ ] **Step 3:** `saveWithAdmin` (both call sites): after a successful admin write, for each zone name in the symmetric difference (old live vs new list), if `StateStore.read()?.delayedZones?.rows` contains `add:<name>` or `del:<name>`, append those key lines to `Paths.dzAbortMarker`; write NOTHING when no keys match (spec [AR2#3]).
+- [ ] **Step 3:** `saveWithAdmin` gains the old list: signature becomes `saveWithAdmin(_ zs: [Zone], replacing old: [Zone])` — the caller captures `ZoneStore.load()` BEFORE the osascript write (after it, the live file IS the new list and the diff is empty). For each zone name in the symmetric difference, if `StateStore.read()?.delayedZones?.rows` contains `add:<name>` or `del:<name>`, append those key lines to `Paths.dzAbortMarker`; write NOTHING when no keys match (spec [AR2#3]).
 - [ ] **Step 4:** **The EDIT path** (the spec's raison d'être — no other step provides it):
   `saveZone`'s duplicate-name guard (`ZonesUI.swift:170`) currently refuses an existing name
   outright, so del+add of one name is impossible from the UI. Change: when the typed name matches
@@ -428,16 +459,19 @@ struct SPFile: Codable {
     var invokeQ: DelayQueue.QState? = nil
     var addsQ: DelayQueue.QState? = nil
 }
-// Queues (QStateStore closures over SPFile load/save; single read+write per tick):
-//   invoke: kind "snooze-invoke", markers spInvoke*, key = {_ in "invocation"}, payloadIsJSON: true
-//     payload = {"name": <preset>, "targetAt": <epoch frozen at QUEUE time by the daemon tick's key/validate step>}
-//     — freezing: the CLI writes just the NAME; the queue's `key` closure is given the raw line; the
-//     VALIDATE closure resolves the preset and REWRITES the payload? NO — closures can't rewrite.
-//     Resolution: the invoke REQUEST line is the name; `key` returns "invocation" if the preset exists
-//     else nil (rejected); delaySec = preset.invokeDelaySec clamp; the frozen target is computed at
-//     APPLY time as `min(parseTarget(spec) at queue…)` — cannot be, target must freeze at queue.
-//     FINAL DESIGN: the `enqueueTransform` hook (declared + tested in Task 3's interface — this task
-//     only USES it): invoke resolves name → {"name":…, "targetAt": parseTarget(spec).epoch}.
+// Produces: `SnoozePresets.invokeQueue() -> DelayQueue` and `SnoozePresets.addsQueue() -> DelayQueue`
+// (QStateStore closures over SPFile load/save; each queue loads/saves its own sub-object — fine, the file is tiny):
+//   invoke: kind "snooze-invoke", markers spInvoke*, key = {_ in "invocation"},
+//     payloadIsJSON: false, PAYLOAD = THE PRESET NAME ONLY (adversarial ruling: no transform
+//     hook on the vendored abstraction). The frozen target is resolved AT APPLY TIME from the
+//     daemon-stamped Item.requestedAt (applyDue's due tuples carry it):
+//       target = TimeSpec.parseTarget(preset.spec, from: Date(timeIntervalSince1970: requestedAt))
+//     — freezing at queue time BY DEFINITION, and idempotency works naturally: re-invoking the
+//     same preset = same payload bytes = ignored; a different preset = replace+reset.
+//     Requires `TimeSpec.parseTarget(_:from: Date = Date())` — thread the reference date through
+//     TimeSpec.swift:51/81/99 where Date() is currently hardcoded (default preserves all callers).
+//     `key` returns "invocation" iff the preset exists (else nil ⇒ rejected);
+//     delaySec = clamp(preset.invokeDelaySec, Bounds.snoozePresetInvokeDelay).
 //   adds:   kind "snooze-preset-add", markers spAdd*, key = preset name from JSON, payloadIsJSON: true
 ```
 
@@ -470,18 +504,24 @@ struct LBFile: Codable {                       // lockbox-state.json container
 // unlocks queue: kind "lockbox-unlock", markers lbUnlock*/lbAbort*, key = payload (name),
 //   payloadIsJSON: false, delaySec = { name in max(entry.delaySec, Bounds.lockboxUnlockDelayMin) },
 //   validate = entry exists && not already unlocked, apply = { unlockedUntil[name] = now + Bounds.lockboxAutoRelock }
+static func unlocksQueue() -> DelayQueue       // Produces (Task 10 flush + Enforcerd wiring use it)
 static func relockAll()                        // clears unlockedUntil (grant path; Task 10)
+// ABORT MUST STILL RELOCK (today Lockbox.swift:78-82 cancels AND relocks; the queue's abort
+// consumes the marker so Lockbox.tick never sees the name): Lockbox.tick calls
+// `let aborted = unlocksQueue.consumeMarkers(…).abortedKeys` and clears `unlockedUntil` for each
+// — the returned-keys channel exists precisely for this (a copyable secret surviving an explicit
+// abort is a fail-open).
 ```
 
 Copy / remove / add / auto-relock stay bespoke in `Lockbox.tick` (spec do-not-unify), reading markers via `consumeLast`. `Status`/`EntryView` unchanged except `unlockAtEpoch` now read from `unlocksQ` rows.
 
-- [ ] **Step 1:** Failing tests: unlock queues with per-entry delay ≥ floor; crash-between-saves does NOT resurrect a window (save-before-apply — the R# scenario: apply sets unlockedUntil, but row was removed pre-apply; simulate crash by dropping the post-save; assert next tick has no window AND no re-apply); abort relocks + cancels; re-add resets pending + window (existing behavior kept); migration preserves `unlockedUntil` sibling byte-for-byte.
+- [ ] **Step 1:** Failing tests: abort of an unlock relocks an OPEN window (via abortedKeys); unlock queues with per-entry delay ≥ floor; crash-between-saves does NOT resurrect a window (save-before-apply — the R# scenario: apply sets unlockedUntil, but row was removed pre-apply; simulate crash by dropping the post-save; assert next tick has no window AND no re-apply); abort relocks + cancels; re-add resets pending + window (existing behavior kept); migration preserves `unlockedUntil` sibling byte-for-byte.
 - [ ] **Step 2:** FAIL → implement → PASS. Commit `feat: lockbox unlocks on DelayQueue + relockAll`.
 
 ### Task 10: Safe-apps port + grant flush wiring
 
 **Files:**
-- Modify: `demonlock/Sources/DemonlockCore/SafeApps.swift` (registry → `zonesQueue`-style file queue; kind "safe-apps", markers saRegister*/saAbort*, key = `app.name`, payloadIsJSON: true, validate = existing register checks (blocklist, team rules — reuse the current register-path validation function), apply = today's registration `Settings.mutate`; immediate remove stays bespoke incl. `clearPending(bid:)` → abort-line append)
+- Modify: `demonlock/Sources/DemonlockCore/SafeApps.swift` (Produces: `SafeApps.queue() -> DelayQueue`; kind "safe-apps", markers saRegister*/saAbort*, key = `app.name`, payloadIsJSON: true, validate = existing register checks (blocklist, team rules — reuse the current register-path validation function), apply = today's registration `Settings.mutate`; immediate remove stays bespoke incl. `clearPending(bid:)` → abort-line append)
 - Modify: `demonlock/Sources/DemonlockCore/ReleaseValve.swift:161-179` (`flushSelfServeQueues`)
 - Delete old `consume(_:enforcedUID:) -> Data?` from MarkerIO (last caller gone).
 - Test: `demonlock/Tests/DemonlockCoreTests/SafeAppsQueueTests.swift`, extend `DelayQueueTests` for flush.
@@ -522,7 +562,7 @@ var lockbox: Lockbox.Status? = nil            // window/lock state only (kept)
 // seeding/baseline logic, now fed from the seven QStatus fields.
 ```
 
-- [ ] **Step 1:** Sweep: delete legacy `legacy*` StateSnapshot fields, `DelayedStatus` remnants,
+- [ ] **Step 1:** Sweep: `Enforcer.run()` startup gains `unlink(Paths.supportDir + "/delayed-snooze.json")` (spec Migration: orphan file deleted; no other task does it). Delete legacy `legacy*` StateSnapshot fields, `DelayedStatus` remnants,
   **`Commands.swift:101 delayedStatusLine`** and every caller, old `SafeApps.Status`/`SnoozePresets.Status`
   types. `grep -rn "DelayedStatus\|legacyDelayed\|delayedStatusLine\|SafeApps.Status\|SnoozePresets.Status"`
   must return nothing. (Citation drift note: cited ranges are ±small — Commands 26-42, 707-731, 755-792;
@@ -546,7 +586,7 @@ var lockbox: Lockbox.Status? = nil            // window/lock state only (kept)
 - Test: sidecar has no test target — add one mirroring Task 1 (lib `SidecarCore` split) **only if** the split is mechanical; otherwise rely on DemonlockCore's DelayQueue tests (identical file) + build. Decision recorded: rely on identical-file guarantee — add `demonlock/Tests/DemonlockCoreTests/VendorSyncTests.swift`: `testSidecarDelayQueueByteIdentical` (reads both files relative to `#filePath`, asserts equal minus header lines).
 
 - [ ] **Step 1:** Copy files, port Daemon (`processMarkers` delay-add/abort sections replaced by one `tick` call with `applyBatch` wrapping the per-domain API call; arm/block markers stay bespoke via `consumeLast`; multi-domain CLI `delay-add a.com b.com` appends one line per domain).
-- [ ] **Step 2:** `swift build` in `nextdns-sidecar/` on Mac; VendorSyncTests green. Commit `feat(sidecar): delay-add on vendored DelayQueue`.
+- [ ] **Step 2:** `swift build` in `nextdns-sidecar/` on Mac; VendorSyncTests green. Commit `feat(sidecar): delay-add on vendored DelayQueue`. NOTE (user-visible, spec-mandated): the sidecar's pending cap drops 4096 → 64 (`Daemon.swift:111` today); >64 pending domains is unrealistic but the change is deliberate, not accidental.
 
 ### Task 13: Verification gate (pre-install)
 
@@ -567,7 +607,7 @@ var lockbox: Lockbox.Status? = nil            // window/lock state only (kept)
 ## Self-review (author-run, per writing-plans)
 
 - Spec coverage: every spec section mapped — Census (Tasks 5,6,8,9,10,12), Abstraction semantics (3), Marker contract (2), Boundary layer (2, 7), knobs (3,8), Zones (6,7), Cross-queue (6), Restart (3,9), Migration (4,8,9,12), bespoke list (8,9 keep-out respected), Testing (each bullet has a named test above), Rollout (13,14 + gate note).
-- Known deviation recorded: `enqueueTransform` knob added (Task 8) beyond the spec's closed knob set — required to freeze invoke's `targetAt` at queue time. Alternative considered and REJECTED: CLI-computed targetAt would let a hand-written marker choose an arbitrary stand-down target (preset-spec-only is the current, stricter semantics; queue-time recompute-and-compare is clock-fragile). The daemon-side transform is the smallest compliant design. Spec's closed-knob sentence should gain this knob at next spec touch.
+- Deviations from spec, all declared: (1) `legacyDecode` widened to return `(rows, lastAppliedAt)` (spec said `[String: Item]?` — lastAppliedAt must survive migration); (2) applyDue's due tuples carry `requestedAt` (spec's apply closure took only the payload — snooze-invoke resolves its frozen target from the daemon-stamped time, per adversary-1 finding 10, which REJECTED the earlier `enqueueTransform` knob: payload = preset name keeps invoke idempotent AND the knob set closed); (3) tick split into consumeMarkers/applyDue phases (spec described one tick — the split is required so cross-queue joint projection sees this tick's aborts first, finding 9). Fold these three into the spec at its next touch.
 - Adversary-1 pass (spec semantics, verdict NO on v1, 14 blockers): overlapping findings (Task 4.5 sequencing, --all literal, O_TRUNC, vendor identity) were already folded; NEW findings folded in v1.6 — atomic multi-line append + UI edit path (the spec's core scenario had no implementing step), all marker consumers converted in Task 2 (escape-timing corruption window), ReleaseValve:84/88 port + rv round-trip test + consumeFlag reimpl as explicit steps. Spec header corrected v4.3→v4.4 (a rename replace had silently no-opped). Remaining findings folded from the full report.
 - Adversary-2 pass COMPLETE (verdict NO on v1; all 10 confirmed + 4 speculative findings folded across v1.4/v1.5). Accepted-risk note: a user-held blocking flock on a request marker starves that queue indefinitely — fail-closed (nothing lands sooner, abort-all still possible after release), mitigation is the ≤1/min skip log; recorded, not fixed. Folded: Task 4.5 field-name collision fixed via legacy* renames; Task 5 stray delete line removed; vendored-file self-containment contract + `auditLog` init parameter added (byte-identical test now satisfiable). Remaining truncated findings folded on full report.
 - Pass-3 (self) finding folded: Task 4.5 added — without it, Tasks 6-10 could not compile (DelayedStatus consumers). Joint-projection staleness note: zones' `peekDue` runs before policy/gate consume THIS tick's markers — safe for requests (a request consumed this tick gets applyAt=now+delay, never due now) but an abort consumed this tick could arrive after zones already deferred to a doc being aborted. Fail-closed (batch dropped, re-queue) and rare; if either adversary confirms it matters, fix = consume phase for all queues before any apply phase.
