@@ -312,8 +312,14 @@ commit between Tasks 6 and 11. This task makes the migration ADDITIVE.
   legacySafeApps/legacySnoozePresets` (same types; `lockbox` doesn't collide
   and keeps its name). Rename ripples to `Enforcerd.swift:434-441` publish
   args, `Commands.swift` statusBody/reader sites, `Agent.swift:201` — all in
-  this task. Safe: state.json has no readers outside this binary; lenient
-  decode makes missing keys nil during the upgrade window.
+  this task. ALSO add a lenient `init(from:)` to `StateSnapshot` decoding
+  every queue-status AND legacy field via `(try? c.decode(...)) ?? nil` —
+  synthesized Codable THROWS on a type mismatch even for optionals, so the
+  daemon-written pre-upgrade state.json (an old `delayedPolicy` object under
+  a key the new QStatus field now owns) would make `StateStore.read()` nil →
+  status prints "enforcer isn't running", agent panel blanks. Five lines;
+  test `testStateSnapshotDecodesOldShape` against a legacy fixture. (No
+  readers exist outside this binary, so key renames themselves are safe.)
 - Modify: `demonlock/Sources/DemonlockCore/Agent.swift:77-91`
   (`handleDelayedApplied(_ items: [(String, Double?)])` — retyped ONCE here;
   call sites pass `legacy?.lastAppliedEpoch` until each port task switches
