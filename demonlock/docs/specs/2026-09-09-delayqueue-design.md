@@ -181,6 +181,12 @@ the daemon's later `unlink` would delete a file it never read).
 - **Parsing:** only complete `\n`-terminated lines are processed; a trailing
   partial line is discarded and logged. At the 1 MiB cap the whole file is
   rejected with a log line — never act on a truncated prefix.
+- **Single-value markers** (rv request, preset invoke, lockbox
+  unlock/copy/add/remove, safe-app remove — every non-queue marker):
+  consumers take the LAST non-empty complete line. Today these markers are
+  last-write-wins via truncation; append would otherwise garble them
+  (`"1800s\n3600s"` is not a duration) — a regression to the release
+  valve. Flag markers (`consumeFlag`) stay existence-only, unchanged.
 
 ### Boundary layer: MarkerIO owns the trust boundary
 
@@ -379,6 +385,8 @@ early).
   phase 2 lands a batch despite a pre-existing dangling policy reference;
   `.retry` rows never get an `applying` outcome; backoff floor respected.
 - migration nextSeq strictly above all migrated seqs.
+- single-value markers: two appends between ticks → last wins (today's
+  semantics); rv request round-trips under the new writer.
 
 Manual on the Mac after install: queue rows round-trip, status/audit output,
 abort commands printed by UI match working keys.
