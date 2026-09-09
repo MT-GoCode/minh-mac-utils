@@ -1,6 +1,6 @@
 # DelayQueue — one abstraction for every commitment-delayed change
 
-**Date:** 2026-09-09 · **Status:** v3 — after two adversarial passes (15 + 10 findings folded)
+**Date:** 2026-09-09 · **Status:** v4 — final; three adversarial passes (15 + 10 + 5 findings folded)
 
 ## Why
 
@@ -85,9 +85,11 @@ Semantics, identical everywhere:
   broken by Swift dictionary iteration order, turning "move my zone" into
   "delete my zone" on a coin flip.
 - **Requeue rule.** Same key + identical payload → ignored, clock kept.
-  Canonicalisation before comparison: JSON payloads re-encoded sorted-keys
-  unpretty; **non-JSON payloads (policy expressions, bare names) compare as
-  trimmed UTF-8 bytes** [AR2#7] — else a repeated `delay-set-policy` shell
+  Canonicalisation before comparison, declared per queue by a
+  `payloadIsJSON: Bool` knob — never sniffed from content [AR3#4]: JSON
+  queues (zones, safe-apps, invoke) re-encode sorted-keys unpretty;
+  non-JSON queues (policy, gate-policy, lockbox, sidecar domains) compare
+  as trimmed UTF-8 bytes [AR2#7] — else a repeated `delay-set-policy` shell
   command would replace+reset and restart the longest clock in the system. Same key +
   different payload → replace payload AND reset clock, logged. Reset is
   mandatory: replace-keeping-the-clock would let a mild pending request be
@@ -109,18 +111,25 @@ Semantics, identical everywhere:
   **two-phase outcome** [AR2#4]: the pre-apply save moves the row out of
   `pending` and records `applying`; after `apply` returns, a second save
   rewrites it to `applied` or `failed`. A row still marked `applying` on
-  the next tick is reported as `lost in crash` and is never re-applied.
+  the next tick is reported as `unconfirmed — may or may not have landed;
+  not re-applied` [AR3#5] (a crash between apply-success and the second
+  save is indistinguishable from one before apply; the label states what
+  is actually known) and is never re-applied.
   So a crash between the saves loses the request (fail-closed, and
   VISIBLY: the audit never claims `applied` for a change that didn't land)
   instead of re-applying a loosening (fail-open — under v1's
   apply-then-save, a crash after a lockbox unlock applied would re-open a
-  fresh copy window on a secret at next boot, unrequested).
+  fresh copy window on a secret at next boot, unrequested). The
+  two-phase `applying` outcome is scoped to `.drop` ONLY [AR3#3].
 - **`.retry` ordering** [AR2#9]: remove-after-success — a crash between
   apply-success and save re-applies once, safe because the sidecar
   allowlist add is set-like (the only `.retry` user; any future `.retry`
   apply must be idempotent, stated in the vendored header). Retry logging
   is rate-limited; after 10 consecutive failures a `failed` outcome is
   recorded (the row keeps retrying; `--abort` frees its cap slot).
+  `.retry` records `applied`/`failed` after the fact, no `applying` phase
+  [AR3#3], and retries back off exponentially to a 5-minute floor
+  (a permanently failing apply must not hit the NextDNS API at 1 Hz).
 - **Daemon-stamped clocks.** `requestedAt`/`applyAt` set at consumption; not
   backdatable; nothing a user writes can make anything land sooner. If the
   clock moves backward past a row's `requestedAt` **by more than 300s**
@@ -180,6 +189,7 @@ the daemon's later `unlink` would delete a file it never read).
 | `key(payload)` | app closure | each app |
 | `onFailure` | `.drop` (default) / `.retry` | sidecar delay-add |
 | `delaySec(payload)` | app closure (constant from Settings, Bounds-clamped) | lockbox (per-entry delay) |
+| `payloadIsJSON` | Bool (canonicalisation mode) | per census table |
 
 Not knobs: requeue behavior, abort granularity, ordering, capacity. Cap: 64
 pending per queue, **new keys only** — replaces and aborts always accepted
@@ -210,11 +220,15 @@ defined outcome when no single removal fixes the fold). Instead:
   live zone list. An op failing its OWN precondition is dropped there with
   a specific reason: bad geometry, `add` of an existing name, `del` of an
   absent name (no-op drop).
-- **Phase 2** — validate the resulting final list once (all policy +
-  gate-policy references resolve, no duplicates). On failure the WHOLE
-  batch is dropped, fail-closed, with one audit line naming the unresolved
-  reference. Deterministic, terminates trivially, and no op is silently
-  destroyed by a guilty sibling without the audit saying so.
+- **Phase 2** — **differential** validation of the resulting final list
+  [AR3#1]: the batch fails only if it introduces a NEW unresolved
+  policy/gate-policy reference (`unresolved(final) ⊄ unresolved(live)`) or
+  a duplicate name. Pre-existing dangling references (the live policy
+  already references "451 niantic ave", absent from zones.json) are logged
+  once and ignored — absolute validation would drop every batch forever on
+  a machine that is already inconsistent, in exactly the silent-drop mode
+  this spec exists to kill. On failure the WHOLE batch is dropped,
+  fail-closed, one audit line naming the new unresolved reference.
 
 One atomic write on success — no transient window where a zone is missing
 and the policy evaluates false → lockout.
@@ -239,13 +253,14 @@ lockbox**. But order alone is a coin-flip trade (zones-first fixes
 add-zone+referencing-policy and breaks del-zone+policy-landing-same-tick),
 so zone/policy landings validate against a **joint projection**: final
 zones (live + due ops) paired with final policy/gate-policy (due doc if
-any, else live). If the projection is invalid, fail-closed in this order:
-(1) drop the due policy/gate-policy doc (rejected, reason "references zone
-removed this tick") and re-validate against the live doc; (2) if a zone op
-still breaks the live policy, phase 2 drops the zone batch. Deterministic;
-dropping a doc never loosens anything. Tests assert both pairs:
-add-zone+referencing-policy lands together; del-zone+doc-referencing-it
-drops only the doc.
+any, else live). If the projection (final zones + due doc) is invalid [AR3#2]: try
+(LIVE zones + due doc) — if that validates, land the doc and drop the zone
+batch (rejected, reason "conflicts with landing policy"); only if the doc
+fails against live zones too is the doc dropped and the zone batch
+re-tried differentially against the live doc. Both branches fail-closed;
+this preference lands one change where a doc-first cascade would destroy
+both. Tests assert: add-zone+referencing-policy lands together;
+del-zone+doc-referencing-that-zone lands the doc, drops the del.
 
 The release-valve tick (and thus a grant's `flushAll`) runs AFTER the
 queue ticks: an item due in the same tick a grant lands applies first —
@@ -335,7 +350,9 @@ early).
   keys only.
 - outcome phases: `applying` row after simulated crash reports
   `lost in crash`, never re-applies; `apply`-returns-false records `failed`.
-- joint validation: both cross-queue pairs (see above).
+- joint validation: both cross-queue pairs (see above); differential
+  phase 2 lands a batch despite a pre-existing dangling policy reference;
+  `.retry` rows never get an `applying` outcome; backoff floor respected.
 - migration nextSeq strictly above all migrated seqs.
 
 Manual on the Mac after install: queue rows round-trip, status/audit output,
@@ -347,4 +364,6 @@ abort commands printed by UI match working keys.
 2. Re-queue the two lost zone edits (add 730 moreno, del imbue office) as ops.
 3. Vendor into nextdns-sidecar, port delay-add, reinstall.
 4. Separately: policy still references `451 niantic ave`, which doesn't
-   exist in zones.json (predates this work) — fix by admin edit or queued op.
+   exist in zones.json (predates this work) — fix by admin edit or queued
+   op. NOT a prerequisite: phase-2 validation is differential, so the
+   pre-existing dangling reference doesn't block the queue [AR3#1].
