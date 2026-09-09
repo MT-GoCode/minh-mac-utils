@@ -1,6 +1,6 @@
 # DelayQueue — one abstraction for every commitment-delayed change
 
-**Date:** 2026-09-09 · **Status:** v4.3 — final; four adversarial passes (15 + 10 + 5 + 5 findings folded)
+**Date:** 2026-09-09 · **Status:** v4.4 — final; four adversarial passes + dead-item sweep (15 + 10 + 5 + 5 findings folded)
 
 ## Why
 

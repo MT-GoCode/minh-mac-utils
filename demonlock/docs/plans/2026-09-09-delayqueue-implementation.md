@@ -88,7 +88,10 @@ final class SmokeTests: XCTestCase {
 enum MarkerIO {
     /// Append one line (newline added). Creates with `mode` from the start. flock(LOCK_EX) for the write.
     /// Escaping: "\\" → "\\\\", "\n" → "\\n" applied to `line` BEFORE writing (escape backslash first).
-    @discardableResult static func append(_ path: String, line: String, mode: mode_t = 0o644) -> Bool
+    @discardableResult static func append(_ path: String, line: String?, mode: mode_t = 0o644) -> Bool
+    /// Atomic multi-line append: ONE write() of the joined escaped buffer — the daemon can never
+    /// consume between the lines (a zone edit's del+add must land together or not at all).
+    @discardableResult static func append(_ path: String, lines: [String], mode: mode_t = 0o644) -> Bool
 
     /// Consume the marker file under flock(LOCK_EX|LOCK_NB) — EWOULDBLOCK ⇒ nil (left for next tick,
     /// log ≤1/min). Returns complete \n-terminated lines, UNESCAPED, in file order; trailing partial
@@ -104,12 +107,22 @@ enum MarkerIO {
 }
 ```
 
-The old `consume(_:enforcedUID:) -> Data?` is DELETED at the end of Task 10 (once no callers remain); until then it stays.
+**Every existing consumer converts in THIS task** (one-line swaps; leaving them raw-decoding
+until Tasks 8-10 would corrupt any escaped payload written after Task 2 — e.g. a lockbox secret
+containing a quote): `ReleaseValve.swift:84/88` (rv abort flag / rv request → `consumeFlag`/`consumeLast`),
+`Lockbox.swift:59+` (add/unlock/abort/remove/copy → `consumeLast`), `SafeApps.swift:124/130/136`,
+`SnoozePresets.swift:78/89/94/100` (→ `consumeLast`; the queue-shaped markers re-convert to
+`consumeLines` in their port tasks), `Enforcerd`'s DelayedChange call sites keep working because
+`DelayedChange.tick` itself converts to `consumeLast` here too. `consumeFlag` is REIMPLEMENTED as
+`consumeLines(path, …) != nil` (a step, not a comment). The old `consume(_:enforcedUID:) -> Data?`
+is DELETED at the END OF THIS TASK — grep proves zero callers. Add tests: `testRvRequestRoundTrip`
+(spec Testing: "rv request round-trips under the new writer") and `testConsumeFlagOnZeroByte`.
 
 - [ ] **Step 1:** Write failing tests (temp dir, `getuid()` as enforcedUID):
   - `testAppendCreatesWithMode` (0600 stays 0600, never other-readable at any point)
   - `testAppendThenConsumeLines_roundTripsEscapedNewlines` (payload with `\n` and `\\`)
   - `testConsumeLastTakesLastNonEmpty` (two appends → last wins)
+  - `testMultiLineAppendAtomic` (append(lines: [a,b]); consume returns both, in order)
   - `testZeroByteFileReturnsEmptyArray`
   - `testTrailingPartialLineDiscarded` (write bytes w/o trailing `\n`)
   - `testOverMiBRejectsWholeFile`
@@ -389,7 +402,15 @@ Enforcerd wiring: zones tick uses `applyBatch = { due in let r = ZoneOps.fold(du
 - [ ] **Step 1:** `saveWithDelay(_ op: ZoneOp) -> Bool` = `MarkerIO.append(Paths.dzRequestMarker, line: opJSON)`. `saveZone` delayed branch queues `ZoneOp(op:"add", zone: newZone)`; `deleteSelected` delayed branch queues `ZoneOp(op:"del", name: name)` **and calls `reload()`** (the missing reload). Instr strings: include exact abort command `demonlock delayzones --abort "add:<name>"`.
 - [ ] **Step 2:** Pending display: `reload()` also reads `StateStore.read()?.delayedZones?.rows` and appends a line per pending op to the instr/label area (`⏳ add:730 moreno — lands in 35h 12m · abort: demonlock delayzones --abort "add:730 moreno"`). Minimal text UI, no new views.
 - [ ] **Step 3:** `saveWithAdmin` (both call sites): after a successful admin write, for each zone name in the symmetric difference (old live vs new list), if `StateStore.read()?.delayedZones?.rows` contains `add:<name>` or `del:<name>`, append those key lines to `Paths.dzAbortMarker`; write NOTHING when no keys match (spec [AR2#3]).
-- [ ] **Step 4:** Build on Mac (UI is compile-verified here; live check is Task 13). Commit `feat(zones-ui): queue ops, show pending, admin-save cancels stale ops`.
+- [ ] **Step 4:** **The EDIT path** (the spec's raison d'être — no other step provides it):
+  `saveZone`'s duplicate-name guard (`ZonesUI.swift:170`) currently refuses an existing name
+  outright, so del+add of one name is impossible from the UI. Change: when the typed name matches
+  an existing zone, the dialog becomes "Replace zone <name>?" (same admin/delayed/cancel buttons);
+  the delayed branch queues BOTH ops in one atomic call:
+  `MarkerIO.append(Paths.dzRequestMarker, lines: [delOpJSON, addOpJSON])` — never two separate
+  appends (the daemon could consume between them and land an orphaned del). Admin branch writes the
+  replaced list directly as today.
+- [ ] **Step 5:** Build on Mac (UI is compile-verified here; live check is Task 13). Commit `feat(zones-ui): queue ops, edit=del+add atomic, show pending, admin-save cancels stale ops`.
 
 ### Task 8: Snooze-presets port (composite file, two queues)
 
@@ -547,6 +568,7 @@ var lockbox: Lockbox.Status? = nil            // window/lock state only (kept)
 
 - Spec coverage: every spec section mapped — Census (Tasks 5,6,8,9,10,12), Abstraction semantics (3), Marker contract (2), Boundary layer (2, 7), knobs (3,8), Zones (6,7), Cross-queue (6), Restart (3,9), Migration (4,8,9,12), bespoke list (8,9 keep-out respected), Testing (each bullet has a named test above), Rollout (13,14 + gate note).
 - Known deviation recorded: `enqueueTransform` knob added (Task 8) beyond the spec's closed knob set — required to freeze invoke's `targetAt` at queue time. Alternative considered and REJECTED: CLI-computed targetAt would let a hand-written marker choose an arbitrary stand-down target (preset-spec-only is the current, stricter semantics; queue-time recompute-and-compare is clock-fragile). The daemon-side transform is the smallest compliant design. Spec's closed-knob sentence should gain this knob at next spec touch.
+- Adversary-1 pass (spec semantics, verdict NO on v1, 14 blockers): overlapping findings (Task 4.5 sequencing, --all literal, O_TRUNC, vendor identity) were already folded; NEW findings folded in v1.6 — atomic multi-line append + UI edit path (the spec's core scenario had no implementing step), all marker consumers converted in Task 2 (escape-timing corruption window), ReleaseValve:84/88 port + rv round-trip test + consumeFlag reimpl as explicit steps. Spec header corrected v4.3→v4.4 (a rename replace had silently no-opped). Remaining findings folded from the full report.
 - Adversary-2 pass COMPLETE (verdict NO on v1; all 10 confirmed + 4 speculative findings folded across v1.4/v1.5). Accepted-risk note: a user-held blocking flock on a request marker starves that queue indefinitely — fail-closed (nothing lands sooner, abort-all still possible after release), mitigation is the ≤1/min skip log; recorded, not fixed. Folded: Task 4.5 field-name collision fixed via legacy* renames; Task 5 stray delete line removed; vendored-file self-containment contract + `auditLog` init parameter added (byte-identical test now satisfiable). Remaining truncated findings folded on full report.
 - Pass-3 (self) finding folded: Task 4.5 added — without it, Tasks 6-10 could not compile (DelayedStatus consumers). Joint-projection staleness note: zones' `peekDue` runs before policy/gate consume THIS tick's markers — safe for requests (a request consumed this tick gets applyAt=now+delay, never due now) but an abort consumed this tick could arrive after zones already deferred to a doc being aborted. Fail-closed (batch dropped, re-queue) and rare; if either adversary confirms it matters, fix = consume phase for all queues before any apply phase.
 - Type consistency: `QStatus` field names in Task 11 match Task 3; `Legacy.*` signatures match Task 4 consumers in 5/12.
