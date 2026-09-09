@@ -170,14 +170,14 @@ final class DelayQueueTests: XCTestCase {
         XCTAssertTrue(q.status().rows.isEmpty)
     }
 
-    func testAbortBlankLinesSkippedAndUnknownKeyRejected() {
+    func testAbortBlankLinesSkippedAndUnknownKeyStillReturned() {
         let q = queue()
         _ = MarkerIO.append(reqM, line: "aaaa")
         consume(q, now: 1000)
         _ = MarkerIO.append(abortM, lines: ["", "k:nope"])     // blank must NOT wipe the queue
-        XCTAssertEqual(consume(q, now: 1001), [])
-        XCTAssertEqual(q.status().rows.count, 1)
-        XCTAssertEqual(q.status().recent.first?.reason, "no such pending key")
+        XCTAssertEqual(consume(q, now: 1001), ["k:nope"])      // returned for app-side effects (relock)
+        XCTAssertEqual(q.status().rows.count, 1)               // pending untouched
+        XCTAssertEqual(q.status().recent.first?.reason, "nothing pending (side effects only)")
     }
 
     func testAbortedKeysReturned() {

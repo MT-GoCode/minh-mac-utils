@@ -72,6 +72,21 @@ final class LockboxQueueTests: XCTestCase {
         XCTAssertTrue(queue.status().rows.isEmpty)
     }
 
+    func testAbortRelocksOpenWindowEvenWithNoPendingRow() {
+        // main's behavior: `abort <name>` relocks an OPEN window even when nothing is pending.
+        // The queue must return the name (no pending row exists) so Lockbox.tick can clear it.
+        setWindow("bank", until: 99999)
+        let queue = q()
+        _ = MarkerIO.append(dir + "/abort", line: "bank")
+        let aborted = queue.consumeMarkers(now: 1, enforcedUID: uid, delaySec: entryDelay,
+                                           key: { $0 }, validate: { _ in true })
+        XCTAssertEqual(aborted, ["bank"])                      // returned despite empty pending
+        var f: Lockbox.LBFile = loadJSON(path)!
+        for n in aborted { f.unlockedUntil.removeValue(forKey: n) }
+        saveJSON(f, to: path)
+        XCTAssertNil(windows()["bank"])                        // relocked
+    }
+
     func testCrashCannotResurrectAWindow() {
         // Save-before-apply: the pending row leaves the state BEFORE the window opens. A "crash"
         // (state reloaded fresh, apply result discarded) must find no row to re-apply.

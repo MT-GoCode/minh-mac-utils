@@ -105,9 +105,11 @@ struct DelayQueue {
 
     // MARK: - PHASE 1: consume markers
 
-    /// Crash sweep (step 0) → abort → requests → clock guard. Returns the keys aborted by THIS
-    /// call so app code can mirror side effects (lockbox relocks an aborted name's open window) —
-    /// the 8-event `recent` ring is never the transport for that.
+    /// Crash sweep (step 0) → abort → requests → clock guard. Returns EVERY key named by this
+    /// call's abort lines (for --all: every pending key) — including names with NO pending row —
+    /// so app code can mirror side effects (lockbox must relock an aborted name's OPEN window even
+    /// when nothing is pending; only-pending-removals would silently turn that tightening into a
+    /// no-op). The 8-event `recent` ring is never the transport for this.
     @discardableResult
     func consumeMarkers(now: Double, enforcedUID: uid_t?,
                         delaySec: (String) -> Double,
@@ -141,11 +143,11 @@ struct DelayQueue {
                     }
                 } else {
                     for k in keys where k != "--all" {
+                        abortedKeys.append(k)                       // returned even without a pending row
                         if st.pending.removeValue(forKey: k) != nil {
-                            abortedKeys.append(k)
                             record(&st, Outcome(key: k, what: "aborted", reason: nil, at: now))
                         } else {
-                            record(&st, Outcome(key: k, what: "rejected", reason: "no such pending key", at: now))
+                            record(&st, Outcome(key: k, what: "aborted", reason: "nothing pending (side effects only)", at: now))
                         }
                         dirty = true
                     }
