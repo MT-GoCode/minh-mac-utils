@@ -170,9 +170,12 @@ enum ReleaseValve {
                            (SnoozePresets.addsQueue(), "snooze-preset-adds")] {
             if !q.status().rows.isEmpty { q.flushAll(now: now, reason: "admin grant"); cleared.append(label) }
         }
-        var lb = Lockbox.LBState.load()
-        if !lb.pending.isEmpty || !lb.unlockedUntil.isEmpty {
-            lb.pending.removeAll(); lb.unlockedUntil.removeAll(); lb.save(); cleared.append("lockbox")
+        let lbQ = Lockbox.unlocksQueue()
+        let hadLockboxState = !lbQ.status().rows.isEmpty || !Lockbox.LBFile.load().unlockedUntil.isEmpty
+        if hadLockboxState {
+            lbQ.flushAll(now: now, reason: "admin grant")
+            Lockbox.relockAll()
+            cleared.append("lockbox")
         }
         if !cleared.isEmpty { logStderr("release-valve: grant flushed queued self-serve changes: \(cleared.joined(separator: ", "))") }
     }

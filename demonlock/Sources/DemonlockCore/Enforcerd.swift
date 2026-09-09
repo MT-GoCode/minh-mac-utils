@@ -35,7 +35,8 @@ final class Enforcer {
     private var safeAppsStatus: SafeApps.Status? // last-computed safe-apps pending registrations
     private var spInvokeStatus: DelayQueue.QStatus?    // in-flight invocation queue
     private var spAddsStatus: DelayQueue.QStatus?      // pending delayed-add queue
-    private var lockboxStatus: Lockbox.Status?   // password-lockbox lock state
+    private var lockboxStatus: Lockbox.Status?          // password-lockbox window/lock state
+    private var lockboxUnlocksStatus: DelayQueue.QStatus?  // pending-unlock queue
 
     // The one location truth (persisted root-owned; survives restarts — login "just works").
     private var held: HeldFix? = HeldFixStore.read()
@@ -87,7 +88,7 @@ final class Enforcer {
                                        delaySec: Bounds.clamp(settings.safeAppsDelaySec, Bounds.safeAppsDelay))
         (spInvokeStatus, spAddsStatus) = SnoozePresets.tick(now: now.timeIntervalSince1970, enforcedUID: euid,
                                                             addDelaySec: Bounds.clamp(settings.snoozePresetAddDelaySec, Bounds.snoozePresetAddDelay))
-        lockboxStatus = Lockbox.tick(now: now.timeIntervalSince1970, enforcedUID: euid)
+        (lockboxStatus, lockboxUnlocksStatus) = Lockbox.tick(now: now.timeIntervalSince1970, enforcedUID: euid)
 
         // STANDBY: only enforce the configured user's live console session.
         guard let consoleUID = consoleUser() else {
@@ -437,6 +438,7 @@ final class Enforcer {
             delayedGatePolicy: dpGatePolicyStatus,
             snoozePresetInvoke: spInvokeStatus,
             snoozePresetAdds: spAddsStatus,
+            lockboxUnlocks: lockboxUnlocksStatus,
             legacySafeApps: safeAppsStatus,
             lockbox: lockboxStatus))
     }

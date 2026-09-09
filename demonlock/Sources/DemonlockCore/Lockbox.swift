@@ -21,12 +21,50 @@ enum LockboxStore {
 }
 
 enum Lockbox {
-    struct Pending: Codable { var requestedAt: Double; var applyAt: Double }
-    struct LBState: Codable {
-        var pending: [String: Pending] = [:]      // name → pending unlock
-        var unlockedUntil: [String: Double] = [:] // name → auto-relock time
-        static func load() -> LBState { loadJSON(Paths.lockboxStateFile) ?? LBState() }
+    struct Pending: Codable { var requestedAt: Double; var applyAt: Double }   // legacy shape
+
+    /// lockbox-state.json container: the unlocks DelayQueue owns `unlocksQ`; `unlockedUntil` is a
+    /// SIBLING (window lifecycle, never queue state — a naive whole-file rewrite would erase every
+    /// open window). COMPOSITE-FILE CONTRACT: bespoke tick code re-loads after every queue call.
+    struct LBFile: Codable {
+        var pending: [String: Pending]? = nil     // legacy (migrated then nil)
+        var unlockedUntil: [String: Double] = [:] // name → auto-relock time (sibling)
+        var unlocksQ: DelayQueue.QState? = nil
+        static func load() -> LBFile { loadJSON(Paths.lockboxStateFile) ?? LBFile() }
         func save() { saveJSON(self, to: Paths.lockboxStateFile) }
+    }
+
+    static func unlocksQueue() -> DelayQueue {
+        DelayQueue(kind: "lockbox-unlock",
+                   store: DelayQueue.QStateStore(
+                       load: {
+                           let f = LBFile.load()
+                           if var st = f.unlocksQ {
+                               if let m = st.pending.values.map(\.seq).max(), st.nextSeq <= m { st.nextSeq = m + 1 }
+                               return st
+                           }
+                           guard let legacy = f.pending, !legacy.isEmpty else { return DelayQueue.QState() }
+                           var st = DelayQueue.QState()
+                           for (n, p) in legacy.sorted(by: { ($0.value.requestedAt, $0.key) < ($1.value.requestedAt, $1.key) }) {
+                               st.pending[n] = .init(payload: n, requestedAt: p.requestedAt, applyAt: p.applyAt, seq: st.nextSeq)
+                               st.nextSeq += 1
+                           }
+                           return st
+                       },
+                       save: { st in
+                           var f = LBFile.load()          // fresh — never clobber the sibling
+                           f.unlocksQ = st; f.pending = nil
+                           f.save()
+                       }),
+                   requestMarker: Paths.lbUnlockMarker, abortMarker: Paths.lbAbortMarker,
+                   onFailure: .drop, payloadIsJSON: false, auditLog: Paths.queueAuditLog)
+    }
+
+    /// Relock every open window (admin grant).
+    static func relockAll() {
+        var f = LBFile.load()
+        guard !f.unlockedUntil.isEmpty else { return }
+        f.unlockedUntil.removeAll(); f.save()
     }
 
     struct Status: Codable { var entries: [EntryView] = [] }
@@ -47,66 +85,87 @@ enum Lockbox {
         return nil
     }
 
-    /// One daemon tick: consume markers (add/unlock/abort/remove/copy), apply due unlocks, auto-relock. All
-    /// markers owner-checked via MarkerIO; secrets never transit a world-readable path. Returns status.
+    /// One daemon tick. The unlocks DelayQueue owns pending unlocks (markers lbUnlock/lbAbort);
+    /// bespoke code keeps add/remove/copy and the window lifecycle, RE-LOADING LBFile after every
+    /// queue call (composite-file contract). ABORT STILL RELOCKS: the queue consumes the abort
+    /// marker, so the aborted keys it returns drive the window clear.
     @discardableResult
-    static func tick(now: Double, enforcedUID: uid_t?) -> Status {
+    static func tick(now: Double, enforcedUID: uid_t?) -> (windows: Status, unlocks: DelayQueue.QStatus) {
         var entries = LockboxStore.load()
-        var st = LBState.load()
+        let q = unlocksQueue()
 
-        if let euid = enforcedUID {
-            // add (no sudo): the secret transits the user-owned inbox marker (acceptable — self-binding).
-            if let line = MarkerIO.consumeLast(Paths.lbAddMarker, enforcedUID: euid),
-               let e = try? JSONDecoder().decode(LockboxEntry.self, from: Data(line.utf8)),
-               rejectReason(e.name, delaySec: e.delaySec, secretLen: e.secret.utf8.count,
-                            entryCount: entries.count, nameExists: entries.contains(where: { $0.name == e.name })) == nil {
-                entries.removeAll { $0.name == e.name }
-                entries.append(e); LockboxStore.save(entries)
-                // Re-adding a secret resets any in-flight/open unlock for that name — else the NEW secret
-                // inherits the OLD one's unlock window and is instantly copyable.
-                st.pending.removeValue(forKey: e.name); st.unlockedUntil.removeValue(forKey: e.name); st.save()
-            }
-            // unlock (no sudo): start the per-entry delay if the entry exists and isn't already unlocked.
-            if let name = MarkerIO.consumeLast(Paths.lbUnlockMarker, enforcedUID: euid) {
-                if let e = entries.first(where: { $0.name == name }), st.unlockedUntil[name] == nil, st.pending[name] == nil {
-                    let delay = max(e.delaySec, Bounds.lockboxUnlockDelayMin)
-                    st.pending[name] = Pending(requestedAt: now, applyAt: now + delay); st.save()
-                }
-            }
-            // abort: cancel a pending unlock AND relock if unlocked.
-            if let name = MarkerIO.consumeLast(Paths.lbAbortMarker, enforcedUID: euid) {
-                st.pending.removeValue(forKey: name); st.unlockedUntil.removeValue(forKey: name); st.save()
-            }
-            // remove (tightening): delete the entry from the vault entirely + clear any lock state.
-            if let name = MarkerIO.consumeLast(Paths.lbRemoveMarker, enforcedUID: euid) {
-                if entries.contains(where: { $0.name == name }) { entries.removeAll { $0.name == name }; LockboxStore.save(entries) }
-                st.pending.removeValue(forKey: name); st.unlockedUntil.removeValue(forKey: name); st.save()
-            }
-            // copy: if unlocked, write the secret to a fresh 0600 user-owned outbox, then relock now.
-            if let name = MarkerIO.consumeLast(Paths.lbCopyMarker, enforcedUID: euid) {
-                if let until = st.unlockedUntil[name], now < until, let e = entries.first(where: { $0.name == name }) {
-                    writeOutbox(e.secret, ownerUID: euid)
-                    st.unlockedUntil.removeValue(forKey: name); st.save()   // relock immediately on copy
-                }
+        // add (no sudo): the secret transits the user-owned 0600 inbox marker (self-binding).
+        if let euid = enforcedUID,
+           let line = MarkerIO.consumeLast(Paths.lbAddMarker, enforcedUID: euid),
+           let e = try? JSONDecoder().decode(LockboxEntry.self, from: Data(line.utf8)),
+           rejectReason(e.name, delaySec: e.delaySec, secretLen: e.secret.utf8.count,
+                        entryCount: entries.count, nameExists: entries.contains(where: { $0.name == e.name })) == nil {
+            entries.removeAll { $0.name == e.name }
+            entries.append(e); LockboxStore.save(entries)
+            // Re-adding resets any in-flight/open unlock — else the NEW secret inherits the OLD
+            // one's unlock window and is instantly copyable. The pending row dies via the queue store.
+            var f = LBFile.load(); f.unlockedUntil.removeValue(forKey: e.name); f.save()
+            var st = q.store.load(); if st.pending.removeValue(forKey: e.name) != nil { q.store.save(st) }
+        }
+        // remove (tightening, immediate): delete from the vault + clear all lock state.
+        if let euid = enforcedUID, let name = MarkerIO.consumeLast(Paths.lbRemoveMarker, enforcedUID: euid) {
+            if entries.contains(where: { $0.name == name }) { entries.removeAll { $0.name == name }; LockboxStore.save(entries) }
+            var f = LBFile.load(); f.unlockedUntil.removeValue(forKey: name); f.save()
+            var st = q.store.load(); if st.pending.removeValue(forKey: name) != nil { q.store.save(st) }
+        }
+
+        // Queue phase 1 — validate: entry exists && not already unlocked. delaySec is PER-ENTRY,
+        // floor-clamped (a hand-edited vault entry can't go below the compiled floor).
+        let validate: (String) -> Bool = { name in
+            LockboxStore.load().contains(where: { $0.name == name }) && LBFile.load().unlockedUntil[name] == nil
+        }
+        let aborted = q.consumeMarkers(now: now, enforcedUID: enforcedUID,
+                                       delaySec: { name in
+                                           max(LockboxStore.load().first(where: { $0.name == name })?.delaySec
+                                               ?? Bounds.lockboxUnlockDelayMin, Bounds.lockboxUnlockDelayMin)
+                                       },
+                                       key: { $0 }, validate: validate)
+        if !aborted.isEmpty {                              // an explicit abort relocks an OPEN window too
+            var f = LBFile.load()
+            for name in aborted { f.unlockedUntil.removeValue(forKey: name) }
+            f.save()
+        }
+
+        // copy: if unlocked, write the secret to a fresh 0600 user-owned outbox, then relock now.
+        if let euid = enforcedUID, let name = MarkerIO.consumeLast(Paths.lbCopyMarker, enforcedUID: euid) {
+            var f = LBFile.load()
+            if let until = f.unlockedUntil[name], now < until,
+               let e = LockboxStore.load().first(where: { $0.name == name }) {
+                writeOutbox(e.secret, ownerUID: euid)
+                f.unlockedUntil.removeValue(forKey: name); f.save()   // relock immediately on copy
             }
         }
 
-        // apply due unlocks → unlocked for the auto-relock window.
+        // Queue phase 2 — a due unlock opens the auto-relock window.
+        let unlocksStatus = q.applyDue(now: now, validate: validate) { due in
+            Dictionary(uniqueKeysWithValues: due.map { d in
+                var f = LBFile.load()
+                f.unlockedUntil[d.key] = now + Bounds.lockboxAutoRelock
+                f.save()
+                return (d.key, (true, nil))
+            })
+        }
+
+        // auto-relock expired windows.
+        var f = LBFile.load()
         var changed = false
-        for (name, p) in st.pending where now >= p.applyAt {
-            st.unlockedUntil[name] = now + Bounds.lockboxAutoRelock
-            st.pending.removeValue(forKey: name); changed = true
-        }
-        // auto-relock expired.
-        for (name, until) in st.unlockedUntil where now >= until { st.unlockedUntil.removeValue(forKey: name); changed = true }
-        if changed { st.save() }
+        for (name, until) in f.unlockedUntil where now >= until { f.unlockedUntil.removeValue(forKey: name); changed = true }
+        if changed { f.save() }
 
+        entries = LockboxStore.load()
+        let pendingAt = Dictionary(uniqueKeysWithValues: unlocksStatus.rows.map { ($0.key, $0.applyAt) })
         let byName = Dictionary(entries.map { ($0.name, $0) }, uniquingKeysWith: { a, _ in a })
-        return Status(entries: byName.keys.sorted().map { name in
+        let windows = Status(entries: byName.keys.sorted().map { name in
             EntryView(name: name, delaySec: byName[name]!.delaySec,
-                      unlocked: st.unlockedUntil[name] != nil,
-                      unlockAtEpoch: st.pending[name]?.applyAt)
+                      unlocked: f.unlockedUntil[name] != nil,
+                      unlockAtEpoch: pendingAt[name])
         })
+        return (windows, unlocksStatus)
     }
 
     /// Write the secret to a fresh, exclusive, 0600 file the CLI (running as the owner) can read once.
