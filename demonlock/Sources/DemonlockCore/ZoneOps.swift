@@ -98,6 +98,9 @@ enum ZoneOps {
         }
 
         // Phase 2 — differential, against the joint projection first.
+        // Duplicate-name backstop (spec phase 2): phase 1's collision check should make this
+        // unreachable, but a phase-1 defect must never ship a duplicated zones.json.
+        if Set(working.map(\.name)).count != working.count { return dropBatch("duplicate zone name in folded result") }
         let projP = duePolicyDoc ?? livePolicy, projG = dueGateDoc ?? liveGatePolicy
         var newUnresolved = unresolved(working, projP, projG).subtracting(liveDangles)
         if newUnresolved.isEmpty {

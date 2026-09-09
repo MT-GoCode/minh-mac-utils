@@ -63,23 +63,39 @@ enum SnoozePresets {
             })
     }
 
-    /// The single in-flight invocation (constant key "invocation" ⇒ one slot; re-invoking the SAME
-    /// preset is idempotent by payload identity, a DIFFERENT preset replaces + resets — spec rule).
+    /// The invoke payload: name + the resolved target FROZEN at queue time (spec do-not-unify:
+    /// "payload carries resolved targetAt, computed at queue time by app code" — main's semantics;
+    /// deriving from the preset at landing would let a delayed-add that edits the preset retarget a
+    /// pending invocation). The daemon can't trust a user-written targetAt blindly: queue-time
+    /// validation recomputes it from the CURRENT preset spec with ±15m clock tolerance, so a forged
+    /// far-future target is rejected while a legit CLI resolve seconds earlier passes. Re-invoking
+    /// resolves a fresh targetAt ⇒ different payload ⇒ replace + full delay reset (stricter; the
+    /// spec's requeue rule for different payloads).
+    struct InvokePayload: Codable, Equatable { var name: String; var targetAt: Double }
+
+    /// The single in-flight invocation (constant key "invocation" ⇒ one slot).
     static func invokeQueue() -> DelayQueue {
         DelayQueue(kind: "snooze-invoke",
                    store: subStore(
                        read: { $0.invokeQ },
                        migrate: { f in
                            guard let inv = f.invocation else { return nil }
-                           // payload := name; the frozen target is re-derived from the daemon-stamped
-                           // requestedAt at apply (parseTarget is deterministic given `from:`).
-                           return DelayQueue.QState(pending: ["invocation": .init(payload: inv.name,
+                           let enc = JSONEncoder(); enc.outputFormatting = [.sortedKeys]
+                           guard let d = try? enc.encode(InvokePayload(name: inv.name, targetAt: inv.targetAt)),
+                                 let json = String(data: d, encoding: .utf8) else { return DelayQueue.QState() }
+                           return DelayQueue.QState(pending: ["invocation": .init(payload: json,
                                     requestedAt: inv.requestedAt, applyAt: inv.applyAt, seq: 0)],
                                                     nextSeq: 1, lastAppliedAt: nil, recent: [])
                        },
                        write: { f, st in f.invokeQ = st; f.invocation = nil }),
                    requestMarker: Paths.spInvokeMarker, abortMarker: Paths.spInvokeAbort,
-                   onFailure: .drop, payloadIsJSON: false, auditLog: Paths.queueAuditLog)
+                   onFailure: .drop, payloadIsJSON: true, auditLog: Paths.queueAuditLog)
+    }
+
+    static let invokeTargetToleranceSec = 900.0
+
+    static func decodeInvoke(_ line: String) -> InvokePayload? {
+        try? JSONDecoder().decode(InvokePayload.self, from: Data(line.utf8))
     }
 
     static func addsQueue() -> DelayQueue {
@@ -139,10 +155,19 @@ enum SnoozePresets {
         let invQ = invokeQueue(), addQ = addsQueue()
         let settings = Settings.load()
         invQ.consumeMarkers(now: now, enforcedUID: enforcedUID,
-                            delaySec: { name in Bounds.clamp(find(name, settings)?.invokeDelaySec ?? Bounds.snoozePresetInvokeDelay.lowerBound,
+                            delaySec: { line in Bounds.clamp(decodeInvoke(line).flatMap { find($0.name, settings) }?.invokeDelaySec
+                                                             ?? Bounds.snoozePresetInvokeDelay.lowerBound,
                                                              Bounds.snoozePresetInvokeDelay) },
-                            key: { name in find(name, settings) != nil ? "invocation" : nil },
-                            validate: { find($0, settings) != nil })
+                            key: { line in decodeInvoke(line).flatMap { find($0.name, settings) } != nil ? "invocation" : nil },
+                            validate: { line in
+                                // QUEUE-time only: the frozen targetAt must match what the CURRENT
+                                // preset spec resolves to right now (±tolerance) — rejects a forged
+                                // target while accepting the CLI's seconds-earlier resolve.
+                                guard let p = decodeInvoke(line), let preset = find(p.name, settings),
+                                      let expect = try? TimeSpec.parseTarget(preset.spec, from: Date(timeIntervalSince1970: now))
+                                else { return false }
+                                return abs(p.targetAt - expect.timeIntervalSince1970) <= invokeTargetToleranceSec
+                            })
         addQ.consumeMarkers(now: now, enforcedUID: enforcedUID,
                             delaySec: { _ in addDelaySec },
                             key: { line in (try? JSONDecoder().decode(SnoozePreset.self, from: Data(line.utf8)))?.name },
@@ -151,14 +176,18 @@ enum SnoozePresets {
                                     .map { rejectReason($0) == nil } ?? false
                             })
 
-        let invStatus = invQ.applyDue(now: now, validate: { find($0, settings) != nil }) { due in
+        // LANDING validate is looser (decodable + preset still exists): the tolerance check is
+        // queue-time only — 36h later "targetAt ≈ resolve-now" would always fail. The frozen
+        // targetAt is honored verbatim, capped at the ceiling.
+        let invStatus = invQ.applyDue(now: now, validate: { line in
+            decodeInvoke(line).flatMap { find($0.name, settings) } != nil
+        }) { due in
             Dictionary(uniqueKeysWithValues: due.map { d in
-                guard let p = find(d.payload, settings),
-                      let target = try? TimeSpec.parseTarget(p.spec, from: Date(timeIntervalSince1970: d.requestedAt))
-                else { return (d.key, (false, String?.some("preset vanished or spec unparseable"))) }
-                if target.timeIntervalSince1970 > now {
+                guard let p = decodeInvoke(d.payload), find(p.name, settings) != nil
+                else { return (d.key, (false, String?.some("preset vanished or payload undecodable"))) }
+                if p.targetAt > now {
                     // Cap the stand-down at the snooze ceiling, same as the manual `snooze` command.
-                    let capped = min(target.timeIntervalSince1970, now + Bounds.snoozeDurationMax)
+                    let capped = min(p.targetAt, now + Bounds.snoozeDurationMax)
                     try? SnoozeStore.set(Date(timeIntervalSince1970: capped))
                     if !ArmStore.isArmed() { try? ArmStore.set(true) }   // snooze ⇒ stand down THEN resume
                 }

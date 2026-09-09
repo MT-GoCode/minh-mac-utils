@@ -86,6 +86,11 @@ struct DelayQueue {
     let auditLog: String
 
     static let cap = 64
+    /// Lines processed per marker read. The 1 MiB byte cap alone still admits ~500k lines; without
+    /// this a no-sudo writer could force per-line record+audit work inside the root enforcer's tick
+    /// (a stall = enforcement gap — the same threat LOCK_NB/O_NONBLOCK exist to close) and grow the
+    /// un-rotated audit log without bound. Excess lines collapse into ONE rejected event.
+    static let maxLinesPerMarker = 256
     static let clockSlackSec = 300.0
     static let retryBackoffCeilSec = 300.0
     static let retryFailedOutcomeAfter: UInt32 = 10
@@ -132,7 +137,8 @@ struct DelayQueue {
         if let euid = enforcedUID {
             // 1. Abort — consumed BEFORE requests (abort+requeue in one tick stays clean, as today).
             if let lines = MarkerIO.consumeLines(abortMarker, enforcedUID: euid) {
-                let keys = lines.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                let keys = lines.prefix(Self.maxLinesPerMarker)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
                 if lines.isEmpty || keys.contains("--all") {
                     // Zero-byte FILE or a literal --all line ⇒ abort everything (both shipped CLI shapes).
                     if !st.pending.isEmpty {
@@ -156,7 +162,13 @@ struct DelayQueue {
             }
 
             // 2. Requests — file order; each line judged individually (a poison line never kills a batch).
-            if let lines = MarkerIO.consumeLines(requestMarker, enforcedUID: euid) {
+            if let allLines = MarkerIO.consumeLines(requestMarker, enforcedUID: euid) {
+                let lines = allLines.prefix(Self.maxLinesPerMarker)
+                if allLines.count > lines.count {
+                    record(&st, Outcome(key: "(bulk)", what: "rejected",
+                                        reason: "\(allLines.count - lines.count) excess lines dropped (marker line cap \(Self.maxLinesPerMarker))", at: now))
+                    dirty = true
+                }
                 for line in lines where !line.trimmingCharacters(in: .whitespaces).isEmpty {
                     guard let k = key(line) else {
                         record(&st, Outcome(key: preview(line), what: "rejected", reason: "unkeyable", at: now))
@@ -282,8 +294,11 @@ struct DelayQueue {
             case .retry:
                 // Remove-after-success — a crash between apply-success and save re-applies once,
                 // safe only because .retry applies are contractually idempotent (set-like).
+                // A key MISSING from the verdicts is DEFERRED untouched (per-tick API caps defer
+                // work without a backoff penalty); an explicit (false, _) verdict backs off.
                 let results = applyBatch(tuples)
                 for (k, item) in due {
+                    guard results[k] != nil else { continue }
                     if results[k]?.ok == true {
                         st.pending.removeValue(forKey: k)
                         st.lastAppliedAt = now

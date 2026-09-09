@@ -81,6 +81,18 @@ final class MarkerIOTests: XCTestCase {
         XCTAssertFalse(MarkerIO.consumeFlag(path(), enforcedUID: uid))
     }
 
+    func testNewlinelessFileNeverReadsAsAbortAll() {
+        // A file that is ONE unterminated line yields [""] — importantly NOT [] (the abort-all
+        // signal). Load-bearing for [AR#4]; pinned here so a split-edge refactor can't flip it.
+        let fd = open(path(), O_WRONLY | O_CREAT, 0o644)
+        _ = "partial-only".withCString { write(fd, $0, strlen($0)) }
+        close(fd)
+        let lines = MarkerIO.consumeLines(path(), enforcedUID: uid)
+        XCTAssertNotNil(lines)
+        XCTAssertFalse(lines!.isEmpty)                             // ≠ zero-byte abort-all
+        XCTAssertTrue(lines!.allSatisfy { $0.isEmpty || $0 == "" })
+    }
+
     func testTrailingPartialLineDiscarded() {
         let fd = open(path(), O_WRONLY | O_CREAT, 0o644)
         _ = "complete\npart".withCString { write(fd, $0, strlen($0)) }

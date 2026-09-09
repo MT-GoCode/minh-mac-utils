@@ -291,8 +291,11 @@ final class ZonesController: NSObject, NSApplicationDelegate, MKMapViewDelegate,
         // Abort pending ops for every zone name this admin save touched.
         let touched = Set(old.map(\.name)).symmetricDifference(zs.map(\.name))
             .union(Set(old.compactMap { o in zs.first(where: { $0.name == o.name && $0 != o }).map { _ in o.name } }))
-        let pendingKeys = Set(StateStore.read()?.delayedZones?.rows.map(\.key) ?? [])
-        let toAbort = touched.flatMap { ["add:\($0)", "del:\($0)"] }.filter { pendingKeys.contains($0) }
+        // Unfiltered: state.json can be a tick stale (or nil across the upgrade window) — filtering
+        // on it would let a just-queued op slip through and revert this admin action 36h later.
+        // Unknown keys are harmless (the queue records a side-effects-only abort), and `touched`
+        // non-empty guards the never-write-an-empty-marker (= abort-all) rule.
+        let toAbort = touched.flatMap { ["add:\($0)", "del:\($0)"] }
         if !toAbort.isEmpty { _ = MarkerIO.append(Paths.dzAbortMarker, lines: toAbort.sorted()) }
         return true
     }

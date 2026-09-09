@@ -13,7 +13,12 @@ final class SnoozePresetsQueueTests: XCTestCase {
     func invokeQ() -> DelayQueue {
         DelayQueue(kind: "snooze-invoke", store: .file(dir + "/inv.json"),
                    requestMarker: dir + "/invoke", abortMarker: dir + "/invoke-abort",
-                   onFailure: .drop, payloadIsJSON: false, auditLog: dir + "/audit.log")
+                   onFailure: .drop, payloadIsJSON: true, auditLog: dir + "/audit.log")
+    }
+    func payload(_ name: String, at now: Double) -> String {
+        let t = try! TimeSpec.parseTarget(find(name)!.spec, from: Date(timeIntervalSince1970: now))
+        let d = try! JSONEncoder().encode(SnoozePresets.InvokePayload(name: name, targetAt: t.timeIntervalSince1970))
+        return String(data: d, encoding: .utf8)!
     }
 
     override func setUpWithError() throws {
@@ -24,59 +29,72 @@ final class SnoozePresetsQueueTests: XCTestCase {
 
     @discardableResult
     func consume(_ q: DelayQueue, now: Double) -> [String] {
+        // mirrors SnoozePresets.tick's queue-time closures, over the fixture list
         q.consumeMarkers(now: now, enforcedUID: uid,
-                         delaySec: { self.find($0)?.invokeDelaySec ?? 3600 },
-                         key: { self.find($0) != nil ? "invocation" : nil },
-                         validate: { self.find($0) != nil })
+                         delaySec: { SnoozePresets.decodeInvoke($0).flatMap { self.find($0.name) }?.invokeDelaySec ?? 3600 },
+                         key: { SnoozePresets.decodeInvoke($0).flatMap { self.find($0.name) } != nil ? "invocation" : nil },
+                         validate: { line in
+                             guard let p = SnoozePresets.decodeInvoke(line), let preset = self.find(p.name),
+                                   let expect = try? TimeSpec.parseTarget(preset.spec, from: Date(timeIntervalSince1970: now))
+                             else { return false }
+                             return abs(p.targetAt - expect.timeIntervalSince1970) <= SnoozePresets.invokeTargetToleranceSec
+                         })
     }
 
-    func testInvokeIdempotentWhilePending() {
+    func testInvokeIdempotentOnIdenticalPayload_reinvokeReplacesAndResets() {
         let q = invokeQ()
-        _ = MarkerIO.append(dir + "/invoke", line: "tonight")
+        let p1 = payload("tonight", at: 1000)
+        _ = MarkerIO.append(dir + "/invoke", line: p1)
         consume(q, now: 1000)
         XCTAssertEqual(q.status().rows[0].applyAt, 4600)
-        _ = MarkerIO.append(dir + "/invoke", line: "tonight")     // double-invoke, same preset
-        consume(q, now: 2000)
-        XCTAssertEqual(q.status().rows.count, 1)
+        _ = MarkerIO.append(dir + "/invoke", line: p1)            // exact double-click: idempotent
+        consume(q, now: 1001)
         XCTAssertEqual(q.status().rows[0].applyAt, 4600)          // clock kept
+        _ = MarkerIO.append(dir + "/invoke", line: payload("tonight", at: 2000))  // later re-invoke:
+        consume(q, now: 2000)                                     // new frozen target ⇒ different payload
+        XCTAssertEqual(q.status().rows.count, 1)
+        XCTAssertEqual(q.status().rows[0].applyAt, 5600)          // replace + full delay reset (stricter)
     }
 
     func testDifferentPresetReplacesAndResets() {
         let q = invokeQ()
-        _ = MarkerIO.append(dir + "/invoke", line: "tonight")
+        _ = MarkerIO.append(dir + "/invoke", line: payload("tonight", at: 1000))
         consume(q, now: 1000)
-        _ = MarkerIO.append(dir + "/invoke", line: "midnight")    // change of mind → stricter
+        _ = MarkerIO.append(dir + "/invoke", line: payload("midnight", at: 2000))  // change of mind
         consume(q, now: 2000)
         let st = q.status()
         XCTAssertEqual(st.rows.count, 1)
-        XCTAssertEqual(st.rows[0].preview, "midnight")
+        XCTAssertTrue(st.rows[0].preview.contains("midnight"))
         XCTAssertEqual(st.rows[0].applyAt, 2000 + 5400)           // midnight's delay, restarted
     }
 
-    func testUnknownPresetRejected() {
+    func testUnknownPresetAndForgedTargetRejected() {
         let q = invokeQ()
-        _ = MarkerIO.append(dir + "/invoke", line: "nope")
+        _ = MarkerIO.append(dir + "/invoke", line: #"{"name":"nope","targetAt":9999}"#)
         consume(q, now: 1000)
         XCTAssertTrue(q.status().rows.isEmpty)
         XCTAssertEqual(q.status().recent.first?.reason, "unkeyable")
+        // forged far-future target on a REAL preset: outside ±tolerance ⇒ invalid at queue
+        _ = MarkerIO.append(dir + "/invoke", line: #"{"name":"tonight","targetAt":99999999}"#)
+        consume(q, now: 1000)
+        XCTAssertTrue(q.status().rows.isEmpty)
+        XCTAssertEqual(q.status().recent.first?.reason, "invalid at queue")
     }
 
-    func testTargetFrozenAtQueueTime() {
-        // The frozen target derives from the daemon-stamped requestedAt in the due tuple — advancing
-        // the clock past a boundary between queue and apply must not move it.
+    func testTargetFrozenAtQueueTime_evenIfPresetEditedBeforeLanding() {
+        // The target is FROZEN in the payload at queue time — a preset spec edit landing between
+        // queue and apply must NOT retarget the pending invocation (main's semantics; reviewer-1 #4).
         let q = invokeQ()
-        _ = MarkerIO.append(dir + "/invoke", line: "tonight")     // "for 90m"
         let t0 = 1_700_000_000.0
+        _ = MarkerIO.append(dir + "/invoke", line: payload("tonight", at: t0))   // "for 90m" resolved at t0
         consume(q, now: t0)
         var target: Double = 0
-        _ = q.applyDue(now: t0 + 3600 + 7200, validate: { self.find($0) != nil }) { due in
-            let d = due[0]
-            let t = try! TimeSpec.parseTarget(self.find(d.payload)!.spec,
-                                              from: Date(timeIntervalSince1970: d.requestedAt))
-            target = t.timeIntervalSince1970
-            return [d.key: (true, nil)]
+        // landing validate deliberately IGNORES the current preset spec (as SnoozePresets.tick does)
+        _ = q.applyDue(now: t0 + 3600 + 7200, validate: { SnoozePresets.decodeInvoke($0) != nil }) { due in
+            target = SnoozePresets.decodeInvoke(due[0].payload)!.targetAt
+            return [due[0].key: (true, nil)]
         }
-        XCTAssertEqual(target, t0 + 90 * 60)                      // 90m from QUEUE time, not apply time
+        XCTAssertEqual(target, t0 + 90 * 60)                      // 90m from QUEUE time, immune to edits
     }
 
     func testApplyCapsAtCeiling() {
@@ -89,7 +107,7 @@ final class SnoozePresetsQueueTests: XCTestCase {
 
     func testInvokeAbortZeroByteCancels() {
         let q = invokeQ()
-        _ = MarkerIO.append(dir + "/invoke", line: "tonight")
+        _ = MarkerIO.append(dir + "/invoke", line: payload("tonight", at: 1000))
         consume(q, now: 1000)
         _ = MarkerIO.append(dir + "/invoke-abort", line: nil)     // today's flag-style abort
         consume(q, now: 1001)
