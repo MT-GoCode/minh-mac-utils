@@ -127,10 +127,12 @@ enum SnoozePresets {
 
     static func tick(now: Double, enforcedUID: uid_t?, addDelaySec: Double)
         -> (invoke: DelayQueue.QStatus, adds: DelayQueue.QStatus) {
-        // Immediate remove (tightening): drop the preset now. The CLI also writes the adds-abort
-        // marker for the same name, so a pending delayed-add dies via the queue's own abort path.
+        // Immediate remove (tightening): drop the preset now, and kill any same-name pending
+        // delayed-add directly in the root-owned queue store (consistent with safe-apps/lockbox;
+        // works for old CLIs too).
         if let euid = enforcedUID, let name = MarkerIO.consumeLast(Paths.spRemoveMarker, enforcedUID: euid) {
             applyRemove(name: name)
+            rootCancelPendingAdd(name: name)
         }
 
         let invQ = invokeQueue(), addQ = addsQueue()

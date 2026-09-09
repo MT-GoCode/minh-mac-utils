@@ -62,16 +62,14 @@ enum SafeApps {
 
     // MARK: - pending registry (root-owned; drives delayed registrations + `show`)
 
-    struct Pending: Codable { var app: SafeApp; var requestedAt: Double; var applyAt: Double }
-    struct Registry: Codable {
-        var pending: [String: Pending] = [:]   // name → pending add
-        static func load() -> Registry { loadJSON(Paths.safeAppsPendingFile) ?? Registry() }
-        func save() { saveJSON(self, to: Paths.safeAppsPendingFile) }
+    /// The pending-registration DelayQueue (payload = canonical SafeApp JSON, key = name — so a
+    /// re-register with a DIFFERENT bid/tid/rootOwned replaces + resets, the user's flag case).
+    static func queue() -> DelayQueue {
+        DelayQueue(kind: "safe-apps",
+                   store: .file(Paths.safeAppsPendingFile, legacyDecode: Legacy.safeApps()),
+                   requestMarker: Paths.saRegisterMarker, abortMarker: Paths.saAbortMarker,
+                   onFailure: .drop, payloadIsJSON: true, auditLog: Paths.queueAuditLog)
     }
-
-    /// Published status for `show` (the pending adds + their landing times).
-    struct Status: Codable { var pending: [PendingView] = [] }
-    struct PendingView: Codable { var name: String; var bid: String; var applyAtEpoch: Double }
 
     /// A [a-z0-9-]{1,24} handle derived from a bundle id (its last dotted component), for the
     /// remove/show/abort handle. Overridable with --name; only needs to be unique, not meaningful.
@@ -109,48 +107,32 @@ enum SafeApps {
         return nil
     }
 
-    // MARK: - daemon tick (applies delayed registrations; immediate removes; aborts)
+    // MARK: - daemon tick (calls consumeMarkers then applyDue on its own queue)
 
-    /// One tick: consume the immediate `remove` marker, the `abort` marker, and the delayed `register`
-    /// marker; apply any pending registration whose time has come. All markers owner-checked via MarkerIO.
-    /// Returns the status to publish. Writes settings.json (root) when a registration lands or a remove is
-    /// applied. Delay is Bounds-clamped.
+    /// One tick: immediate `remove` marker (the CLI also writes the abort marker for the same name,
+    /// so a pending delayed-add of a removed app dies via the queue's own abort path), then the
+    /// register queue. Validation (blocklist, team rules, name collisions) runs at queue AND landing.
     @discardableResult
-    static func tick(now: Double, enforcedUID: uid_t?, delaySec: Double) -> Status {
-        var reg = Registry.load()
-
-        if let euid = enforcedUID {
-            // remove (immediate, tightening): drop the app from the user set / tombstone a default.
-            if let name = MarkerIO.consumeLast(Paths.saRemoveMarker, enforcedUID: euid) {
-                applyRemove(name: name)
-                reg.pending.removeValue(forKey: name); reg.save()
-            }
-            // abort a pending delayed registration.
-            if let arg = MarkerIO.consumeLast(Paths.saAbortMarker, enforcedUID: euid) {
-                if arg == "--all" { reg.pending.removeAll() } else { reg.pending.removeValue(forKey: arg) }
-                reg.save()
-            }
-            // register (delayed): validate + (re)queue by name.
-            if let line = MarkerIO.consumeLast(Paths.saRegisterMarker, enforcedUID: euid),
-               let app = try? JSONDecoder().decode(SafeApp.self, from: Data(line.utf8)),
-               rejectReason(app, settings: Settings.load()) == nil {
-                reg.pending[app.name] = Pending(app: app, requestedAt: now, applyAt: now + delaySec)
-                reg.save()
-            }
+    static func tick(now: Double, enforcedUID: uid_t?, delaySec: Double) -> DelayQueue.QStatus {
+        if let euid = enforcedUID, let name = MarkerIO.consumeLast(Paths.saRemoveMarker, enforcedUID: euid) {
+            applyRemove(name: name)
+            var st = queue().store.load()                    // remove also kills a same-name pending row
+            if st.pending.removeValue(forKey: name) != nil { queue().store.save(st) }
         }
-
-        // Apply any pending registration that's due. Save on ANY removal (applied OR rejected-at-landing),
-        // so a due-but-invalid entry is dropped rather than re-firing every tick forever (matches siblings).
-        var changed = false
-        for (name, p) in reg.pending where now >= p.applyAt {
-            if rejectReason(p.app, settings: Settings.load()) == nil { applyAdd(p.app) }
-            reg.pending.removeValue(forKey: name); changed = true
+        let q = queue()
+        let decode: (String) -> SafeApp? = { try? JSONDecoder().decode(SafeApp.self, from: Data($0.utf8)) }
+        let validate: (String) -> Bool = { line in decode(line).map { rejectReason($0, settings: Settings.load()) == nil } ?? false }
+        q.consumeMarkers(now: now, enforcedUID: enforcedUID,
+                         delaySec: { _ in delaySec },
+                         key: { decode($0)?.name },
+                         validate: validate)
+        return q.applyDue(now: now, validate: validate) { due in
+            Dictionary(uniqueKeysWithValues: due.map { d in
+                guard let app = decode(d.payload) else { return (d.key, (false, String?.some("undecodable"))) }
+                applyAdd(app)
+                return (d.key, (true, nil))
+            })
         }
-        if changed { reg.save() }
-
-        return Status(pending: reg.pending.values
-            .sorted { $0.app.name < $1.app.name }
-            .map { PendingView(name: $0.app.name, bid: $0.app.bid, applyAtEpoch: $0.applyAt) })
     }
 
     /// Add/replace a user entry in settings.json (root-writable). Also un-tombstones the bid.
@@ -162,14 +144,16 @@ enum SafeApps {
         }
     }
 
-    /// Drop any queued delayed registration for this bid — so an IMMEDIATE register isn't silently
-    /// reverted when a stale delayed entry for the same app lands later. Immediate CLI path only (the
-    /// tick removes entries as it applies them, so it must not double-touch the registry here).
+    /// ROOT-only (immediate `register` CLI path): drop any queued delayed registration for this bid
+    /// so an IMMEDIATE register isn't silently reverted when a stale delayed entry lands later.
+    /// Root edits the root-owned queue state directly (it cannot route through the user-owned inbox).
     static func clearPending(bid: String) {
-        var reg = Registry.load()
-        let before = reg.pending.count
-        reg.pending = reg.pending.filter { $0.value.app.bid != bid }
-        if reg.pending.count != before { reg.save() }
+        let q = queue()
+        var st = q.store.load()
+        let victims = st.pending.filter { (try? JSONDecoder().decode(SafeApp.self, from: Data($0.value.payload.utf8)))?.bid == bid }.keys
+        guard !victims.isEmpty else { return }
+        for k in victims { st.pending.removeValue(forKey: k) }
+        q.store.save(st)
     }
 
     /// Remove by NAME: drop a user entry, or tombstone a compiled default (never com.minh.demonlock).

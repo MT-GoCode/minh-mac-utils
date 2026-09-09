@@ -164,8 +164,8 @@ enum ReleaseValve {
                            (Enforcer.gatePolicyQueue(), "delay-set-gate-policy")] {
             if !q.status().rows.isEmpty { q.flushAll(now: now, reason: "admin grant"); cleared.append(label) }
         }
-        var sa = SafeApps.Registry.load()
-        if !sa.pending.isEmpty { sa.pending.removeAll(); sa.save(); cleared.append("safe-apps") }
+        let saQ = SafeApps.queue()
+        if !saQ.status().rows.isEmpty { saQ.flushAll(now: now, reason: "admin grant"); cleared.append("safe-apps") }
         for (q, label) in [(SnoozePresets.invokeQueue(), "snooze-invoke"),
                            (SnoozePresets.addsQueue(), "snooze-preset-adds")] {
             if !q.status().rows.isEmpty { q.flushAll(now: now, reason: "admin grant"); cleared.append(label) }

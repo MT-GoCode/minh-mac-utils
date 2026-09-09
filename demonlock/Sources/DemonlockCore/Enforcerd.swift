@@ -32,7 +32,7 @@ final class Enforcer {
     private var dpPolicyStatus: DelayQueue.QStatus?    // delayed-policy queue status (published every tick)
     private var dpZonesStatus: DelayQueue.QStatus?     // delayed-zones queue status (published every tick)
     private var dpGatePolicyStatus: DelayQueue.QStatus?  // delayed gate-policy queue status
-    private var safeAppsStatus: SafeApps.Status? // last-computed safe-apps pending registrations
+    private var safeAppsStatus: DelayQueue.QStatus?  // safe-apps registration queue
     private var spInvokeStatus: DelayQueue.QStatus?    // in-flight invocation queue
     private var spAddsStatus: DelayQueue.QStatus?      // pending delayed-add queue
     private var lockboxStatus: Lockbox.Status?          // password-lockbox window/lock state
@@ -436,10 +436,10 @@ final class Enforcer {
             delayedPolicy: dpPolicyStatus,
             delayedZones: dpZonesStatus,
             delayedGatePolicy: dpGatePolicyStatus,
+            safeApps: safeAppsStatus,
             snoozePresetInvoke: spInvokeStatus,
             snoozePresetAdds: spAddsStatus,
             lockboxUnlocks: lockboxUnlocksStatus,
-            legacySafeApps: safeAppsStatus,
             lockbox: lockboxStatus))
     }
 

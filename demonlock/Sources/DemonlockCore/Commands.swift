@@ -96,9 +96,6 @@ func statusBody(_ s: StateSnapshot) -> String {
                             ("lockbox-unlocks", s.lockboxUnlocks, "demonlock password-lockbox abort")] {
         if let q, let lines = queueStatusLines(label, q, abortCmd: cmd) { L.append(lines) }
     }
-    if let sa = s.legacySafeApps, !sa.pending.isEmpty {
-        L.append("  safe-apps     : \(sa.pending.count) pending registration(s) — `demonlock safe-apps show`")
-    }
     if let lb = s.lockbox {
         let unlocked = lb.entries.filter(\.unlocked).count
         let unlocking = lb.entries.filter { $0.unlockAtEpoch != nil }.count
@@ -461,9 +458,7 @@ private func snoozePresetInvoke(_ name: String?) {
 private func snoozePresetRemove(_ name: String?) {
     guard let name, !name.isEmpty else { fail("✗ usage: demonlock snooze-preset remove <name>") }
     dropDelayMarker(Paths.spRemoveMarker, payload: name)
-    _ = MarkerIO.append(Paths.spAddAbort, line: name)   // removing tightens: a pending delayed-add of
-                                                        // the same name must die too (queue abort path)
-    print("✓ remove '\(name)' sent — applied on the next tick.")
+    print("✓ remove '\(name)' sent — applied on the next tick (kills a pending delayed-add of the same name too).")
 }
 
 private func snoozePresetAdd(_ args: [String], immediate: Bool) {
@@ -556,8 +551,11 @@ private func safeAppsShow() {
     let rows = apps.map { [$0.name, $0.bid, $0.tid, $0.rootOwned ? "yes" : "no"] }
     print(Table.section("SAFE APPS — spared from the lockout kill", ["name", "bundle id", "team", "root-req"], rows))
     let delayH = Int(Bounds.clamp(Settings.load().safeAppsDelaySec, Bounds.safeAppsDelay) / 3600)
-    let pend = StateStore.read()?.legacySafeApps?.pending ?? []   // legacy until Task 10 ports this reader
-    let prows = pend.map { [$0.name, $0.bid, TimeSpec.fmtLeft($0.applyAtEpoch - nowEpoch())] }
+    let pend = StateStore.read()?.safeApps?.rows ?? []
+    let prows = pend.map { r -> [String] in
+        let bid = (try? JSONDecoder().decode(SafeApp.self, from: Data(r.preview.utf8)))?.bid ?? "…"
+        return [r.key, bid, TimeSpec.fmtLeft(r.applyAt - nowEpoch())]
+    }
     print("\n" + Table.section("PENDING REGISTRATIONS — land after \(delayH)h", ["name", "bundle id", "lands in"], prows))
 }
 
