@@ -114,12 +114,11 @@ enum SafeApps {
     /// register queue. Validation (blocklist, team rules, name collisions) runs at queue AND landing.
     @discardableResult
     static func tick(now: Double, enforcedUID: uid_t?, delaySec: Double) -> DelayQueue.QStatus {
+        let q = queue()
         if let euid = enforcedUID, let name = MarkerIO.consumeLast(Paths.saRemoveMarker, enforcedUID: euid) {
             applyRemove(name: name)
-            var st = queue().store.load()                    // remove also kills a same-name pending row
-            if st.pending.removeValue(forKey: name) != nil { queue().store.save(st) }
+            q.rootCancel(keys: [name], now: now, reason: "removed")   // remove kills a same-name pending row
         }
-        let q = queue()
         let decode: (String) -> SafeApp? = { try? JSONDecoder().decode(SafeApp.self, from: Data($0.utf8)) }
         let validate: (String) -> Bool = { line in decode(line).map { rejectReason($0, settings: Settings.load()) == nil } ?? false }
         q.consumeMarkers(now: now, enforcedUID: enforcedUID,
@@ -149,11 +148,10 @@ enum SafeApps {
     /// Root edits the root-owned queue state directly (it cannot route through the user-owned inbox).
     static func clearPending(bid: String) {
         let q = queue()
-        var st = q.store.load()
-        let victims = st.pending.filter { (try? JSONDecoder().decode(SafeApp.self, from: Data($0.value.payload.utf8)))?.bid == bid }.keys
-        guard !victims.isEmpty else { return }
-        for k in victims { st.pending.removeValue(forKey: k) }
-        q.store.save(st)
+        let victims = q.store.load().pending
+            .filter { (try? JSONDecoder().decode(SafeApp.self, from: Data($0.value.payload.utf8)))?.bid == bid }
+            .map(\.key)
+        q.rootCancel(keys: Array(victims), now: nowEpoch(), reason: "superseded by immediate register")
     }
 
     /// Remove by NAME: drop a user entry, or tombstone a compiled default (never com.minh.demonlock).

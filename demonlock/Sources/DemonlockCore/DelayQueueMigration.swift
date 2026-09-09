@@ -63,7 +63,8 @@ enum Legacy {
         var pending: [String: Pending] = [:]
     }
 
-    /// sidecar delay-add / lockbox unlocks: legacy pending has NO payload field — payload := key.
+    /// sidecar delay-add (kept here as the TESTED REFERENCE for the sidecar's vendored copy —
+    /// demonlock itself has no caller): legacy pending has NO payload field — payload := key.
     /// seq assigned in requestedAt order (ties broken by key for determinism).
     static func keyOnlyMap() -> (Data) -> (rows: [String: DelayQueue.Item], lastAppliedAt: Double?)? {
         { data in

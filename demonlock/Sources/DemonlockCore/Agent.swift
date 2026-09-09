@@ -21,7 +21,7 @@ final class AgentApp: NSObject, NSApplicationDelegate {
     private var lastPhase = ""
     private var lastRVPhase = ""
     private var cachedSettings = Settings.load()   // refreshed each UI tick; read by the fast pane-guard
-    private var dpApplied: [String: Double] = [:]   // kind → last-seen lastAppliedEpoch (drives apply alerts)
+    private var dpApplied: [String: Double] = [:]   // kind → last-seen lastAppliedAt (drives apply alerts)
     private var dpSeeded = false                     // skip alerts on the first refresh (seed the baseline)
 
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -72,7 +72,7 @@ final class AgentApp: NSObject, NSApplicationDelegate {
     }
 
     /// Alert (dialog — breaks Focus/DnD, like the release valve) when a queued delayed change lands.
-    /// Keyed on the persisted `lastAppliedEpoch`, so a daemon restart or the agent's faster poll can't
+    /// Keyed on the persisted `lastAppliedAt`, so a daemon restart or the agent's faster poll can't
     /// double-fire; the first refresh only seeds the baseline.
     private func handleDelayedApplied(_ items: [(String, Double?)]) {
         for (label, d) in items {

@@ -39,10 +39,7 @@ enum Lockbox {
                    store: DelayQueue.QStateStore(
                        load: {
                            let f = LBFile.load()
-                           if var st = f.unlocksQ {
-                               if let m = st.pending.values.map(\.seq).max(), st.nextSeq <= m { st.nextSeq = m + 1 }
-                               return st
-                           }
+                           if var st = f.unlocksQ { st.fixSeq(); return st }
                            guard let legacy = f.pending, !legacy.isEmpty else { return DelayQueue.QState() }
                            var st = DelayQueue.QState()
                            for (n, p) in legacy.sorted(by: { ($0.value.requestedAt, $0.key) < ($1.value.requestedAt, $1.key) }) {
@@ -105,13 +102,13 @@ enum Lockbox {
             // Re-adding resets any in-flight/open unlock — else the NEW secret inherits the OLD
             // one's unlock window and is instantly copyable. The pending row dies via the queue store.
             var f = LBFile.load(); f.unlockedUntil.removeValue(forKey: e.name); f.save()
-            var st = q.store.load(); if st.pending.removeValue(forKey: e.name) != nil { q.store.save(st) }
+            q.rootCancel(keys: [e.name], now: now, reason: "secret re-added")
         }
         // remove (tightening, immediate): delete from the vault + clear all lock state.
         if let euid = enforcedUID, let name = MarkerIO.consumeLast(Paths.lbRemoveMarker, enforcedUID: euid) {
             if entries.contains(where: { $0.name == name }) { entries.removeAll { $0.name == name }; LockboxStore.save(entries) }
             var f = LBFile.load(); f.unlockedUntil.removeValue(forKey: name); f.save()
-            var st = q.store.load(); if st.pending.removeValue(forKey: name) != nil { q.store.save(st) }
+            q.rootCancel(keys: [name], now: now, reason: "entry removed")
         }
 
         // Queue phase 1 — validate: entry exists && not already unlocked. delaySec is PER-ENTRY,

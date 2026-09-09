@@ -199,7 +199,12 @@ final class ZonesController: NSObject, NSApplicationDelegate, MKMapViewDelegate,
             ops.append(ZoneOp(op: "add", zone: newZone))
             if queueOps(ops) {
                 nameField.stringValue = ""; cancelDraw(); reload()
-                instr.stringValue = "⏳ queued \(replacing ? "replace" : "add") of \"\(name)\" — lands in \(zonesDelayH)h (no admin). abort: `demonlock delayzones --abort \"add:\(name)\"`"
+                // Replace = del+add: aborting ONLY the add would leave the del queued — the zone
+                // would be deleted and never re-added. Name both keys (or bare --abort for all).
+                instr.stringValue = replacing
+                    ? "⏳ queued replace of \"\(name)\" — lands in \(zonesDelayH)h. abort BOTH: `demonlock delayzones --abort \"del:\(name)\"` and `--abort \"add:\(name)\"`"
+                    : "⏳ queued add of \"\(name)\" — lands in \(zonesDelayH)h (no admin). abort: `demonlock delayzones --abort \"add:\(name)\"`"
+                showPending()
             } else {
                 instr.stringValue = "Couldn't queue the change (is demonlock installed?)."
             }
@@ -246,6 +251,7 @@ final class ZonesController: NSObject, NSApplicationDelegate, MKMapViewDelegate,
             if queueOps([ZoneOp(op: "del", name: name)]) {
                 reload()   // the table must show the pending state — its absence caused 4 clicks in 65s
                 instr.stringValue = "⏳ queued deletion of \"\(name)\" — lands in \(zonesDelayH)h. abort: `demonlock delayzones --abort \"del:\(name)\"`"
+                showPending()
             }
             else { instr.stringValue = "Couldn't queue the change (is demonlock installed?)." }
         case .cancel:
@@ -302,16 +308,18 @@ final class ZonesController: NSObject, NSApplicationDelegate, MKMapViewDelegate,
 
     // MARK: rendering
 
-    private func reload() {
-        zones = ZoneStore.load(); table.reloadData(); renderAll()
-        // Pending queued ops (root-published state.json, 0644; nil if the daemon predates relaunch).
-        if let rows = StateStore.read()?.delayedZones?.rows, !rows.isEmpty {
-            let lines = rows.map { r -> String in
-                let left = max(0, Int(r.applyAt - nowEpoch()))
-                return "⏳ \(r.key) — lands in \(left/3600)h \(left%3600/60)m · abort: demonlock delayzones --abort \"\(r.key)\""
-            }
-            instr.stringValue = lines.joined(separator: "\n")
+    private func reload() { zones = ZoneStore.load(); table.reloadData(); renderAll(); showPending() }
+
+    /// APPEND the pending queued ops (root-published state.json, 0644; nil if the daemon predates the
+    /// relaunch) below whatever `instr` currently says — callers set their own message first, so a
+    /// plain assignment here would be dead the moment they ran.
+    private func showPending() {
+        guard let rows = StateStore.read()?.delayedZones?.rows, !rows.isEmpty else { return }
+        let lines = rows.map { r -> String in
+            let left = max(0, Int(r.applyAt - nowEpoch()))
+            return "⏳ \(r.key) — lands in \(left/3600)h \(left%3600/60)m · abort: demonlock delayzones --abort \"\(r.key)\""
         }
+        instr.stringValue += (instr.stringValue.isEmpty ? "" : "\n") + lines.joined(separator: "\n")
     }
 
     private func renderAll() {

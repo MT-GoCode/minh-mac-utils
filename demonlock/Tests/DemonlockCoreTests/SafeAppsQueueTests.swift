@@ -72,6 +72,28 @@ final class SafeAppsQueueTests: XCTestCase {
         XCTAssertEqual(queue.status().recent.first?.reason, "invalid at landing")
     }
 
+    func testFlushAllAcrossManyQueues() {
+        // The grant-flush shape: every queue flushes independently, one event each, empties no-op.
+        var queues: [DelayQueue] = []
+        for i in 0..<7 {
+            let dq = DelayQueue(kind: "q\(i)", store: .file(dir + "/q\(i).json"),
+                                requestMarker: dir + "/r\(i)", abortMarker: dir + "/a\(i)",
+                                onFailure: .drop, payloadIsJSON: false, auditLog: dir + "/audit.log")
+            if i % 2 == 0 {   // some queues pending, some empty (flushAll must no-op cleanly)
+                _ = MarkerIO.append(dir + "/r\(i)", line: "x\(i)")
+                _ = dq.consumeMarkers(now: 1, enforcedUID: uid, delaySec: { _ in 100 },
+                                      key: { $0 }, validate: { _ in true })
+            }
+            queues.append(dq)
+        }
+        for dq in queues { dq.flushAll(now: 2, reason: "admin grant") }
+        for (i, dq) in queues.enumerated() {
+            XCTAssertTrue(dq.status().rows.isEmpty)
+            if i % 2 == 0 { XCTAssertEqual(dq.status().recent.first?.what, "flushed") }
+            else { XCTAssertTrue(dq.status().recent.isEmpty) }   // empty queue: no spurious event
+        }
+    }
+
     func testFlushEmptiesQueueAsOneEvent() {
         let queue = q()
         _ = MarkerIO.append(dir + "/reg", lines: [appJSON("a", bid: "com.a.a"), appJSON("b", bid: "com.b.b")])

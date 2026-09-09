@@ -157,27 +157,17 @@ enum ReleaseValve {
     /// with sudo, so nothing queued should silently land later. Already-applied config and registered
     /// spares are untouched, and an in-flight snooze (active suppression) is left alone — it's not a queue.
     private static func flushSelfServeQueues() {
-        var cleared: [String] = []
+        // Uniform: every no-admin queue is discarded (flushAll no-ops on empty and writes its own
+        // audit event), and the lockbox's open windows relock. With admin in hand you change things
+        // deliberately via sudo; nothing queued should silently land later.
         let now = nowEpoch()
-        for (q, label) in [(Enforcer.policyQueue(), "delay-set-policy"),
-                           (Enforcer.zonesQueue(), "delayzones"),
-                           (Enforcer.gatePolicyQueue(), "delay-set-gate-policy")] {
-            if !q.status().rows.isEmpty { q.flushAll(now: now, reason: "admin grant"); cleared.append(label) }
+        for q in [Enforcer.policyQueue(), Enforcer.zonesQueue(), Enforcer.gatePolicyQueue(),
+                  SafeApps.queue(), SnoozePresets.invokeQueue(), SnoozePresets.addsQueue(),
+                  Lockbox.unlocksQueue()] {
+            q.flushAll(now: now, reason: "admin grant")
         }
-        let saQ = SafeApps.queue()
-        if !saQ.status().rows.isEmpty { saQ.flushAll(now: now, reason: "admin grant"); cleared.append("safe-apps") }
-        for (q, label) in [(SnoozePresets.invokeQueue(), "snooze-invoke"),
-                           (SnoozePresets.addsQueue(), "snooze-preset-adds")] {
-            if !q.status().rows.isEmpty { q.flushAll(now: now, reason: "admin grant"); cleared.append(label) }
-        }
-        let lbQ = Lockbox.unlocksQueue()
-        let hadLockboxState = !lbQ.status().rows.isEmpty || !Lockbox.LBFile.load().unlockedUntil.isEmpty
-        if hadLockboxState {
-            lbQ.flushAll(now: now, reason: "admin grant")
-            Lockbox.relockAll()
-            cleared.append("lockbox")
-        }
-        if !cleared.isEmpty { logStderr("release-valve: grant flushed queued self-serve changes: \(cleared.joined(separator: ", "))") }
+        Lockbox.relockAll()
+        logStderr("release-valve: grant flushed all self-serve queues + relocked the lockbox")
     }
 
     /// Revoke any live grant and clear all state. Called by `arm` and `nosudo` (both root). Idempotent.

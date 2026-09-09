@@ -299,6 +299,29 @@ final class DelayQueueTests: XCTestCase {
         XCTAssertEqual(q.status().rows.count, 1)               // keeps retrying
     }
 
+    func testRetryCrashAfterSuccessReappliesOnce_setLikeSafe() {
+        // .retry is remove-AFTER-success: a crash between apply-success and the save re-applies
+        // exactly once on the next tick. Safe only because .retry applies are contractually
+        // idempotent (set-like) — this test documents/asserts the re-apply happens.
+        let q = queue(.retry)
+        _ = MarkerIO.append(reqM, line: "aaaa")
+        consume(q, now: 1000)
+        let preApply = try! Data(contentsOf: URL(fileURLWithPath: stateFile))   // snapshot pre-apply
+        var calls = 0
+        _ = q.applyDue(now: 1101, validate: ok) { due in
+            calls += due.count
+            return Dictionary(uniqueKeysWithValues: due.map { ($0.key, (true, String?.none)) })
+        }
+        XCTAssertEqual(calls, 1)
+        try! preApply.write(to: URL(fileURLWithPath: stateFile))                // "crash": save lost
+        _ = queue(.retry).applyDue(now: 1102, validate: ok) { due in
+            calls += due.count
+            return Dictionary(uniqueKeysWithValues: due.map { ($0.key, (true, String?.none)) })
+        }
+        XCTAssertEqual(calls, 2)                                               // re-applied once
+        XCTAssertTrue(queue(.retry).status().rows.isEmpty)                     // then cleared
+    }
+
     func testRetrySucceedsAndClears() {
         let q = queue(.retry)
         _ = MarkerIO.append(reqM, line: "aaaa")

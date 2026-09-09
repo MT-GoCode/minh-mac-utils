@@ -33,6 +33,10 @@ struct DelayQueue {
         var nextSeq: UInt64 = 0
         var lastAppliedAt: Double? = nil
         var recent: [Outcome] = []        // last 8 EVENTS, newest first (batch/flush = one event)
+
+        /// nextSeq must sit strictly above every pending seq (migration/hand-edits must never
+        /// re-create the ordering ties seq exists to kill). Called by every store's load.
+        mutating func fixSeq() { if let m = pending.values.map(\.seq).max(), nextSeq <= m { nextSeq = m + 1 } }
     }
     struct Row: Codable { var key: String; var preview: String; var applyAt: Double; var seq: UInt64 }
     struct QStatus: Codable {
@@ -64,8 +68,7 @@ struct DelayQueue {
                         st = QState(pending: legacy.rows, nextSeq: 0, lastAppliedAt: legacy.lastAppliedAt, recent: [])
                         logStderr("delay-queue \(path): migrated legacy state (\(legacy.rows.count) pending)")
                     } else { st = QState() }
-                    let maxSeq = st.pending.values.map(\.seq).max()
-                    if let m = maxSeq, st.nextSeq <= m { st.nextSeq = m + 1 }
+                    st.fixSeq()
                     return st
                 },
                 save: { saveJSON($0, to: path) })
@@ -131,12 +134,12 @@ struct DelayQueue {
                 if lines.isEmpty || keys.contains("--all") {
                     // Zero-byte FILE or a literal --all line ⇒ abort everything (both shipped CLI shapes).
                     if !st.pending.isEmpty {
+                        dirty = true
                         abortedKeys = st.pending.keys.sorted()
                         record(&st, Outcome(key: abortedKeys.joined(separator: ", "),
                                             what: "flushed", reason: "abort --all", at: now))
                         st.pending.removeAll()
                     }
-                    dirty = true
                 } else {
                     for k in keys where k != "--all" {
                         if st.pending.removeValue(forKey: k) != nil {
@@ -145,8 +148,8 @@ struct DelayQueue {
                         } else {
                             record(&st, Outcome(key: k, what: "rejected", reason: "no such pending key", at: now))
                         }
+                        dirty = true
                     }
-                    dirty = true
                 }
             }
 
@@ -165,17 +168,17 @@ struct DelayQueue {
                         // request must not be swapped for an aggressive one at hour 35 and land at 36).
                         st.pending[k] = Item(payload: line, requestedAt: now, applyAt: now + delaySec(line), seq: st.nextSeq)
                         st.nextSeq += 1
-                        record(&st, Outcome(key: k, what: "replaced", reason: "delay restarted", at: now))
+                        record(&st, Outcome(key: k, what: "replaced", reason: "delay restarted", at: now), payload: line)
                     } else if st.pending.count >= Self.cap {
                         // New keys only — replaces and aborts are always accepted at the cap.
                         record(&st, Outcome(key: k, what: "rejected", reason: "queue full (\(Self.cap)/\(Self.cap))", at: now))
                     } else {
                         st.pending[k] = Item(payload: line, requestedAt: now, applyAt: now + delaySec(line), seq: st.nextSeq)
                         st.nextSeq += 1
-                        record(&st, Outcome(key: k, what: "queued", reason: nil, at: now))
+                        record(&st, Outcome(key: k, what: "queued", reason: nil, at: now), payload: line)
                     }
+                    dirty = true
                 }
-                dirty = true
             }
         }
 
@@ -193,6 +196,19 @@ struct DelayQueue {
 
         if dirty { store.save(st) }
         return abortedKeys
+    }
+
+    /// ROOT-only programmatic cancel (immediate add/remove CLI+tick paths, where root cannot route
+    /// through the user-owned inbox — the daemon's owner check rejects root-written markers).
+    /// Records proper `aborted` outcomes + audit lines, so these removals don't punch holes in the
+    /// audit trail.
+    func rootCancel(keys: [String], now: Double, reason: String) {
+        var st = store.load()
+        var hit = false
+        for k in keys where st.pending.removeValue(forKey: k) != nil {
+            record(&st, Outcome(key: k, what: "aborted", reason: reason, at: now)); hit = true
+        }
+        if hit { store.save(st) }
     }
 
     // MARK: - PHASE 2: apply due rows
@@ -256,7 +272,6 @@ struct DelayQueue {
                                         reason: reasons.joined(separator: "; "), at: now))
                 }
                 store.save(st)
-                dirty = false
 
             case .retry:
                 // Remove-after-success — a crash between apply-success and save re-applies once,
@@ -280,8 +295,8 @@ struct DelayQueue {
                     }
                 }
                 store.save(st)
-                dirty = false
             }
+            return status(store.load())
         }
 
         if dirty { store.save(st) }
@@ -328,17 +343,21 @@ struct DelayQueue {
 
     // MARK: - outcomes + audit
 
-    private func record(_ st: inout QState, _ o: Outcome) {
+    private func record(_ st: inout QState, _ o: Outcome, payload: String? = nil) {
         st.recent.insert(o, at: 0)
         if st.recent.count > 8 { st.recent.removeLast(st.recent.count - 8) }
-        audit(o)
+        audit(o, preview: payload)
     }
 
+    private static let auditDateFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm:ss"; return f
+    }()
+
     /// One line per event to the append-only audit file — the history that didn't exist on Sep 7.
-    private func audit(_ o: Outcome) {
-        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        var line = "[\(f.string(from: Date(timeIntervalSince1970: o.at)))] \(kind) \(o.key) \(o.what.uppercased())"
+    private func audit(_ o: Outcome, preview payload: String? = nil) {
+        var line = "[\(Self.auditDateFormatter.string(from: Date(timeIntervalSince1970: o.at)))] \(kind) \(o.key) \(o.what.uppercased())"
         if let r = o.reason { line += " — \(r)" }
+        if let p = payload { line += " · \(preview(p))" }
         let fd = open(auditLog, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0o644)
         guard fd >= 0 else { return }
         _ = (line + "\n").withCString { write(fd, $0, strlen($0)) }

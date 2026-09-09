@@ -29,6 +29,15 @@ final class MarkerIOTests: XCTestCase {
         XCTAssertEqual(MarkerIO.consumeLast(path(), enforcedUID: uid), "s3cret")  // old contents gone
     }
 
+    func testModalAppendExclusive() {
+        // attacker-precreated 0644 file must not keep its mode under a 0600 write (open() ignores
+        // `mode` on existing files — append unlinks + O_EXCLs for non-default modes).
+        FileManager.default.createFile(atPath: path(), contents: Data())
+        chmod(path(), 0o644)
+        XCTAssertTrue(MarkerIO.append(path(), line: "s", mode: 0o600))
+        XCTAssertEqual(mode(path()), 0o600)
+    }
+
     func testAppendThenConsumeLines_roundTripsEscapedNewlines() {
         let payload = "line1\nline2 with \\backslash\\"
         XCTAssertTrue(MarkerIO.append(path(), line: payload))

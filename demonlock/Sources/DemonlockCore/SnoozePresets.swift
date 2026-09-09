@@ -53,7 +53,7 @@ enum SnoozePresets {
             load: {
                 let f = SPFile.load()
                 var st = read(f) ?? migrate(f) ?? DelayQueue.QState()
-                if let m = st.pending.values.map(\.seq).max(), st.nextSeq <= m { st.nextSeq = m + 1 }
+                st.fixSeq()
                 return st
             },
             save: { st in
@@ -87,7 +87,8 @@ enum SnoozePresets {
                    store: subStore(
                        read: { $0.addsQ },
                        migrate: { f in
-                           guard let adds = f.adds, !adds.isEmpty else { return f.adds != nil ? DelayQueue.QState() : nil }
+                           guard let adds = f.adds else { return nil }
+                           guard !adds.isEmpty else { return DelayQueue.QState() }
                            let enc = JSONEncoder(); enc.outputFormatting = [.sortedKeys]
                            var st = DelayQueue.QState()
                            for (name, a) in adds.sorted(by: { $0.value.requestedAt < $1.value.requestedAt }) {
@@ -150,9 +151,9 @@ enum SnoozePresets {
                                     .map { rejectReason($0) == nil } ?? false
                             })
 
-        let invStatus = invQ.applyDue(now: now, validate: { find($0) != nil }) { due in
+        let invStatus = invQ.applyDue(now: now, validate: { find($0, settings) != nil }) { due in
             Dictionary(uniqueKeysWithValues: due.map { d in
-                guard let p = find(d.payload),
+                guard let p = find(d.payload, settings),
                       let target = try? TimeSpec.parseTarget(p.spec, from: Date(timeIntervalSince1970: d.requestedAt))
                 else { return (d.key, (false, String?.some("preset vanished or spec unparseable"))) }
                 if target.timeIntervalSince1970 > now {
@@ -183,9 +184,9 @@ enum SnoozePresets {
     /// state file — root cannot route through the user-owned inbox (the daemon's owner check would
     /// reject a root-written marker).
     static func rootCancelPendingAdd(name: String) {
+        addsQueue().rootCancel(keys: [name], now: nowEpoch(), reason: "superseded by immediate add/remove")
         var f = SPFile.load()
-        if f.addsQ?.pending.removeValue(forKey: name) != nil { f.save() }
-        if f.adds?.removeValue(forKey: name) != nil { f.save() }
+        if f.adds?.removeValue(forKey: name) != nil { f.save() }   // pre-migration legacy row
     }
 
     static func applyAdd(_ p: SnoozePreset) {

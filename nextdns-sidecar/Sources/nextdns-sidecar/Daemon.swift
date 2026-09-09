@@ -80,7 +80,6 @@ final class Daemon {
     }
 
     static let maxDomainsPerTick = 256   // per-tick synchronous-API cap (block + delayed-apply)
-    static let maxPending = 4096          // ceiling on the delayed-add registry size
 
     /// Dedup + cap the domains from a marker so a giant/crafted marker can't wedge the single-threaded
     /// tick on synchronous curl (a no-sudo DoS). Order-preserving.

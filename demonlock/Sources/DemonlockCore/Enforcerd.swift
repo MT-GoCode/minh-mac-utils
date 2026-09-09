@@ -450,10 +450,7 @@ final class Enforcer {
         return String(cString: pw.pointee.pw_name)
     }
 
-    /// Drive both delayed-change slots (policy + zones) one tick. Each validates its payload against the
-    /// CURRENT zones/syntax at both queue and apply time, and applies as root (this daemon). Runs before
-    /// the tick's own policy read so a change that lands this tick takes effect immediately.
-    /// Queue factories — one per delayed surface (Tasks 6-10 add the rest).
+    /// Queue factories — one per delayed surface.
     static func policyQueue() -> DelayQueue {
         DelayQueue(kind: "policy",
                    store: .file(Paths.delayedPolicyFile, legacyDecode: Legacy.singleSlot(constKey: "policy")),
@@ -473,6 +470,10 @@ final class Enforcer {
                    onFailure: .drop, payloadIsJSON: true, auditLog: Paths.queueAuditLog)
     }
 
+    /// Drive the three delayed-change queues (zones + policy + gate-policy) one tick. Each validates
+    /// its payload against CURRENT state at both queue and apply time, and applies as root (this
+    /// daemon). Runs before the tick's own policy read so a change landing this tick takes effect
+    /// immediately.
     private func runDelayedChanges(_ nowSec: Double, enforcedUID: uid_t?) {
         let zonesQ = Enforcer.zonesQueue(), policyQ = Enforcer.policyQueue(), gateQ = Enforcer.gatePolicyQueue()
         let zDelay = Bounds.clamp(settings.zonesDelaySec, Bounds.zonesDelay)
