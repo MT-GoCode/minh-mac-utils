@@ -86,10 +86,11 @@ struct DelayQueue {
     let auditLog: String
 
     static let cap = 64
-    /// Lines processed per marker read. The 1 MiB byte cap alone still admits ~500k lines; without
-    /// this a no-sudo writer could force per-line record+audit work inside the root enforcer's tick
-    /// (a stall = enforcement gap — the same threat LOCK_NB/O_NONBLOCK exist to close) and grow the
-    /// un-rotated audit log without bound. Excess lines collapse into ONE rejected event.
+    /// Lines per marker read. The 1 MiB byte cap alone still admits ~500k lines; without this a
+    /// no-sudo writer could force per-line record+audit work inside the root enforcer's tick (a
+    /// stall = enforcement gap — the same threat LOCK_NB/O_NONBLOCK close) and grow the un-rotated
+    /// audit log without bound. Over the cap the WHOLE file is rejected as ONE event — same rule as
+    /// the byte cap: never act on a truncated prefix (a prefix could split an atomic del+add).
     static let maxLinesPerMarker = 256
     static let clockSlackSec = 300.0
     static let retryBackoffCeilSec = 300.0
@@ -136,10 +137,17 @@ struct DelayQueue {
 
         if let euid = enforcedUID {
             // 1. Abort — consumed BEFORE requests (abort+requeue in one tick stays clean, as today).
-            if let lines = MarkerIO.consumeLines(abortMarker, enforcedUID: euid) {
-                let keys = lines.prefix(Self.maxLinesPerMarker)
-                    .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-                if lines.isEmpty || keys.contains("--all") {
+            if var lines = MarkerIO.consumeLines(abortMarker, enforcedUID: euid) {
+                var overCap = false
+                if lines.count > Self.maxLinesPerMarker {
+                    overCap = true
+                    record(&st, Outcome(key: "(bulk)", what: "rejected",
+                                        reason: "abort marker over the \(Self.maxLinesPerMarker)-line cap — whole file rejected", at: now))
+                    dirty = true; lines = []
+                }
+                let keys = lines.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                if overCap { /* rejected whole — neither keys nor abort-all */ }
+                else if lines.isEmpty || keys.contains("--all") {
                     // Zero-byte FILE or a literal --all line ⇒ abort everything (both shipped CLI shapes).
                     if !st.pending.isEmpty {
                         dirty = true
@@ -151,10 +159,13 @@ struct DelayQueue {
                 } else {
                     for k in keys where k != "--all" {
                         abortedKeys.append(k)                       // returned even without a pending row
+                                                                    // (lockbox relocks off the RETURN, not the label)
                         if st.pending.removeValue(forKey: k) != nil {
                             record(&st, Outcome(key: k, what: "aborted", reason: nil, at: now))
                         } else {
-                            record(&st, Outcome(key: k, what: "aborted", reason: "nothing pending (side effects only)", at: now))
+                            // Label stays REJECTED: a typo'd key reading "aborted" would tell the
+                            // user their real pending row is gone while it still lands 36h later.
+                            record(&st, Outcome(key: k, what: "rejected", reason: "no such pending key", at: now))
                         }
                         dirty = true
                     }
@@ -163,11 +174,11 @@ struct DelayQueue {
 
             // 2. Requests — file order; each line judged individually (a poison line never kills a batch).
             if let allLines = MarkerIO.consumeLines(requestMarker, enforcedUID: euid) {
-                let lines = allLines.prefix(Self.maxLinesPerMarker)
-                if allLines.count > lines.count {
+                var lines = allLines
+                if allLines.count > Self.maxLinesPerMarker {
                     record(&st, Outcome(key: "(bulk)", what: "rejected",
-                                        reason: "\(allLines.count - lines.count) excess lines dropped (marker line cap \(Self.maxLinesPerMarker))", at: now))
-                    dirty = true
+                                        reason: "request marker over the \(Self.maxLinesPerMarker)-line cap — whole file rejected", at: now))
+                    dirty = true; lines = []
                 }
                 for line in lines where !line.trimmingCharacters(in: .whitespaces).isEmpty {
                     guard let k = key(line) else {

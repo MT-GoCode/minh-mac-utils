@@ -16,8 +16,10 @@ final class SnoozePresetsQueueTests: XCTestCase {
                    onFailure: .drop, payloadIsJSON: true, auditLog: dir + "/audit.log")
     }
     func payload(_ name: String, at now: Double) -> String {
+        // mirrors the CLI: target quantized to the minute (double-invoke idempotency)
         let t = try! TimeSpec.parseTarget(find(name)!.spec, from: Date(timeIntervalSince1970: now))
-        let d = try! JSONEncoder().encode(SnoozePresets.InvokePayload(name: name, targetAt: t.timeIntervalSince1970))
+        let d = try! JSONEncoder().encode(SnoozePresets.InvokePayload(
+            name: name, targetAt: (t.timeIntervalSince1970 / 60).rounded() * 60))
         return String(data: d, encoding: .utf8)!
     }
 
@@ -47,9 +49,9 @@ final class SnoozePresetsQueueTests: XCTestCase {
         _ = MarkerIO.append(dir + "/invoke", line: p1)
         consume(q, now: 1000)
         XCTAssertEqual(q.status().rows[0].applyAt, 4600)
-        _ = MarkerIO.append(dir + "/invoke", line: p1)            // exact double-click: idempotent
-        consume(q, now: 1001)
-        XCTAssertEqual(q.status().rows[0].applyAt, 4600)          // clock kept
+        _ = MarkerIO.append(dir + "/invoke", line: payload("tonight", at: 1005))  // nervous re-invoke
+        consume(q, now: 1005)                                     // 5s later: same quantized minute
+        XCTAssertEqual(q.status().rows[0].applyAt, 4600)          // ⇒ identical payload ⇒ clock kept
         _ = MarkerIO.append(dir + "/invoke", line: payload("tonight", at: 2000))  // later re-invoke:
         consume(q, now: 2000)                                     // new frozen target ⇒ different payload
         XCTAssertEqual(q.status().rows.count, 1)
@@ -74,11 +76,20 @@ final class SnoozePresetsQueueTests: XCTestCase {
         consume(q, now: 1000)
         XCTAssertTrue(q.status().rows.isEmpty)
         XCTAssertEqual(q.status().recent.first?.reason, "unkeyable")
-        // forged far-future target on a REAL preset: outside ±tolerance ⇒ invalid at queue
+        // forged far-future target on a REAL preset: past the one-sided tolerance ⇒ invalid at queue
         _ = MarkerIO.append(dir + "/invoke", line: #"{"name":"tonight","targetAt":99999999}"#)
         consume(q, now: 1000)
         XCTAssertTrue(q.status().rows.isEmpty)
         XCTAssertEqual(q.status().recent.first?.reason, "invalid at queue")
+    }
+
+    func testStaleInvokeAfterDaemonGapAccepted() {
+        // CLI resolved at T0; daemon was down 40min. Claimed target is EARLIER than a fresh resolve
+        // — harmless (shorter snooze) and must be accepted (one-sided gate; reviewer-1 NEW-3).
+        let q = invokeQ()
+        _ = MarkerIO.append(dir + "/invoke", line: payload("tonight", at: 1000))
+        consume(q, now: 1000 + 2400)                              // consumed 40min late
+        XCTAssertEqual(q.status().rows.count, 1)                  // accepted, not "invalid at queue"
     }
 
     func testTargetFrozenAtQueueTime_evenIfPresetEditedBeforeLanding() {

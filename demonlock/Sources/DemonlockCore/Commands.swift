@@ -451,8 +451,11 @@ private func snoozePresetShow() {
 private func snoozePresetInvoke(_ name: String?) {
     guard let name, !name.isEmpty else { fail("✗ usage: demonlock snooze-preset invoke <name>") }
     guard let p = SnoozePresets.find(name) else { fail("✗ no preset '\(name)' — see `demonlock snooze-preset show`.") }
+    // Quantized to the minute so a nervous double-invoke seconds later produces IDENTICAL payload
+    // bytes (idempotent, clock kept) instead of a replace+reset; well inside the daemon's tolerance.
     guard let target = try? TimeSpec.parseTarget(p.spec),
-          let data = try? JSONEncoder().encode(SnoozePresets.InvokePayload(name: name, targetAt: target.timeIntervalSince1970)),
+          let data = try? JSONEncoder().encode(SnoozePresets.InvokePayload(
+              name: name, targetAt: (target.timeIntervalSince1970 / 60).rounded() * 60)),
           let json = String(data: data, encoding: .utf8) else { fail("✗ couldn't resolve '\(p.spec)'.") }
     dropDelayMarker(Paths.spInvokeMarker, payload: json)
     print("✓ '\(name)' invoked — stands down (\(p.spec)) in \(TimeSpec.fmtLeft(Bounds.clamp(p.invokeDelaySec, Bounds.snoozePresetInvokeDelay))), then re-arms. One at a time; cancel with `snooze-preset abort` (via invoke-abort).")

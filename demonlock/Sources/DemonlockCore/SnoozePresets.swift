@@ -166,7 +166,10 @@ enum SnoozePresets {
                                 guard let p = decodeInvoke(line), let preset = find(p.name, settings),
                                       let expect = try? TimeSpec.parseTarget(preset.spec, from: Date(timeIntervalSince1970: now))
                                 else { return false }
-                                return abs(p.targetAt - expect.timeIntervalSince1970) <= invokeTargetToleranceSec
+                                // ONE-sided: only a target FURTHER out than the spec resolves now is
+                                // forgery. An earlier one (daemon was down; an "until" rolled past)
+                                // is harmless — shorter snooze, or skipped at apply if already past.
+                                return p.targetAt - expect.timeIntervalSince1970 <= invokeTargetToleranceSec
                             })
         addQ.consumeMarkers(now: now, enforcedUID: enforcedUID,
                             delaySec: { _ in addDelaySec },

@@ -188,6 +188,22 @@ final class DelayQueueTests: XCTestCase {
         XCTAssertEqual(consume(q, now: 1001), ["k:aaaa"])
     }
 
+    func testLineCapRejectsWholeFile() {
+        // Over the per-marker line cap the WHOLE file is rejected (one event) — a truncated prefix
+        // could split an atomic del+add pair (never act on a prefix; same rule as the byte cap).
+        let q = queue()
+        _ = MarkerIO.append(reqM, lines: (0..<(DelayQueue.maxLinesPerMarker + 1)).map { String(format: "%04d", $0) })
+        consume(q, now: 1000)
+        XCTAssertTrue(q.status().rows.isEmpty)                     // nothing queued from the prefix
+        XCTAssertEqual(q.status().recent.first?.what, "rejected")
+        XCTAssertEqual(q.status().recent.count, 1)                 // ONE collapsed event
+        // and an over-cap ABORT file must not read as abort-all:
+        _ = MarkerIO.append(reqM, line: "aaaa"); consume(q, now: 1001)
+        _ = MarkerIO.append(abortM, lines: (0..<(DelayQueue.maxLinesPerMarker + 1)).map { "k:\($0)" })
+        XCTAssertEqual(consume(q, now: 1002), [])
+        XCTAssertEqual(q.status().rows.count, 1)                   // pending survives
+    }
+
     // MARK: validation
 
     func testPoisonLineRejectedIndividually() {

@@ -102,8 +102,11 @@ final class Daemon {
                          validate: validDomain)
         _ = q.applyDue(now: now, validate: validDomain) { due in
             guard let api = NextDNSAPI.load() else {
-                logLine("delayed adds due but credentials unavailable — retrying")
-                return [:]                                   // no verdicts ⇒ all retry with backoff
+                // EXPLICIT failure verdicts: a missing verdict means "deferred untouched" (per-tick
+                // cap), which would leave broken credentials looking like healthy pending rows
+                // forever — no backoff, no `failed` outcome, unthrottled log. False verdicts back
+                // off and surface `failed` after the threshold.
+                return Dictionary(uniqueKeysWithValues: due.map { ($0.key, (false, String?.some("credentials unavailable"))) })
             }
             var out: [String: (ok: Bool, reason: String?)] = [:]
             for (i, d) in due.enumerated() {
