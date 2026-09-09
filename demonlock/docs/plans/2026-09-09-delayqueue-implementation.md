@@ -210,7 +210,7 @@ struct DelayQueue {
     func consumeMarkers(now: Double, enforcedUID: uid_t?,
                         delaySec: @escaping (String) -> Double,
                         key: @escaping (String) -> String?,
-                        validate: @escaping (String) -> Bool) -> (abortedKeys: [String], ())
+                        validate: @escaping (String) -> Bool) -> [String]   // keys aborted this call
 
     /// PHASE 2 — apply due rows (seq order). Separate from PHASE 1 so the ORCHESTRATOR runs
     /// consumeMarkers on ALL queues before ANY queue applies: an abort dropped this tick must be
@@ -416,7 +416,7 @@ enum ZoneOps {
 `unresolved(zones, policy, gate)` = zone names referenced by either doc that aren't in `zones` (expose a small `PolicyEngine.referencedZones(_ s: String) -> Set<String>` — parse-only, add to Policy.swift).
 
 Enforcerd wiring (consume-all THEN apply-all — an abort consumed by the policy queue's
-consumeMarkers this tick removes the doomed doc BEFORE zones' fold peeks at it): zones applyDue uses `applyBatch = { due in let r = ZoneOps.fold(due: due, live: ZoneStore.load(), livePolicy: PolicyStore.text(), liveGatePolicy: ReleaseValveConfig.load().gatePolicy, duePolicyDoc: policyQ.peekDue(now:).first?.payload, dueGateDoc: gateQ.peekDue(now:).first?.payload); if let f = r.final { write zones.json atomically (existing write shape, chmod 644) or mark all failed on write error }; return r.verdicts }`.
+consumeMarkers this tick removes the doomed doc BEFORE zones' fold peeks at it): zones applyDue uses `applyBatch = { due in let r = ZoneOps.fold(due: due.map { ($0.key, $0.payload) }, live: ZoneStore.load(), livePolicy: PolicyStore.text(), liveGatePolicy: ReleaseValveConfig.load().gatePolicy, duePolicyDoc: policyQ.peekDue(now:).first?.payload, dueGateDoc: gateQ.peekDue(now:).first?.payload); if let f = r.final { write zones.json atomically (existing write shape, chmod 644) or mark all failed on write error }; return r.verdicts }`.
 
 - [ ] **Step 1:** Failing tests (pure `fold`): move-edit lands (del+add same name, policy references it); add-collision dropped; del-missing no-op-dropped; bad-geometry dropped, siblings proceed; whole-batch drop names the orphaned reference; pre-existing dangling ref ("451 niantic ave" fixture) does NOT block; add-zone + due-policy-referencing-it → both land (fold ok under due doc; policy lands its own tick — assert fold verdict ok); del-zone + due-doc-referencing-it → doc wins, batch dropped w/ "conflicts with landing policy"; doc invalid against live too → batch retried against live docs.
 - [ ] **Step 2:** FAIL → implement `ZoneOps` + `PolicyEngine.referencedZones` → PASS.
@@ -485,7 +485,7 @@ Apply closures: invoke — decode payload, cap at `now + Bounds.snoozeDurationMa
   boundary; targetAt unchanged); apply caps at ceiling. `applyAdd`/`SnoozeStore.set` effects asserted
   via spy closures only; production wiring (real `find`/`Settings`) is covered by the Task 13/14
   build + live checks.
-- [ ] **Step 2:** FAIL → implement (including `enqueueTransform` back in DelayQueue + its Task-3 tests) → PASS. Commit `feat: snooze-presets on DelayQueue (invoke + adds)`.
+- [ ] **Step 2:** FAIL → implement (TimeSpec.parseTarget(_:from:) threading included) → PASS. Commit `feat: snooze-presets on DelayQueue (invoke + adds)`.
 
 ### Task 9: Lockbox port + relockAll
 
