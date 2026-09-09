@@ -27,7 +27,7 @@
 
 - [ ] `git checkout -b delayqueue` in the local clone; push `-u origin delayqueue`.
 - [ ] On the Mac: create worktree `~/code/mmu-delayqueue` on `delayqueue`; run `swift build` in `demonlock/` — must succeed before any change (baseline).
-- [ ] Sidecar divergence check: `diff -r ~/code/nextdns-build/nextdns-sidecar ~/code/mmu-delayqueue/nextdns-sidecar` (excluding `.build`). If the Mac's `nextdns-build` checkout (tracks a deleted branch) differs from `main`'s copy, STOP and reconcile: copy the newer files into the branch first, commit as `sidecar: sync from nextdns-build checkout`. Task 12 builds on `main`'s copy being current.
+- [ ] Sidecar divergence check: `diff -r -x .build -x .swiftpm ~/code/nextdns-build/nextdns-sidecar ~/code/mmu-delayqueue/nextdns-sidecar`. If the Mac's `nextdns-build` checkout (tracks a deleted branch) differs from `main`'s copy, STOP and reconcile: copy the newer files into the branch first, commit as `sidecar: sync from nextdns-build checkout`. Task 12 builds on `main`'s copy being current.
 - [ ] Commit nothing else; this task is pure setup.
 
 ### Task 1: Package restructure — testable core
@@ -114,18 +114,18 @@ The old `consume(_:enforcedUID:) -> Data?` is DELETED at the end of Task 10 (onc
   - `testTrailingPartialLineDiscarded` (write bytes w/o trailing `\n`)
   - `testOverMiBRejectsWholeFile`
   - `testHeldFlockSkipsNonBlocking` (child thread holds flock; consumeLines returns nil; file survives; succeeds after release)
-  - `testSymlinkRefused`, `testWrongOwnerRefused` (existing hardening preserved; wrong-owner: chown unavailable unprivileged → simulate by expecting refusal path via fifo test `testFifoRefused` with mkfifo)
+  - `testSymlinkRefused`, `testFifoRefused` (mkfifo → S_IFMT check), `testWrongOwnerRefused` — writable WITHOUT root: call `consumeLines(path, enforcedUID: getuid() &+ 1)` on a file you own; the `st_uid == enforcedUID` guard refuses
 - [ ] **Step 2:** Run: `swift test --filter MarkerIOTests` — all FAIL (functions absent).
 - [ ] **Step 3:** Implement `append` / `consumeLines` / `consumeLast` per the interface block. `append`: `open(path, O_WRONLY|O_CREAT|O_APPEND|O_NOFOLLOW|O_CLOEXEC, mode)`, `flock(fd, LOCK_EX)`, single `write()` of escaped line + `\n`, `flock(LOCK_UN)`, close. `consumeLines`: existing open/fstat hardening → `flock(fd, LOCK_EX|LOCK_NB)`; on failure log-throttled nil; read loop with 1 MiB cap → on cap: unlinkHardened + log + nil; split on `\n`, drop trailing partial with log, unescape each line, unlinkHardened before return.
 - [ ] **Step 4:** Rewrite `dropDelayMarker(path, payload: "")`: empty payload → `append(path, line: "")`? NO — empty abort = zero-byte FILE. Exact behavior: `payload.isEmpty ? (create-or-truncate zero-byte file via append with no write — implement as append(path, line: nil))`. Simplest compliant form:
 
 ```swift
 func dropDelayMarker(_ path: String, payload: String = "") {
-    if payload.isEmpty { _ = MarkerIO.append(path, line: nil) }   // ensure file exists, write nothing
+    if payload.isEmpty { _ = MarkerIO.append(path, line: nil) }   // nil ⇒ O_TRUNC create: zero-byte file
     else { _ = MarkerIO.append(path, line: payload) }
 }
 ```
-  so `append` takes `line: String?` (nil ⇒ create only, no bytes). Update the interface block accordingly in code comments.
+  so `append` takes `line: String?`. **nil opens with `O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW|O_CLOEXEC` (NOT O_APPEND)** — the zero-byte abort-all must clear any stale key lines already in the marker (append would leave `add:x\n` behind and the bare `--abort` would silently abort only that key). Non-nil keeps O_APPEND. When `mode != 0o644` the open also sets `O_EXCL` after an unlink (lockbox-add: an attacker-precreated 0644 file must not survive with its mode — open() ignores `mode` on existing files). Tests: `testNilAppendTruncatesStaleLines`, `testModalAppendExclusive`.
 - [ ] **Step 5:** Lockbox add writer (`Commands.swift:349-362`): replace bespoke temp+rename with `MarkerIO.append(Paths.lbAddMarker, line: json, mode: 0o600)` — but single-value semantics: first `unlink(Paths.lbAddMarker)` then append (never concatenate two secrets; spec Boundary section). Add test `testLockboxAddMarkerNeverOtherReadable` in MarkerIOTests using the same unlink-then-append-0600 pattern.
 - [ ] **Step 6:** `swift test` green on Mac. Commit `feat(markerio): append writer, NDJSON consume, LOCK_NB, escaping`.
 
@@ -142,8 +142,10 @@ func dropDelayMarker(_ path: String, payload: String = "") {
 struct DelayQueue {
     struct Item: Codable, Equatable {
         var payload: String; var requestedAt: Double; var applyAt: Double; var seq: UInt64
-        var retries: UInt32 = 0            // .retry bookkeeping; lenient-decoded
-        var nextRetryAt: Double? = nil
+        var retries: UInt32? = nil         // .retry bookkeeping (optional ⇒ decodeIfPresent —
+        var nextRetryAt: Double? = nil     //  a non-optional default would THROW on older JSON,
+                                           //  cascade to legacyDecode failure, and silently empty
+                                           //  the queue; treat nil as 0)
     }
     struct Outcome: Codable, Equatable { var key: String; var what: String; var reason: String?; var at: Double }
         // what ∈ queued|replaced|aborted|applying|applied|rejected|failed|unconfirmed|flushed|lost
@@ -168,6 +170,11 @@ struct DelayQueue {
     let onFailure: Failure; let payloadIsJSON: Bool
     let auditLog: String                          // audit file path — a PARAMETER, not a Paths
                                                   // reference, so the file vendors byte-identical
+    let enqueueTransform: ((String) -> String?)?  // nil for all queues except snooze-invoke (Task 8):
+                                                  // maps raw request line → stored payload at queue
+                                                  // time, nil ⇒ reject. Declared HERE so Task 3 ships
+                                                  // it with its test (testEnqueueTransformAppliedOnce);
+                                                  // Task 8 only USES it.
 
     static let cap = 64
     static let clockSlackSec = 300.0
@@ -215,7 +222,7 @@ Tick semantics (implement exactly; spec section "Semantics"):
 7. `recent` = last 8 outcomes, newest first, where one batch/flush = one Outcome.
 
 - [ ] **Step 1:** Write failing tests (all pure: temp files, injected closures, no root):
-  - `testQueueLandsAfterDelay`, `testSeqOrderDeterministicAcrossReload` (queue del+add same tick, reload QState from disk between every tick, assert order 100×)
+  - `testQueueLandsAfterDelay`, `testItemDecodesWithoutRetriesField`, `testSeqOrderDeterministicAcrossReload` (queue del+add same tick, reload QState from disk between every tick, assert order 100×)
   - `testIdenticalPayloadIdempotent_JSONWhitespace` (pretty vs compact JSON, clock kept), `testIdenticalNonJSONBytes`
   - `testDifferentPayloadReplacesAndResets`, `testReplaceAcceptedAtCap`, `test65thKeyRejected`, `testAbortAcceptedAtCap`
   - `testAbortByKey`, `testAbortAllOnZeroByteFile`, `testAbortAllLiteralLine`, `testAbortBlankLinesSkipped`, `testAbortUnknownKeyRejectedOutcome`
@@ -225,6 +232,7 @@ Tick semantics (implement exactly; spec section "Semantics"):
   - `testClockBackward400sRestamps`, `testClockBackward100sDoesNot`, `testForwardJumpLands`
   - `testRecentIsEightEvents_flushIsOne` (flush 20 rows → 1 event), `testAuditLineWritten`
   - `testNilEnforcedUIDStillApplies`, `testPeekDueMatchesApplyOrder`, `testPoisonLineRejectedIndividually` (key() nil for one of three lines; other two queue)
+  - `testEnqueueTransformAppliedOnce` (transform output is what's stored/compared; replace/idempotent decided on TRANSFORMED payload)
 - [ ] **Step 2:** `swift test --filter DelayQueueTests` — FAIL.
 - [ ] **Step 3:** Implement `DelayQueue.swift` (~250 lines) per interfaces + semantics above. Add `Paths.queueAuditLog`.
 - [ ] **Step 4:** `swift test` green (Mac). Commit `feat: DelayQueue core`.
@@ -345,7 +353,7 @@ struct ZoneOp: Codable, Equatable {           // the queue payload (payloadIsJSO
 }
 enum ZoneOps {
     /// Queue-time validation: decodable; name non-empty, newline-free; add: geometry sane
-    /// (circle radius > 0; polygon ≥3 points, simple — reuse ZonesUI.isSimplePolygon, move it here).
+    /// (circle radius > 0; polygon ≥3 points, simple — MOVE `ZonesUI.swift:416 isSimplePolygon` here, RE-TYPED from `[CLLocationCoordinate2D]` to `[Coord]`; `ZoneOps.swift` imports CoreLocation; `ZonesUI.swift:179` call site converts its `polyVerts`).
     static func validateAtQueue(_ payload: String) -> Bool
     /// Spec "Landing is batched" + "joint validation". Pure: no I/O.
     /// Returns final list + per-key verdicts + whether the due doc conflicted (docWins).
@@ -407,17 +415,21 @@ struct SPFile: Codable {
 //     Resolution: the invoke REQUEST line is the name; `key` returns "invocation" if the preset exists
 //     else nil (rejected); delaySec = preset.invokeDelaySec clamp; the frozen target is computed at
 //     APPLY time as `min(parseTarget(spec) at queue…)` — cannot be, target must freeze at queue.
-//     FINAL DESIGN: payload transformation hook `enqueueTransform: ((String) -> String?)?` on DelayQueue
-//     (nil for every other queue): maps the raw line to the stored payload at queue time, nil ⇒ reject.
-//     invoke uses it to resolve name → {"name":…, "targetAt": parseTarget(spec).epoch}. Add to Task 3
-//     interfaces + one test (testEnqueueTransformAppliedOnce; replace/idempotent compare uses the
-//     TRANSFORMED payload).
+//     FINAL DESIGN: the `enqueueTransform` hook (declared + tested in Task 3's interface — this task
+//     only USES it): invoke resolves name → {"name":…, "targetAt": parseTarget(spec).epoch}.
 //   adds:   kind "snooze-preset-add", markers spAdd*, key = preset name from JSON, payloadIsJSON: true
 ```
 
 Apply closures: invoke — decode payload, cap at `now + Bounds.snoozeDurationMax`, `SnoozeStore.set`, re-arm if disarmed (today's lines 108-115 verbatim); adds — `rejectReason == nil` gate then `applyAdd`. Immediate paths (`spRemoveMarker` remove + kill pending add; `spInvokeAbort` → abort marker of invokeQ) stay in `SnoozePresets.tick`, now via `consumeLast`/abort lines. `clearPendingAdd` becomes an abort-marker append (key = name) from the CLI immediate-add path.
 
-- [ ] **Step 1:** Failing tests: legacy SPFile with in-flight invocation + two adds migrates (rows present, siblings gone after first save, nextSeq sane); invoke idempotent while pending; DIFFERENT preset while pending ⇒ replace+reset (spec requeue rule); target frozen at queue time (advance mock clock past midnight boundary; assert targetAt unchanged); apply caps at ceiling; add lands into Settings mutation (temp settings path — `Settings.mutate` writes real path? inject: `applyAdd` already goes through `Settings.mutate`; for the test assert via the closure result contract instead — wrap apply in a spy).
+- [ ] **Step 1:** Failing tests — ALL closures are test-local over a FIXTURE preset list (never
+  `SnoozePresets.find`/`Settings.load`, which read the installed `/Library` file and would couple the
+  suite to the live machine): legacy SPFile with in-flight invocation + two adds migrates (rows
+  present, siblings gone after first save, nextSeq sane); invoke idempotent while pending; DIFFERENT
+  preset while pending ⇒ replace+reset; target frozen at queue time (mock clock past a midnight
+  boundary; targetAt unchanged); apply caps at ceiling. `applyAdd`/`SnoozeStore.set` effects asserted
+  via spy closures only; production wiring (real `find`/`Settings`) is covered by the Task 13/14
+  build + live checks.
 - [ ] **Step 2:** FAIL → implement (including `enqueueTransform` back in DelayQueue + its Task-3 tests) → PASS. Commit `feat: snooze-presets on DelayQueue (invoke + adds)`.
 
 ### Task 9: Lockbox port + relockAll
@@ -489,7 +501,11 @@ var lockbox: Lockbox.Status? = nil            // window/lock state only (kept)
 // seeding/baseline logic, now fed from the seven QStatus fields.
 ```
 
-- [ ] **Step 1:** Port; `statusBody` prints each queue section via `printQueueStatus` with its abort command string. Old `SafeApps.Status`/`SnoozePresets.Status` types + their tick return values deleted; ticks return `QStatus` (adjust Enforcer stash properties).
+- [ ] **Step 1:** Sweep: delete legacy `legacy*` StateSnapshot fields, `DelayedStatus` remnants,
+  **`Commands.swift:101 delayedStatusLine`** and every caller, old `SafeApps.Status`/`SnoozePresets.Status`
+  types. `grep -rn "DelayedStatus\|legacyDelayed\|delayedStatusLine\|SafeApps.Status\|SnoozePresets.Status"`
+  must return nothing. (Citation drift note: cited ranges are ±small — Commands 26-42, 707-731, 755-792;
+  Enforcerd 451-478, 434-439; State 50-55; Agent 77-86 — trust the construct name over the numbers.)
 - [ ] **Step 2:** Compile-level + `swift test` green (status rendering covered by one snapshot-ish test: build a QStatus fixture, assert `printQueueStatus` output contains key, "lands", abort command, "last landed"). Commit `feat: status/agent surface on QStatus`.
 
 ### Task 12: Sidecar vendor + port
@@ -531,6 +547,6 @@ var lockbox: Lockbox.Status? = nil            // window/lock state only (kept)
 
 - Spec coverage: every spec section mapped — Census (Tasks 5,6,8,9,10,12), Abstraction semantics (3), Marker contract (2), Boundary layer (2, 7), knobs (3,8), Zones (6,7), Cross-queue (6), Restart (3,9), Migration (4,8,9,12), bespoke list (8,9 keep-out respected), Testing (each bullet has a named test above), Rollout (13,14 + gate note).
 - Known deviation recorded: `enqueueTransform` knob added (Task 8) beyond the spec's closed knob set — required to freeze invoke's `targetAt` at queue time. Alternative considered and REJECTED: CLI-computed targetAt would let a hand-written marker choose an arbitrary stand-down target (preset-spec-only is the current, stricter semantics; queue-time recompute-and-compare is clock-fragile). The daemon-side transform is the smallest compliant design. Spec's closed-knob sentence should gain this knob at next spec touch.
-- Adversary-2 pass (compile feasibility, verdict NO on v1) folded: Task 4.5 field-name collision fixed via legacy* renames; Task 5 stray delete line removed; vendored-file self-containment contract + `auditLog` init parameter added (byte-identical test now satisfiable). Remaining truncated findings folded on full report.
+- Adversary-2 pass COMPLETE (verdict NO on v1; all 10 confirmed + 4 speculative findings folded across v1.4/v1.5). Accepted-risk note: a user-held blocking flock on a request marker starves that queue indefinitely — fail-closed (nothing lands sooner, abort-all still possible after release), mitigation is the ≤1/min skip log; recorded, not fixed. Folded: Task 4.5 field-name collision fixed via legacy* renames; Task 5 stray delete line removed; vendored-file self-containment contract + `auditLog` init parameter added (byte-identical test now satisfiable). Remaining truncated findings folded on full report.
 - Pass-3 (self) finding folded: Task 4.5 added — without it, Tasks 6-10 could not compile (DelayedStatus consumers). Joint-projection staleness note: zones' `peekDue` runs before policy/gate consume THIS tick's markers — safe for requests (a request consumed this tick gets applyAt=now+delay, never due now) but an abort consumed this tick could arrive after zones already deferred to a doc being aborted. Fail-closed (batch dropped, re-queue) and rare; if either adversary confirms it matters, fix = consume phase for all queues before any apply phase.
 - Type consistency: `QStatus` field names in Task 11 match Task 3; `Legacy.*` signatures match Task 4 consumers in 5/12.
