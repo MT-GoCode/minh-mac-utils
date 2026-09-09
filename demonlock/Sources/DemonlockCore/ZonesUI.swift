@@ -166,8 +166,8 @@ final class ZonesController: NSObject, NSApplicationDelegate, MKMapViewDelegate,
     @objc private func saveZone() {
         let name = nameField.stringValue.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { instr.stringValue = "Type a name for the zone first."; return }
-        var current = ZoneStore.load()
-        guard !current.contains(where: { $0.name == name }) else { instr.stringValue = "A zone named \"\(name)\" already exists."; return }
+        let current = ZoneStore.load()
+        let replacing = current.contains(where: { $0.name == name })   // edit = del+add of the same name
 
         let newZone: Zone
         switch mode {
@@ -176,23 +176,30 @@ final class ZonesController: NSObject, NSApplicationDelegate, MKMapViewDelegate,
             newZone = Zone(name: name, shape: .circle(centerLat: c.latitude, centerLon: c.longitude, radius: radiusSlider.doubleValue))
         case .polygon:
             guard polyVerts.count >= 3 else { instr.stringValue = "A polygon needs at least 3 corners."; return }
-            guard isSimplePolygon(polyVerts) else { instr.stringValue = "✗ The polygon's edges cross — draw a simple shape."; return }
+            guard ZoneOps.isSimplePolygon(polyVerts) else { instr.stringValue = "✗ The polygon's edges cross — draw a simple shape."; return }
             newZone = Zone(name: name, shape: .polygon(points: polyVerts.map { Coord(lat: $0.latitude, lon: $0.longitude) }))
         case .idle:
             return
         }
-        current.append(newZone)
-        switch askSaveMode(name) {
+        switch askSaveMode(name, replacing: replacing) {
         case .immediate:
-            if saveWithAdmin(current) {
-                nameField.stringValue = ""; cancelDraw(); reload(); instr.stringValue = "✓ added \"\(name)\""
+            var next = current; next.removeAll { $0.name == name }; next.append(newZone)
+            if saveWithAdmin(next, replacing: current) {
+                nameField.stringValue = ""; cancelDraw(); reload()
+                instr.stringValue = replacing ? "✓ replaced \"\(name)\"" : "✓ added \"\(name)\""
             } else {
-                instr.stringValue = "Add cancelled — needs admin."
+                instr.stringValue = "Save cancelled — needs admin."
             }
         case .delayed:
-            if saveWithDelay(current) {
-                nameField.stringValue = ""; cancelDraw()
-                instr.stringValue = "⏳ queued \"\(name)\" — lands in \(zonesDelayH)h (no admin). `demonlock status` to watch · `demonlock delayzones --abort` to cancel."
+            // Edit = del+add queued ATOMICALLY (one append, two lines): two separate appends would
+            // let the daemon consume between them and land an orphaned del — zone deleted, never
+            // re-added, 36h wasted.
+            var ops: [ZoneOp] = []
+            if replacing { ops.append(ZoneOp(op: "del", name: name)) }
+            ops.append(ZoneOp(op: "add", zone: newZone))
+            if queueOps(ops) {
+                nameField.stringValue = ""; cancelDraw(); reload()
+                instr.stringValue = "⏳ queued \(replacing ? "replace" : "add") of \"\(name)\" — lands in \(zonesDelayH)h (no admin). abort: `demonlock delayzones --abort \"add:\(name)\"`"
             } else {
                 instr.stringValue = "Couldn't queue the change (is demonlock installed?)."
             }
@@ -209,9 +216,9 @@ final class ZonesController: NSObject, NSApplicationDelegate, MKMapViewDelegate,
     /// Adding a zone LOOSENS the policy, so it's gated: do it NOW with admin, or queue it for the delay
     /// (no admin — the daemon installs it later, the same commitment-device idea as the release valve /
     /// `delay-set-policy`).
-    private func askSaveMode(_ name: String) -> SaveMode {
+    private func askSaveMode(_ name: String, replacing: Bool = false) -> SaveMode {
         let a = NSAlert()
-        a.messageText = "Add zone “\(name)”?"
+        a.messageText = replacing ? "Replace zone “\(name)”?" : "Add zone “\(name)”?"
         a.informativeText = "Adding a zone loosens the policy.\n\n• Save now — needs admin (you'll be asked to authenticate).\n• Save in \(zonesDelayH)h — no admin; the change lands automatically after \(zonesDelayH) hours."
         a.addButton(withTitle: "Save now (admin)")
         a.addButton(withTitle: "Save in \(zonesDelayH)h")
@@ -229,13 +236,17 @@ final class ZonesController: NSObject, NSApplicationDelegate, MKMapViewDelegate,
         let name = zones[i].name
         // Deleting a zone is NOT monotone — a name used under NOT loosens the policy when removed — so it
         // is gated exactly like adding: admin now, or delayed. (The free _zonedel grant is gone. review H3)
-        var remaining = ZoneStore.load(); remaining.removeAll { $0.name == name }
+        let current = ZoneStore.load()
+        var remaining = current; remaining.removeAll { $0.name == name }
         switch askDeleteMode(name) {
         case .immediate:
-            if saveWithAdmin(remaining) { reload(); instr.stringValue = "✓ deleted \"\(name)\"" }
+            if saveWithAdmin(remaining, replacing: current) { reload(); instr.stringValue = "✓ deleted \"\(name)\"" }
             else { instr.stringValue = "Delete cancelled — needs admin." }
         case .delayed:
-            if saveWithDelay(remaining) { instr.stringValue = "⏳ queued deletion of \"\(name)\" — lands in \(zonesDelayH)h. `demonlock delayzones --abort` to cancel." }
+            if queueOps([ZoneOp(op: "del", name: name)]) {
+                reload()   // the table must show the pending state — its absence caused 4 clicks in 65s
+                instr.stringValue = "⏳ queued deletion of \"\(name)\" — lands in \(zonesDelayH)h. abort: `demonlock delayzones --abort \"del:\(name)\"`"
+            }
             else { instr.stringValue = "Couldn't queue the change (is demonlock installed?)." }
         case .cancel:
             instr.stringValue = "Delete cancelled."
@@ -258,29 +269,50 @@ final class ZonesController: NSObject, NSApplicationDelegate, MKMapViewDelegate,
 
     // MARK: privilege bridges
 
-    /// Adding loosens the policy → require admin.
-    private func saveWithAdmin(_ zs: [Zone]) -> Bool {
+    /// Adding loosens the policy → require admin. `replacing` is the list BEFORE the write (captured
+    /// by the caller): after a successful admin save, any PENDING queued op touching a changed zone
+    /// name is aborted — a stale `del:<name>` landing 12h later must not silently revert an admin
+    /// action. Writes NOTHING when no pending keys match (an empty abort marker means abort-ALL).
+    private func saveWithAdmin(_ zs: [Zone], replacing old: [Zone]) -> Bool {
         let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? enc.encode(zs) else { return false }
         let tmp = NSTemporaryDirectory() + "demonlock-zones-new.json"
         guard (try? data.write(to: URL(fileURLWithPath: tmp))) != nil else { return false }
         let script = "do shell script \"mkdir -p '\(Paths.supportDir)' && cp '\(tmp)' '\(Paths.zonesFile)' && chown root:wheel '\(Paths.zonesFile)' && chmod 644 '\(Paths.zonesFile)'\" with administrator privileges"
         let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript"); p.arguments = ["-e", script]
-        do { try p.run(); p.waitUntilExit(); return p.terminationStatus == 0 } catch { return false }
+        do { try p.run(); p.waitUntilExit() } catch { return false }
+        guard p.terminationStatus == 0 else { return false }
+        // Abort pending ops for every zone name this admin save touched.
+        let touched = Set(old.map(\.name)).symmetricDifference(zs.map(\.name))
+            .union(Set(old.compactMap { o in zs.first(where: { $0.name == o.name && $0 != o }).map { _ in o.name } }))
+        let pendingKeys = Set(StateStore.read()?.delayedZones?.rows.map(\.key) ?? [])
+        let toAbort = touched.flatMap { ["add:\($0)", "del:\($0)"] }.filter { pendingKeys.contains($0) }
+        if !toAbort.isEmpty { _ = MarkerIO.append(Paths.dzAbortMarker, lines: toAbort.sorted()) }
+        return true
     }
 
-    /// Queue the new zones set as a DELAYED change (no admin): write the full zones.json to the
-    /// user-owned inbox marker; the daemon validates + installs it after 36h. Same encoding as
-    /// `saveWithAdmin` so what lands is byte-identical to an immediate save.
-    private func saveWithDelay(_ zs: [Zone]) -> Bool {
-        let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? enc.encode(zs), let json = String(data: data, encoding: .utf8) else { return false }
-        return MarkerIO.append(Paths.dzRequestMarker, line: json)   // escaped single line; Task 7 swaps to ops
+    /// Queue zone OPS as a delayed change (no admin): one atomic append of one JSON line per op;
+    /// the daemon validates at queue AND landing and folds due ops against the live list after 36h.
+    private func queueOps(_ ops: [ZoneOp]) -> Bool {
+        let enc = JSONEncoder(); enc.outputFormatting = [.sortedKeys]
+        let lines = ops.compactMap { op in (try? enc.encode(op)).flatMap { String(data: $0, encoding: .utf8) } }
+        guard lines.count == ops.count else { return false }
+        return MarkerIO.append(Paths.dzRequestMarker, lines: lines)
     }
 
     // MARK: rendering
 
-    private func reload() { zones = ZoneStore.load(); table.reloadData(); renderAll() }
+    private func reload() {
+        zones = ZoneStore.load(); table.reloadData(); renderAll()
+        // Pending queued ops (root-published state.json, 0644; nil if the daemon predates relaunch).
+        if let rows = StateStore.read()?.delayedZones?.rows, !rows.isEmpty {
+            let lines = rows.map { r -> String in
+                let left = max(0, Int(r.applyAt - nowEpoch()))
+                return "⏳ \(r.key) — lands in \(left/3600)h \(left%3600/60)m · abort: demonlock delayzones --abort \"\(r.key)\""
+            }
+            instr.stringValue = lines.joined(separator: "\n")
+        }
+    }
 
     private func renderAll() {
         map.removeOverlays(map.overlays)
@@ -407,22 +439,7 @@ private func regionFor(_ zones: [Zone]) -> MKCoordinateRegion? {
                                                      longitudeDelta: max((d - c) * 1.5, 0.008)))
 }
 
-private func ccw(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D, _ c: CLLocationCoordinate2D) -> Bool {
-    (c.latitude - a.latitude) * (b.longitude - a.longitude) > (b.latitude - a.latitude) * (c.longitude - a.longitude)
-}
-private func segsIntersect(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D, _ c: CLLocationCoordinate2D, _ d: CLLocationCoordinate2D) -> Bool {
-    ccw(a, c, d) != ccw(b, c, d) && ccw(a, b, c) != ccw(a, b, d)
-}
-func isSimplePolygon(_ p: [CLLocationCoordinate2D]) -> Bool {
-    let n = p.count; guard n >= 3 else { return false }
-    for i in 0..<n {
-        for j in (i + 1)..<n {
-            if j == i + 1 || (i == 0 && j == n - 1) { continue }
-            if segsIntersect(p[i], p[(i + 1) % n], p[j], p[(j + 1) % n]) { return false }
-        }
-    }
-    return true
-}
+// (isSimplePolygon moved to ZoneOps — the queue's geometry validation needs it too.)
 
 // MARK: - entry points
 

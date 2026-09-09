@@ -158,13 +158,12 @@ enum ReleaseValve {
     /// spares are untouched, and an in-flight snooze (active suppression) is left alone — it's not a queue.
     private static func flushSelfServeQueues() {
         var cleared: [String] = []
-        func flushDelayed(_ path: String, _ label: String) {
-            var s = DelayedState.load(path)
-            if s.pending != nil { s.pending = nil; s.save(path); cleared.append(label) }
+        let now = nowEpoch()
+        for (q, label) in [(Enforcer.policyQueue(), "delay-set-policy"),
+                           (Enforcer.zonesQueue(), "delayzones"),
+                           (Enforcer.gatePolicyQueue(), "delay-set-gate-policy")] {
+            if !q.status().rows.isEmpty { q.flushAll(now: now, reason: "admin grant"); cleared.append(label) }
         }
-        flushDelayed(Paths.delayedPolicyFile, "delay-set-policy")
-        flushDelayed(Paths.delayedZonesFile, "delayzones")
-        flushDelayed(Paths.delayedGatePolicyFile, "delay-set-gate-policy")
         var sa = SafeApps.Registry.load()
         if !sa.pending.isEmpty { sa.pending.removeAll(); sa.save(); cleared.append("safe-apps") }
         var sp = SnoozePresets.SPState.load()

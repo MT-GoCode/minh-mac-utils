@@ -83,13 +83,12 @@ func statusBody(_ s: StateSnapshot) -> String {
     if let t = s.tree { L.append("\n  policy evaluation  (✓ true · ✗ false · · unknown):\n" + t.asText(indent: 2)) }
     if !s.health.locationTrail.isEmpty { L.append("\n  location:\n" + s.health.locationTrail.joined(separator: "\n")) }
     if let rv = s.releaseValve { L.append(releaseValveLines(rv)) }
-    for (label, q, legacy, abortCmd) in [
-        ("policy",      s.delayedPolicy,     s.legacyDelayedPolicy,     "demonlock delay-set-policy --abort"),
-        ("zones",       s.delayedZones,      s.legacyDelayedZones,      "demonlock delayzones --abort"),
-        ("gate-policy", s.delayedGatePolicy, s.legacyDelayedGatePolicy, "demonlock admin-release-valve set-gate-policy --abort"),
+    for (label, q, abortCmd) in [
+        ("policy",      s.delayedPolicy,     "demonlock delay-set-policy --abort"),
+        ("zones",       s.delayedZones,      "demonlock delayzones --abort"),
+        ("gate-policy", s.delayedGatePolicy, "demonlock admin-release-valve delay-set-gate-policy abort"),
     ] {
-        if let q { if let lines = queueStatusLines(label, q, abortCmd: abortCmd) { L.append(lines) } }
-        else if let line = delayedStatusLine(label, legacy) { L.append(line) }
+        if let q, let lines = queueStatusLines(label, q, abortCmd: abortCmd) { L.append(lines) }
     }
     for (label, q, cmd) in [("safe-apps", s.safeApps, "demonlock safe-apps abort"),
                             ("snooze-invoke", s.snoozePresetInvoke, "demonlock snooze-preset abort-invoke"),
@@ -144,15 +143,6 @@ func printQueueStatus(_ q: DelayQueue.QStatus?, label: String, abortCmd: String,
     if let lines = queueStatusLines(label, q, abortCmd: abortCmd) { print(lines) }
 }
 
-/// A queued delayed-change line (only present when something is pending).
-private func delayedStatusLine(_ label: String, _ d: DelayedStatus?) -> String? {
-    guard let d, d.pending else { return nil }
-    let when = d.applyAtEpoch.map { TimeSpec.fmtWhen($0) } ?? "?"
-    let left = d.applyAtEpoch.map { max(0, Int($0 - nowEpoch())) } ?? 0
-    var out = "  delayed \(label) : QUEUED — lands \(when)  (\(left/3600)h \(left%3600/60)m left)"
-    if let p = d.payloadPreview { out += "\n                  \(p)" }
-    return out
-}
 
 /// Release-valve section of the status text.
 func releaseValveLines(_ rv: RVStatus) -> String {
@@ -840,14 +830,10 @@ usage (no sudo — a zones change is CREATED from the map's "Save in …h" butto
 """
 
 private func printDelayZonesStatus() {
-    if let pc = DelayedState.load(Paths.delayedZonesFile).pending {
-        let left = max(0, Int(pc.applyAt - nowEpoch()))
-        print("delayed zones: QUEUED — lands \(TimeSpec.fmtWhen(pc.applyAt))  (\(left/3600)h \(left%3600/60)m left)")
-        print("  cancel with `demonlock delayzones --abort`")
-    } else {
-        let dh = Int(Bounds.clamp(Settings.load().zonesDelaySec, Bounds.zonesDelay) / 3600)
-        print("delayed zones: none queued.  Queue one from the map (`demonlock zones` → add → \"Save in \(dh)h\").")
-    }
+    let dh = Int(Bounds.clamp(Settings.load().zonesDelaySec, Bounds.zonesDelay) / 3600)
+    printQueueStatus(Enforcer.zonesQueue().status(), label: "delayed zones",
+                     abortCmd: "demonlock delayzones --abort",
+                     emptyHint: "delayed zones: none queued.  Queue one from the map (`demonlock zones` → add → \"Save in \(dh)h\").")
 }
 
 /// delayzones (NO sudo): a queued zones change is CREATED from the map ("Save in 36h"); here you can

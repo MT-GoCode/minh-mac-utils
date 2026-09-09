@@ -30,7 +30,7 @@ final class Enforcer {
     private var nextAgentKick: Date?        // rate-limit for force-restarting a wedged-but-alive agent
     private var lastAgentSeen = Date()      // last fresh feed — gates the startup/recovery grace below
     private var dpPolicyStatus: DelayQueue.QStatus?    // delayed-policy queue status (published every tick)
-    private var dpZonesStatus: DelayedStatus?    // last-computed delayed-zones status (published every tick)
+    private var dpZonesStatus: DelayQueue.QStatus?     // delayed-zones queue status (published every tick)
     private var dpGatePolicyStatus: DelayQueue.QStatus?  // delayed gate-policy queue status
     private var safeAppsStatus: SafeApps.Status? // last-computed safe-apps pending registrations
     private var snoozePresetsStatus: SnoozePresets.Status?  // in-flight invocation + pending adds
@@ -432,8 +432,8 @@ final class Enforcer {
             health: health,
             releaseValve: rv,
             delayedPolicy: dpPolicyStatus,
+            delayedZones: dpZonesStatus,
             delayedGatePolicy: dpGatePolicyStatus,
-            legacyDelayedZones: dpZonesStatus,
             legacySafeApps: safeAppsStatus,
             legacySnoozePresets: snoozePresetsStatus,
             lockbox: lockboxStatus))
@@ -461,25 +461,16 @@ final class Enforcer {
                    requestMarker: Paths.dgpRequestMarker, abortMarker: Paths.dgpAbortMarker,
                    onFailure: .drop, payloadIsJSON: false, auditLog: Paths.queueAuditLog)
     }
+    static func zonesQueue() -> DelayQueue {
+        DelayQueue(kind: "zones",
+                   store: .file(Paths.delayedZonesFile, legacyDecode: Legacy.zonesDropSnapshot()),
+                   requestMarker: Paths.dzRequestMarker, abortMarker: Paths.dzAbortMarker,
+                   onFailure: .drop, payloadIsJSON: true, auditLog: Paths.queueAuditLog)
+    }
 
     private func runDelayedChanges(_ nowSec: Double, enforcedUID: uid_t?) {
-        // Zones stay on the legacy single-slot path until Task 6 (the map still writes snapshots).
-        dpZonesStatus = DelayedChange.tick(
-            kind: "zones", now: nowSec, stateFile: Paths.delayedZonesFile,
-            requestMarker: Paths.dzRequestMarker, abortMarker: Paths.dzAbortMarker,
-            delaySec: Bounds.clamp(settings.zonesDelaySec, Bounds.zonesDelay),
-            enforcedUID: enforcedUID,
-            validate: { (try? JSONDecoder().decode([Zone].self, from: Data($0.utf8))) != nil },
-            apply: { payload in
-                do { try payload.write(toFile: Paths.zonesFile, atomically: true, encoding: .utf8)
-                     chmod(Paths.zonesFile, 0o644); return true } catch { return false }
-            })
-
-        // Policy + gate-policy on DelayQueue. Validation is DIFFERENTIAL against the live baseline
-        // (absolute validation would reject every doc forever once the live policy dangles a zone).
-        // Phase split: consume BOTH queues' markers before EITHER applies — an abort consumed this
-        // tick must be visible before a sibling defers to a doomed doc (zones joins in Task 6).
-        let policyQ = Enforcer.policyQueue(), gateQ = Enforcer.gatePolicyQueue()
+        let zonesQ = Enforcer.zonesQueue(), policyQ = Enforcer.policyQueue(), gateQ = Enforcer.gatePolicyQueue()
+        let zDelay = Bounds.clamp(settings.zonesDelaySec, Bounds.zonesDelay)
         let pDelay = Bounds.clamp(settings.policyDelaySec, Bounds.policyDelay)
         let gDelay = Bounds.clamp(settings.gatePolicyDelaySec, Bounds.gatePolicyDelay)
         let pValidate: (String) -> Bool = {
@@ -489,10 +480,34 @@ final class Enforcer {
             PolicyEngine.acceptsDifferentially($0, zones: ZoneStore.load(),
                                                baseline: ReleaseValveConfig.load().gatePolicy, allowInPolicy: true)
         }
+
+        // PHASE 1 on ALL queues before ANY applies — an abort consumed this tick must be visible
+        // before a sibling queue's joint projection defers to a doomed doc.
+        zonesQ.consumeMarkers(now: nowSec, enforcedUID: enforcedUID,
+                              delaySec: { _ in zDelay }, key: ZoneOps.key, validate: ZoneOps.validateAtQueue)
         policyQ.consumeMarkers(now: nowSec, enforcedUID: enforcedUID,
                                delaySec: { _ in pDelay }, key: { _ in "policy" }, validate: pValidate)
         gateQ.consumeMarkers(now: nowSec, enforcedUID: enforcedUID,
                              delaySec: { _ in gDelay }, key: { _ in "gate-policy" }, validate: gValidate)
+
+        // PHASE 2 — zones first (policies reference zones), folding all due ops against the live
+        // list with the joint projection (the due doc, if any, else the live one).
+        dpZonesStatus = zonesQ.applyDue(now: nowSec, validate: ZoneOps.validateAtQueue) { due in
+            let r = ZoneOps.fold(due: due.map { ($0.key, $0.payload) }, live: ZoneStore.load(),
+                                 livePolicy: PolicyStore.text(),
+                                 liveGatePolicy: ReleaseValveConfig.load().gatePolicy,
+                                 duePolicyDoc: policyQ.peekDue(now: nowSec).first?.payload,
+                                 dueGateDoc: gateQ.peekDue(now: nowSec).first?.payload)
+            guard let final = r.final else { return r.verdicts }
+            let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+            guard let data = try? enc.encode(final), let json = String(data: data, encoding: .utf8),
+                  (try? json.write(toFile: Paths.zonesFile, atomically: true, encoding: .utf8)) != nil else {
+                // one atomic write failed ⇒ everything that survived the fold fails, fail-closed
+                return r.verdicts.mapValues { $0.ok ? (false, "zones.json write failed") : $0 }
+            }
+            chmod(Paths.zonesFile, 0o644)
+            return r.verdicts
+        }
         dpPolicyStatus = policyQ.applyDue(now: nowSec, validate: pValidate) { due in
             Dictionary(uniqueKeysWithValues: due.map { d in
                 (d.key, ((try? PolicyStore.write(d.payload)) != nil, String?.none))

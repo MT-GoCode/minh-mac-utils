@@ -57,10 +57,7 @@ struct StateSnapshot: Codable {
     var snoozePresetAdds: DelayQueue.QStatus? = nil
     var lockboxUnlocks: DelayQueue.QStatus? = nil
 
-    // Legacy statuses — each dies in the task that ports its surface (Tasks 5-10).
-    var legacyDelayedPolicy: DelayedStatus? = nil
-    var legacyDelayedZones: DelayedStatus? = nil
-    var legacyDelayedGatePolicy: DelayedStatus? = nil
+    // Legacy statuses — each dies in the task that ports its surface (Tasks 8/10).
     var legacySafeApps: SafeApps.Status? = nil
     var legacySnoozePresets: SnoozePresets.Status? = nil
     var lockbox: Lockbox.Status? = nil              // window/lock state (names only, no secrets) — kept
@@ -74,8 +71,7 @@ struct StateSnapshot: Codable {
          delayedGatePolicy: DelayQueue.QStatus? = nil, safeApps: DelayQueue.QStatus? = nil,
          snoozePresetInvoke: DelayQueue.QStatus? = nil, snoozePresetAdds: DelayQueue.QStatus? = nil,
          lockboxUnlocks: DelayQueue.QStatus? = nil,
-         legacyDelayedPolicy: DelayedStatus? = nil, legacyDelayedZones: DelayedStatus? = nil,
-         legacyDelayedGatePolicy: DelayedStatus? = nil, legacySafeApps: SafeApps.Status? = nil,
+         legacySafeApps: SafeApps.Status? = nil,
          legacySnoozePresets: SnoozePresets.Status? = nil, lockbox: Lockbox.Status? = nil) {
         self.updatedEpoch = updatedEpoch; self.lastCheckEpoch = lastCheckEpoch; self.armed = armed
         self.snoozeUntilEpoch = snoozeUntilEpoch; self.enforcedUser = enforcedUser; self.phase = phase
@@ -87,8 +83,7 @@ struct StateSnapshot: Codable {
         self.delayedGatePolicy = delayedGatePolicy; self.safeApps = safeApps
         self.snoozePresetInvoke = snoozePresetInvoke; self.snoozePresetAdds = snoozePresetAdds
         self.lockboxUnlocks = lockboxUnlocks
-        self.legacyDelayedPolicy = legacyDelayedPolicy; self.legacyDelayedZones = legacyDelayedZones
-        self.legacyDelayedGatePolicy = legacyDelayedGatePolicy; self.legacySafeApps = legacySafeApps
+        self.legacySafeApps = legacySafeApps
         self.legacySnoozePresets = legacySnoozePresets; self.lockbox = lockbox
     }
 
@@ -122,9 +117,6 @@ struct StateSnapshot: Codable {
         snoozePresetInvoke = try? c.decode(DelayQueue.QStatus.self, forKey: .snoozePresetInvoke)
         snoozePresetAdds = try? c.decode(DelayQueue.QStatus.self, forKey: .snoozePresetAdds)
         lockboxUnlocks = try? c.decode(DelayQueue.QStatus.self, forKey: .lockboxUnlocks)
-        legacyDelayedPolicy = try? c.decode(DelayedStatus.self, forKey: .legacyDelayedPolicy)
-        legacyDelayedZones = try? c.decode(DelayedStatus.self, forKey: .legacyDelayedZones)
-        legacyDelayedGatePolicy = try? c.decode(DelayedStatus.self, forKey: .legacyDelayedGatePolicy)
         legacySafeApps = try? c.decode(SafeApps.Status.self, forKey: .legacySafeApps)
         legacySnoozePresets = try? c.decode(SnoozePresets.Status.self, forKey: .legacySnoozePresets)
         lockbox = try? c.decode(Lockbox.Status.self, forKey: .lockbox)

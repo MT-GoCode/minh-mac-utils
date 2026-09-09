@@ -199,9 +199,9 @@ final class AgentApp: NSObject, NSApplicationDelegate {
         treeView.string = statusBody(s)
         handleReleaseValve(s.releaseValve)
         handleDelayedApplied([
-            ("policy",      s.delayedPolicy?.lastAppliedAt      ?? s.legacyDelayedPolicy?.lastAppliedEpoch),
-            ("zones",       s.delayedZones?.lastAppliedAt       ?? s.legacyDelayedZones?.lastAppliedEpoch),
-            ("gate-policy", s.delayedGatePolicy?.lastAppliedAt  ?? s.legacyDelayedGatePolicy?.lastAppliedEpoch),
+            ("policy",      s.delayedPolicy?.lastAppliedAt),
+            ("zones",       s.delayedZones?.lastAppliedAt),
+            ("gate-policy", s.delayedGatePolicy?.lastAppliedAt),
         ])
         let h = s.health
         healthLabel.stringValue = s.sshAddr ?? ""          // SSH-in hint (sshd/tmux survive a lockout → disarm)
