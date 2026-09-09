@@ -77,11 +77,12 @@ final class DelayQueueTests: XCTestCase {
 
     func testIdenticalPayloadIdempotent_JSONWhitespace() {
         let q = queue(json: true)
+        let constKey: (String) -> String? = { _ in "doc" }    // constant key (policy-style)
         _ = MarkerIO.append(reqM, line: #"{"b": 1, "a": 2}"#)
-        consume(q, now: 1000)
+        _ = q.consumeMarkers(now: 1000, enforcedUID: uid, delaySec: delay, key: constKey, validate: ok)
         let applyAt0 = q.status().rows[0].applyAt
         _ = MarkerIO.append(reqM, line: #"{ "a":2,"b":1 }"#)  // same value, different bytes
-        consume(q, now: 1050)
+        _ = q.consumeMarkers(now: 1050, enforcedUID: uid, delaySec: delay, key: constKey, validate: ok)
         XCTAssertEqual(q.status().rows.count, 1)
         XCTAssertEqual(q.status().rows[0].applyAt, applyAt0)  // clock kept
     }
