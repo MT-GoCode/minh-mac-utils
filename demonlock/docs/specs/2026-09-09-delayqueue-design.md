@@ -182,6 +182,31 @@ the daemon's later `unlink` would delete a file it never read).
   partial line is discarded and logged. At the 1 MiB cap the whole file is
   rejected with a log line — never act on a truncated prefix.
 
+### Boundary layer: MarkerIO owns the trust boundary
+
+All user→root inbox I/O lives in MarkerIO, both directions, no duplication:
+
+- **`MarkerIO.append(path, line)`** (new): O_WRONLY|O_CREAT|O_APPEND|
+  O_NOFOLLOW under flock(LOCK_EX). `dropDelayMarker` (Commands.swift:830 —
+  already the single writer funnel for EVERY marker, delay and immediate:
+  rv request/abort, lockbox copy, arm, removes) becomes a call to it. The
+  one raw write in the codebase, `ZonesUI.saveWithDelay`, switches to it.
+  No code outside MarkerIO touches the inbox, ever.
+- **`MarkerIO.consume`** gains LOCK_NB + NDJSON complete-line parsing once;
+  every consumer — delay queues and immediate tightening paths alike —
+  inherits the hardening.
+- MarkerIO is vendored to nextdns-sidecar alongside DelayQueue, same
+  source-of-truth header.
+- The root→user direction (status: user session reads root-written 0644
+  state; secrets via the 0600 lockbox outbox) is not attacker-writable and
+  is unchanged.
+
+Delay settability, restated as invariants: `set-delay` is root-only per
+system; values live in root-owned settings.json; every USE clamps through
+compiled-in Bounds floors (a tampered settings file cannot go below); the
+daemon freezes `applyAt` at consumption, so no later write shortens a
+pending row.
+
 ### Per-app knobs (closed set — nothing else)
 
 | Knob | Values | Who deviates from default |
