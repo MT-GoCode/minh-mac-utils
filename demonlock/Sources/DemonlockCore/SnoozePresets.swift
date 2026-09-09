@@ -102,6 +102,27 @@ enum SnoozePresets {
                    onFailure: .drop, payloadIsJSON: true, auditLog: Paths.queueAuditLog)
     }
 
+    // MARK: - validation
+
+    static func rejectReason(_ p: SnoozePreset) -> String? {
+        let n = p.name
+        guard (1...24).contains(n.count), n.allSatisfy({ ($0.isLowercase && $0.isLetter) || $0.isNumber || $0 == "-" }) else {
+            return "name must be 1–24 chars of [a-z0-9-]"
+        }
+        guard let target = try? TimeSpec.parseTarget(p.spec) else {
+            return "spec must be \"for <dur>\" or \"until <[day]HHMM>\" (e.g. \"for 90m\", \"until 0500\")"
+        }
+        // Cap the resulting stand-down at the snooze ceiling (mainly guards "for <dur>"; "until" is a
+        // wall-clock time, at most ~a day out — also capped).
+        if target.timeIntervalSinceNow > Bounds.snoozeDurationMax {
+            return "that snooze would exceed the \(Int(Bounds.snoozeDurationMax/3600))h ceiling"
+        }
+        if !Bounds.snoozePresetInvokeDelay.contains(p.invokeDelaySec) {
+            return "invoke delay must be \(Int(Bounds.snoozePresetInvokeDelay.lowerBound/3600))–\(Int(Bounds.snoozePresetInvokeDelay.upperBound/3600))h"
+        }
+        return nil
+    }
+
     // MARK: - daemon tick (calls consumeMarkers then applyDue on BOTH queues itself)
 
     static func tick(now: Double, enforcedUID: uid_t?, addDelaySec: Double)
