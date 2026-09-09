@@ -166,6 +166,8 @@ struct DelayQueue {
     let kind: String; let store: QStateStore
     let requestMarker: String; let abortMarker: String
     let onFailure: Failure; let payloadIsJSON: Bool
+    let auditLog: String                          // audit file path — a PARAMETER, not a Paths
+                                                  // reference, so the file vendors byte-identical
 
     static let cap = 64
     static let clockSlackSec = 300.0
@@ -262,9 +264,15 @@ in Task 6 before the consumers are retyped would break every intermediate
 commit between Tasks 6 and 11. This task makes the migration ADDITIVE.
 
 **Files:**
-- Modify: `demonlock/Sources/DemonlockCore/State.swift` (add the seven new
-  `DelayQueue.QStatus?` fields from Task 11's interface block, all `= nil`;
-  KEEP the legacy fields for now)
+- Modify: `demonlock/Sources/DemonlockCore/State.swift` — add the seven new
+  `DelayQueue.QStatus?` fields with their FINAL names (Task 11 interface
+  block), all `= nil`, and RENAME the colliding legacy fields to
+  `legacyDelayedPolicy/legacyDelayedZones/legacyDelayedGatePolicy/
+  legacySafeApps/legacySnoozePresets` (same types; `lockbox` doesn't collide
+  and keeps its name). Rename ripples to `Enforcerd.swift:434-441` publish
+  args, `Commands.swift` statusBody/reader sites, `Agent.swift:201` — all in
+  this task. Safe: state.json has no readers outside this binary; lenient
+  decode makes missing keys nil during the upgrade window.
 - Modify: `demonlock/Sources/DemonlockCore/Agent.swift:77-91`
   (`handleDelayedApplied(_ items: [(String, Double?)])` — retyped ONCE here;
   call sites pass `legacy?.lastAppliedEpoch` until each port task switches
@@ -288,8 +296,8 @@ sweep: assert no legacy status type remains, delete stragglers.
 **Files:**
 - Modify: `demonlock/Sources/DemonlockCore/Enforcerd.swift:451-487` (`runDelayedChanges`)
 - Modify: `demonlock/Sources/DemonlockCore/Commands.swift:26-49` (`handleRequestFlags`), `:755-798` (`runDelaySetPolicy`), `:700-730` (gate-policy subcommands)
-- Delete: `demonlock/Sources/DemonlockCore/DelayedChange.swift` (at end of Task 6, when zones no longer needs it)
 - Test: `demonlock/Tests/DemonlockCoreTests/PolicyQueueTests.swift`
+  (`DelayedChange.swift` is deleted in Task 6, NOT here — do not touch it in this task)
 
 **Interfaces:**
 - Consumes: `DelayQueue`, `MarkerIO.append`, `PolicyEngine.validate(_:zones:allowInPolicy:) throws`, `PolicyStore.write`, `ReleaseValveConfig`.
@@ -487,9 +495,17 @@ var lockbox: Lockbox.Status? = nil            // window/lock state only (kept)
 ### Task 12: Sidecar vendor + port
 
 **Files:**
-- Create: `nextdns-sidecar/Sources/nextdns-sidecar/DelayQueue.swift` (verbatim copy + header `// VENDORED from demonlock/Sources/DemonlockCore/DelayQueue.swift — edit there, copy here.` — strip the `import`-free file compiles standalone; any future `.retry` apply must be idempotent, header states it)
+- Create: `nextdns-sidecar/Sources/nextdns-sidecar/DelayQueue.swift` — BYTE-IDENTICAL copy below its
+  header line (`// VENDORED from demonlock/Sources/DemonlockCore/DelayQueue.swift — edit there, copy here. Any future .retry apply must be idempotent.`).
+  Self-containment contract (enforced by VendorSyncTests): DelayQueue.swift may reference ONLY
+  Foundation plus these four free symbols: `loadJSON`, `saveJSON`, `logStderr`, `nowEpoch` —
+  no `Paths.*`, no MarkerIO-internal helpers beyond `MarkerIO.consumeLines/append` (MarkerIO is
+  vendored alongside). The audit path arrives via the `auditLog` init parameter.
+- Create: `nextdns-sidecar/Sources/nextdns-sidecar/DelayQueueSupport.swift` — sidecar-local shims:
+  `loadJSON`/`saveJSON` (copy demonlock's Util implementations), `logStderr` → forwards to the
+  sidecar's `logLine`, `nowEpoch`, plus `Legacy.keyOnlyMap` (copied HERE, never into DelayQueue.swift)
 - Modify: `nextdns-sidecar/Sources/nextdns-sidecar/MarkerIO.swift` (sync to demonlock's new MarkerIO, same header)
-- Modify: `nextdns-sidecar/Sources/nextdns-sidecar/Daemon.swift` (Registry → `DelayQueue`: kind "delay-add", store `.file(Paths.pendingFile, legacyDecode: Legacy.keyOnlyMap())` — copy the `Legacy.keyOnlyMap` + needed helpers into the vendored file; markers mDelayAdd/mAbort; `.retry`; payloadIsJSON: false; key = validated domain; apply = NextDNS allowlist add)
+- Modify: `nextdns-sidecar/Sources/nextdns-sidecar/Daemon.swift` (Registry → `DelayQueue`: kind "delay-add", store `.file(Paths.pendingFile, legacyDecode: Legacy.keyOnlyMap())` — legacyDecode from DelayQueueSupport.swift's `Legacy.keyOnlyMap`; markers mDelayAdd/mAbort; `.retry`; payloadIsJSON: false; key = validated domain; apply = NextDNS allowlist add)
 - Test: sidecar has no test target — add one mirroring Task 1 (lib `SidecarCore` split) **only if** the split is mechanical; otherwise rely on DemonlockCore's DelayQueue tests (identical file) + build. Decision recorded: rely on identical-file guarantee — add `demonlock/Tests/DemonlockCoreTests/VendorSyncTests.swift`: `testSidecarDelayQueueByteIdentical` (reads both files relative to `#filePath`, asserts equal minus header lines).
 
 - [ ] **Step 1:** Copy files, port Daemon (`processMarkers` delay-add/abort sections replaced by one `tick` call with `applyBatch` wrapping the per-domain API call; arm/block markers stay bespoke via `consumeLast`; multi-domain CLI `delay-add a.com b.com` appends one line per domain).
@@ -515,5 +531,6 @@ var lockbox: Lockbox.Status? = nil            // window/lock state only (kept)
 
 - Spec coverage: every spec section mapped — Census (Tasks 5,6,8,9,10,12), Abstraction semantics (3), Marker contract (2), Boundary layer (2, 7), knobs (3,8), Zones (6,7), Cross-queue (6), Restart (3,9), Migration (4,8,9,12), bespoke list (8,9 keep-out respected), Testing (each bullet has a named test above), Rollout (13,14 + gate note).
 - Known deviation recorded: `enqueueTransform` knob added (Task 8) beyond the spec's closed knob set — required to freeze invoke's `targetAt` at queue time. Alternative considered and REJECTED: CLI-computed targetAt would let a hand-written marker choose an arbitrary stand-down target (preset-spec-only is the current, stricter semantics; queue-time recompute-and-compare is clock-fragile). The daemon-side transform is the smallest compliant design. Spec's closed-knob sentence should gain this knob at next spec touch.
+- Adversary-2 pass (compile feasibility, verdict NO on v1) folded: Task 4.5 field-name collision fixed via legacy* renames; Task 5 stray delete line removed; vendored-file self-containment contract + `auditLog` init parameter added (byte-identical test now satisfiable). Remaining truncated findings folded on full report.
 - Pass-3 (self) finding folded: Task 4.5 added — without it, Tasks 6-10 could not compile (DelayedStatus consumers). Joint-projection staleness note: zones' `peekDue` runs before policy/gate consume THIS tick's markers — safe for requests (a request consumed this tick gets applyAt=now+delay, never due now) but an abort consumed this tick could arrive after zones already deferred to a doc being aborted. Fail-closed (batch dropped, re-queue) and rare; if either adversary confirms it matters, fix = consume phase for all queues before any apply phase.
 - Type consistency: `QStatus` field names in Task 11 match Task 3; `Legacy.*` signatures match Task 4 consumers in 5/12.
