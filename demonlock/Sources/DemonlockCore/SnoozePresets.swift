@@ -28,102 +28,141 @@ enum SnoozePresets {
     }
     static func find(_ name: String, _ s: Settings = .load()) -> SnoozePreset? { effective(s).first { $0.name == name } }
 
-    // MARK: - state (root-owned)
+    // MARK: - state (root-owned; composite file: TWO queues + migrated-legacy fields)
 
     struct Invocation: Codable { var name: String; var requestedAt: Double; var applyAt: Double; var targetAt: Double }
     struct AddPending: Codable { var preset: SnoozePreset; var requestedAt: Double; var applyAt: Double }
-    struct SPState: Codable {
-        var invocation: Invocation? = nil     // ONE in-flight invocation (a single snooze slot)
-        var adds: [String: AddPending] = [:]  // name → pending delayed-add
-        static func load() -> SPState { loadJSON(Paths.snoozePresetsStateFile) ?? SPState() }
+
+    /// snooze-presets.json container. Each DelayQueue owns a named sub-object; legacy fields are
+    /// consumed by the first load and nil'd on save. COMPOSITE-FILE CONTRACT: every store closure
+    /// re-loads the file and writes back only its own field — never a snapshot held across a
+    /// sibling's save (which would silently erase the other queue's pending rows).
+    struct SPFile: Codable {
+        var invocation: Invocation? = nil            // legacy single slot
+        var adds: [String: AddPending]? = nil        // legacy name-keyed map
+        var invokeQ: DelayQueue.QState? = nil
+        var addsQ: DelayQueue.QState? = nil
+        static func load() -> SPFile { loadJSON(Paths.snoozePresetsStateFile) ?? SPFile() }
         func save() { saveJSON(self, to: Paths.snoozePresetsStateFile) }
     }
 
-    struct Status: Codable {
-        var invocationName: String?
-        var invocationApplyAtEpoch: Double?
-        var pendingAdds: [AddView] = []
-    }
-    struct AddView: Codable { var name: String; var applyAtEpoch: Double }
-
-    // MARK: - validation
-
-    static func rejectReason(_ p: SnoozePreset) -> String? {
-        let n = p.name
-        guard (1...24).contains(n.count), n.allSatisfy({ ($0.isLowercase && $0.isLetter) || $0.isNumber || $0 == "-" }) else {
-            return "name must be 1–24 chars of [a-z0-9-]"
-        }
-        guard let target = try? TimeSpec.parseTarget(p.spec) else {
-            return "spec must be \"for <dur>\" or \"until <[day]HHMM>\" (e.g. \"for 90m\", \"until 0500\")"
-        }
-        // Cap the resulting stand-down at the snooze ceiling (mainly guards "for <dur>"; "until" is a
-        // wall-clock time, at most ~a day out — also capped).
-        if target.timeIntervalSinceNow > Bounds.snoozeDurationMax {
-            return "that snooze would exceed the \(Int(Bounds.snoozeDurationMax/3600))h ceiling"
-        }
-        if !Bounds.snoozePresetInvokeDelay.contains(p.invokeDelaySec) {
-            return "invoke delay must be \(Int(Bounds.snoozePresetInvokeDelay.lowerBound/3600))–\(Int(Bounds.snoozePresetInvokeDelay.upperBound/3600))h"
-        }
-        return nil
+    private static func subStore(read: @escaping (SPFile) -> DelayQueue.QState?,
+                                 migrate: @escaping (SPFile) -> DelayQueue.QState?,
+                                 write: @escaping (inout SPFile, DelayQueue.QState) -> Void) -> DelayQueue.QStateStore {
+        DelayQueue.QStateStore(
+            load: {
+                let f = SPFile.load()
+                var st = read(f) ?? migrate(f) ?? DelayQueue.QState()
+                if let m = st.pending.values.map(\.seq).max(), st.nextSeq <= m { st.nextSeq = m + 1 }
+                return st
+            },
+            save: { st in
+                var f = SPFile.load()                 // fresh — the sibling may have saved meanwhile
+                write(&f, st)
+                f.save()
+            })
     }
 
-    // MARK: - daemon tick
+    /// The single in-flight invocation (constant key "invocation" ⇒ one slot; re-invoking the SAME
+    /// preset is idempotent by payload identity, a DIFFERENT preset replaces + resets — spec rule).
+    static func invokeQueue() -> DelayQueue {
+        DelayQueue(kind: "snooze-invoke",
+                   store: subStore(
+                       read: { $0.invokeQ },
+                       migrate: { f in
+                           guard let inv = f.invocation else { return nil }
+                           // payload := name; the frozen target is re-derived from the daemon-stamped
+                           // requestedAt at apply (parseTarget is deterministic given `from:`).
+                           return DelayQueue.QState(pending: ["invocation": .init(payload: inv.name,
+                                    requestedAt: inv.requestedAt, applyAt: inv.applyAt, seq: 0)],
+                                                    nextSeq: 1, lastAppliedAt: nil, recent: [])
+                       },
+                       write: { f, st in f.invokeQ = st; f.invocation = nil }),
+                   requestMarker: Paths.spInvokeMarker, abortMarker: Paths.spInvokeAbort,
+                   onFailure: .drop, payloadIsJSON: false, auditLog: Paths.queueAuditLog)
+    }
 
-    @discardableResult
-    static func tick(now: Double, enforcedUID: uid_t?, addDelaySec: Double) -> Status {
-        var st = SPState.load()
+    static func addsQueue() -> DelayQueue {
+        DelayQueue(kind: "snooze-preset-add",
+                   store: subStore(
+                       read: { $0.addsQ },
+                       migrate: { f in
+                           guard let adds = f.adds, !adds.isEmpty else { return f.adds != nil ? DelayQueue.QState() : nil }
+                           let enc = JSONEncoder(); enc.outputFormatting = [.sortedKeys]
+                           var st = DelayQueue.QState()
+                           for (name, a) in adds.sorted(by: { $0.value.requestedAt < $1.value.requestedAt }) {
+                               guard let d = try? enc.encode(a.preset), let json = String(data: d, encoding: .utf8) else { continue }
+                               st.pending[name] = .init(payload: json, requestedAt: a.requestedAt, applyAt: a.applyAt, seq: st.nextSeq)
+                               st.nextSeq += 1
+                           }
+                           return st
+                       },
+                       write: { f, st in f.addsQ = st; f.adds = nil }),
+                   requestMarker: Paths.spAddMarker, abortMarker: Paths.spAddAbort,
+                   onFailure: .drop, payloadIsJSON: true, auditLog: Paths.queueAuditLog)
+    }
 
-        if let euid = enforcedUID {
-            // invoke: start the single in-flight invocation (freeze the resolved target NOW).
-            if let name = MarkerIO.consumeLast(Paths.spInvokeMarker, enforcedUID: euid) {
-                if st.invocation == nil, let p = find(name), let target = try? TimeSpec.parseTarget(p.spec) {
-                    st.invocation = Invocation(name: name, requestedAt: now,
-                                               applyAt: now + Bounds.clamp(p.invokeDelaySec, Bounds.snoozePresetInvokeDelay),
-                                               targetAt: target.timeIntervalSince1970)
-                    st.save()
-                }   // else: unknown preset, or one already in flight (idempotent — ignore)
-            }
-            if MarkerIO.consumeFlag(Paths.spInvokeAbort, enforcedUID: euid) { st.invocation = nil; st.save() }
-            // remove (immediate, tightening): drop a preset.
-            if let name = MarkerIO.consumeLast(Paths.spRemoveMarker, enforcedUID: euid) {
-                applyRemove(name: name); st.adds.removeValue(forKey: name); st.save()
-            }
-            // delayed-add abort.
-            if let arg = MarkerIO.consumeLast(Paths.spAddAbort, enforcedUID: euid) {
-                if arg == "--all" { st.adds.removeAll() } else { st.adds.removeValue(forKey: arg) }
-                st.save()
-            }
-            // delayed-add: queue a new preset.
-            if let line = MarkerIO.consumeLast(Paths.spAddMarker, enforcedUID: euid),
-               let p = try? JSONDecoder().decode(SnoozePreset.self, from: Data(line.utf8)), rejectReason(p) == nil {
-                st.adds[p.name] = AddPending(preset: p, requestedAt: now, applyAt: now + addDelaySec)
-                st.save()
-            }
+    // MARK: - daemon tick (calls consumeMarkers then applyDue on BOTH queues itself)
+
+    static func tick(now: Double, enforcedUID: uid_t?, addDelaySec: Double)
+        -> (invoke: DelayQueue.QStatus, adds: DelayQueue.QStatus) {
+        // Immediate remove (tightening): drop the preset now. The CLI also writes the adds-abort
+        // marker for the same name, so a pending delayed-add dies via the queue's own abort path.
+        if let euid = enforcedUID, let name = MarkerIO.consumeLast(Paths.spRemoveMarker, enforcedUID: euid) {
+            applyRemove(name: name)
         }
 
-        // apply the invocation when due: stand down until the frozen target (if still future), then re-arm.
-        if let inv = st.invocation, now >= inv.applyAt {
-            if inv.targetAt > now {
-                // Cap the stand-down at the snooze ceiling, same as the manual `snooze` command — an
-                // "until" preset invoked in the small hours must not stand down for ~24h. [review]
-                let capped = min(inv.targetAt, now + Bounds.snoozeDurationMax)
-                try? SnoozeStore.set(Date(timeIntervalSince1970: capped))
-                if !ArmStore.isArmed() { try? ArmStore.set(true) }   // snooze ⇒ stand down THEN resume
-            }
-            st.invocation = nil; st.save()
-        }
-        // apply pending adds when due.
-        var changed = false
-        for (name, a) in st.adds where now >= a.applyAt {
-            if rejectReason(a.preset) == nil { applyAdd(a.preset) }
-            st.adds.removeValue(forKey: name); changed = true
-        }
-        if changed { st.save() }
+        let invQ = invokeQueue(), addQ = addsQueue()
+        let settings = Settings.load()
+        invQ.consumeMarkers(now: now, enforcedUID: enforcedUID,
+                            delaySec: { name in Bounds.clamp(find(name, settings)?.invokeDelaySec ?? Bounds.snoozePresetInvokeDelay.lowerBound,
+                                                             Bounds.snoozePresetInvokeDelay) },
+                            key: { name in find(name, settings) != nil ? "invocation" : nil },
+                            validate: { find($0, settings) != nil })
+        addQ.consumeMarkers(now: now, enforcedUID: enforcedUID,
+                            delaySec: { _ in addDelaySec },
+                            key: { line in (try? JSONDecoder().decode(SnoozePreset.self, from: Data(line.utf8)))?.name },
+                            validate: { line in
+                                (try? JSONDecoder().decode(SnoozePreset.self, from: Data(line.utf8)))
+                                    .map { rejectReason($0) == nil } ?? false
+                            })
 
-        return Status(invocationName: st.invocation?.name,
-                      invocationApplyAtEpoch: st.invocation?.applyAt,
-                      pendingAdds: st.adds.values.sorted { $0.preset.name < $1.preset.name }
-                        .map { AddView(name: $0.preset.name, applyAtEpoch: $0.applyAt) })
+        let invStatus = invQ.applyDue(now: now, validate: { find($0) != nil }) { due in
+            Dictionary(uniqueKeysWithValues: due.map { d in
+                guard let p = find(d.payload),
+                      let target = try? TimeSpec.parseTarget(p.spec, from: Date(timeIntervalSince1970: d.requestedAt))
+                else { return (d.key, (false, String?.some("preset vanished or spec unparseable"))) }
+                if target.timeIntervalSince1970 > now {
+                    // Cap the stand-down at the snooze ceiling, same as the manual `snooze` command.
+                    let capped = min(target.timeIntervalSince1970, now + Bounds.snoozeDurationMax)
+                    try? SnoozeStore.set(Date(timeIntervalSince1970: capped))
+                    if !ArmStore.isArmed() { try? ArmStore.set(true) }   // snooze ⇒ stand down THEN resume
+                }
+                return (d.key, (true, nil))
+            })
+        }
+        let addStatus = addQ.applyDue(now: now,
+                                      validate: { line in
+                                          (try? JSONDecoder().decode(SnoozePreset.self, from: Data(line.utf8)))
+                                              .map { rejectReason($0) == nil } ?? false
+                                      }) { due in
+            Dictionary(uniqueKeysWithValues: due.map { d in
+                guard let p = try? JSONDecoder().decode(SnoozePreset.self, from: Data(d.payload.utf8))
+                else { return (d.key, (false, String?.some("undecodable"))) }
+                applyAdd(p)
+                return (d.key, (true, nil))
+            })
+        }
+        return (invStatus, addStatus)
+    }
+
+    /// ROOT-only (immediate `add` CLI path): cancel a pending delayed-add directly in the root-owned
+    /// state file — root cannot route through the user-owned inbox (the daemon's owner check would
+    /// reject a root-written marker).
+    static func rootCancelPendingAdd(name: String) {
+        var f = SPFile.load()
+        if f.addsQ?.pending.removeValue(forKey: name) != nil { f.save() }
+        if f.adds?.removeValue(forKey: name) != nil { f.save() }
     }
 
     static func applyAdd(_ p: SnoozePreset) {
@@ -134,12 +173,6 @@ enum SnoozePresets {
         }
     }
 
-    /// Drop a queued delayed-add for this name, so an IMMEDIATE add isn't reverted when it later lands.
-    /// Immediate CLI path only (the tick removes entries as it applies them).
-    static func clearPendingAdd(name: String) {
-        var st = SPState.load()
-        if st.adds.removeValue(forKey: name) != nil { st.save() }
-    }
 
     static func applyRemove(name: String) {
         Settings.mutate { s in

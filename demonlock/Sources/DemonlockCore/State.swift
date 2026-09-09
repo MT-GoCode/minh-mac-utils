@@ -59,7 +59,6 @@ struct StateSnapshot: Codable {
 
     // Legacy statuses — each dies in the task that ports its surface (Tasks 8/10).
     var legacySafeApps: SafeApps.Status? = nil
-    var legacySnoozePresets: SnoozePresets.Status? = nil
     var lockbox: Lockbox.Status? = nil              // window/lock state (names only, no secrets) — kept
 
     init(updatedEpoch: Double, lastCheckEpoch: Double, armed: Bool, snoozeUntilEpoch: Double?,
@@ -71,8 +70,7 @@ struct StateSnapshot: Codable {
          delayedGatePolicy: DelayQueue.QStatus? = nil, safeApps: DelayQueue.QStatus? = nil,
          snoozePresetInvoke: DelayQueue.QStatus? = nil, snoozePresetAdds: DelayQueue.QStatus? = nil,
          lockboxUnlocks: DelayQueue.QStatus? = nil,
-         legacySafeApps: SafeApps.Status? = nil,
-         legacySnoozePresets: SnoozePresets.Status? = nil, lockbox: Lockbox.Status? = nil) {
+         legacySafeApps: SafeApps.Status? = nil, lockbox: Lockbox.Status? = nil) {
         self.updatedEpoch = updatedEpoch; self.lastCheckEpoch = lastCheckEpoch; self.armed = armed
         self.snoozeUntilEpoch = snoozeUntilEpoch; self.enforcedUser = enforcedUser; self.phase = phase
         self.verdict = verdict; self.reason = reason; self.countdownDeadlineEpoch = countdownDeadlineEpoch
@@ -83,8 +81,7 @@ struct StateSnapshot: Codable {
         self.delayedGatePolicy = delayedGatePolicy; self.safeApps = safeApps
         self.snoozePresetInvoke = snoozePresetInvoke; self.snoozePresetAdds = snoozePresetAdds
         self.lockboxUnlocks = lockboxUnlocks
-        self.legacySafeApps = legacySafeApps
-        self.legacySnoozePresets = legacySnoozePresets; self.lockbox = lockbox
+        self.legacySafeApps = legacySafeApps; self.lockbox = lockbox
     }
 
     /// LENIENT decode for every status field: synthesized Codable THROWS on a type mismatch even
@@ -118,7 +115,6 @@ struct StateSnapshot: Codable {
         snoozePresetAdds = try? c.decode(DelayQueue.QStatus.self, forKey: .snoozePresetAdds)
         lockboxUnlocks = try? c.decode(DelayQueue.QStatus.self, forKey: .lockboxUnlocks)
         legacySafeApps = try? c.decode(SafeApps.Status.self, forKey: .legacySafeApps)
-        legacySnoozePresets = try? c.decode(SnoozePresets.Status.self, forKey: .legacySnoozePresets)
         lockbox = try? c.decode(Lockbox.Status.self, forKey: .lockbox)
     }
 }

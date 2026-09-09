@@ -41,14 +41,14 @@ enum TimeSpec {
     }
 
     /// Resolve a spec ("for <duration>" | "until <[day]HHMM>") to an absolute future Date (throws).
-    static func parseTarget(_ s: String) throws -> Date {
+    static func parseTarget(_ s: String, from now: Date = Date()) throws -> Date {
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = trimmed.lowercased()
         if lower.hasPrefix("for") {
             guard let secs = parseDuration(String(trimmed.dropFirst(3))), secs > 0 else {
                 throw TimeError(message: "bad duration after 'for' — use e.g. \"for 90m\", \"for 2h\", \"for 1h30m\"")
             }
-            return Date().addingTimeInterval(secs)
+            return now.addingTimeInterval(secs)
         }
         if lower.hasPrefix("until") {
             var rest = String(trimmed.dropFirst(5)).trimmingCharacters(in: .whitespaces).uppercased()
@@ -62,23 +62,22 @@ enum TimeSpec {
             if let wd = weekday {
                 // Fail CLOSED: if the calendar can't resolve the day/time, error (no snooze written)
                 // rather than silently standing enforcement down for a fallback minute.
-                guard let d = nextWeekdayHHMM(weekday: wd, hhmm: v) else {
+                guard let d = nextWeekdayHHMM(weekday: wd, hhmm: v, from: now) else {
                     throw TimeError(message: "couldn't resolve \"until\" to a calendar date — try a plain \"until HHMM\"")
                 }
                 return d
             }
-            return nextHHMM(String(format: "%04d", v))
+            return nextHHMM(String(format: "%04d", v), from: now)
         }
         throw TimeError(message: "expected \"for <duration>\" or \"until <[day]HHMM>\" — e.g. \"for 45m\" or \"until 0730\"")
     }
 
     /// Next occurrence of an HHMM time-of-day, in the current tz, as an absolute Date.
-    static func nextHHMM(_ hhmm: String) -> Date {
+    static func nextHHMM(_ hhmm: String, from now: Date = Date()) -> Date {
         let digits = hhmm.filter(\.isNumber)
         let v = Int(digits) ?? 500
         let h = v / 100, m = v % 100
         let cal = Calendar.current
-        let now = Date()
         var comps = cal.dateComponents([.year, .month, .day], from: now)
         comps.hour = h; comps.minute = m; comps.second = 0
         var target = cal.date(from: comps) ?? now
@@ -95,8 +94,8 @@ enum TimeSpec {
     }
 
     /// Next strictly-future occurrence of a weekday + HHMM, or nil if the calendar can't resolve it.
-    static func nextWeekdayHHMM(weekday: Int, hhmm: Int) -> Date? {
-        let cal = Calendar.current, now = Date()
+    static func nextWeekdayHHMM(weekday: Int, hhmm: Int, from now: Date = Date()) -> Date? {
+        let cal = Calendar.current
         for off in 0...8 {
             guard let base = cal.date(byAdding: .day, value: off, to: now) else { continue }
             var c = cal.dateComponents([.year, .month, .day], from: base)

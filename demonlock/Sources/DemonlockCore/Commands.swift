@@ -99,12 +99,6 @@ func statusBody(_ s: StateSnapshot) -> String {
     if let sa = s.legacySafeApps, !sa.pending.isEmpty {
         L.append("  safe-apps     : \(sa.pending.count) pending registration(s) — `demonlock safe-apps show`")
     }
-    if let sp = s.legacySnoozePresets {
-        if let n = sp.invocationName, let a = sp.invocationApplyAtEpoch {
-            L.append("  snooze-preset : '\(n)' invoked — stands down in \(TimeSpec.fmtLeft(a - nowEpoch()))")
-        }
-        if !sp.pendingAdds.isEmpty { L.append("  snooze-preset : \(sp.pendingAdds.count) pending add(s) — `demonlock snooze-preset show`") }
-    }
     if let lb = s.lockbox {
         let unlocked = lb.entries.filter(\.unlocked).count
         let unlocking = lb.entries.filter { $0.unlockAtEpoch != nil }.count
@@ -443,16 +437,17 @@ func runSnoozePreset(_ args: [String]) {
 }
 
 private func snoozePresetShow() {
-    let inv = StateStore.read()?.legacySnoozePresets   // legacy until Task 8 ports this reader
+    let snap = StateStore.read()
+    let invRow = snap?.snoozePresetInvoke?.rows.first
     let presets = SnoozePresets.effective()
     let rows = presets.map { p -> [String] in
-        let active = (inv?.invocationName == p.name)
-        let left = active ? TimeSpec.fmtLeft((inv?.invocationApplyAtEpoch ?? 0) - nowEpoch()) : "N/A"
+        let active = (invRow?.preview == p.name)
+        let left = active ? TimeSpec.fmtLeft((invRow?.applyAt ?? 0) - nowEpoch()) : "N/A"
         return [p.name, p.spec, TimeSpec.fmtLeft(p.invokeDelaySec), left]
     }
     print(Table.section("SNOOZE PRESETS", ["name", "target", "invoke-delay", "landing in"], rows))
     let delayH = Int(Bounds.clamp(Settings.load().snoozePresetAddDelaySec, Bounds.snoozePresetAddDelay) / 3600)
-    let prows = (inv?.pendingAdds ?? []).map { [$0.name, TimeSpec.fmtLeft($0.applyAtEpoch - nowEpoch())] }
+    let prows = (snap?.snoozePresetAdds?.rows ?? []).map { [$0.key, TimeSpec.fmtLeft($0.applyAt - nowEpoch())] }
     print("\n" + Table.section("PENDING DELAYED-ADDS — land after \(delayH)h", ["name", "lands in"], prows))
 }
 
@@ -466,6 +461,8 @@ private func snoozePresetInvoke(_ name: String?) {
 private func snoozePresetRemove(_ name: String?) {
     guard let name, !name.isEmpty else { fail("✗ usage: demonlock snooze-preset remove <name>") }
     dropDelayMarker(Paths.spRemoveMarker, payload: name)
+    _ = MarkerIO.append(Paths.spAddAbort, line: name)   // removing tightens: a pending delayed-add of
+                                                        // the same name must die too (queue abort path)
     print("✓ remove '\(name)' sent — applied on the next tick.")
 }
 
@@ -479,7 +476,7 @@ private func snoozePresetAdd(_ args: [String], immediate: Bool) {
     if immediate {
         requireRoot("snooze-preset add")
         SnoozePresets.applyAdd(p)
-        SnoozePresets.clearPendingAdd(name: name)   // an immediate add cancels any pending delayed one
+        SnoozePresets.rootCancelPendingAdd(name: name)   // an immediate add cancels any pending delayed one
         print("✓ added preset '\(name)' (\(dur), invoke-delay \(TimeSpec.fmtLeft(invokeDelay))).")
     } else {
         guard let data = try? JSONEncoder().encode(p), let json = String(data: data, encoding: .utf8) else { fail("✗ couldn't encode the preset") }

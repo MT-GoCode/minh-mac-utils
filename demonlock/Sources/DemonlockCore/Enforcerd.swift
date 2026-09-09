@@ -33,7 +33,8 @@ final class Enforcer {
     private var dpZonesStatus: DelayQueue.QStatus?     // delayed-zones queue status (published every tick)
     private var dpGatePolicyStatus: DelayQueue.QStatus?  // delayed gate-policy queue status
     private var safeAppsStatus: SafeApps.Status? // last-computed safe-apps pending registrations
-    private var snoozePresetsStatus: SnoozePresets.Status?  // in-flight invocation + pending adds
+    private var spInvokeStatus: DelayQueue.QStatus?    // in-flight invocation queue
+    private var spAddsStatus: DelayQueue.QStatus?      // pending delayed-add queue
     private var lockboxStatus: Lockbox.Status?   // password-lockbox lock state
 
     // The one location truth (persisted root-owned; survives restarts — login "just works").
@@ -84,8 +85,8 @@ final class Enforcer {
         runDelayedChanges(now.timeIntervalSince1970, enforcedUID: euid)
         safeAppsStatus = SafeApps.tick(now: now.timeIntervalSince1970, enforcedUID: euid,
                                        delaySec: Bounds.clamp(settings.safeAppsDelaySec, Bounds.safeAppsDelay))
-        snoozePresetsStatus = SnoozePresets.tick(now: now.timeIntervalSince1970, enforcedUID: euid,
-                                                 addDelaySec: Bounds.clamp(settings.snoozePresetAddDelaySec, Bounds.snoozePresetAddDelay))
+        (spInvokeStatus, spAddsStatus) = SnoozePresets.tick(now: now.timeIntervalSince1970, enforcedUID: euid,
+                                                            addDelaySec: Bounds.clamp(settings.snoozePresetAddDelaySec, Bounds.snoozePresetAddDelay))
         lockboxStatus = Lockbox.tick(now: now.timeIntervalSince1970, enforcedUID: euid)
 
         // STANDBY: only enforce the configured user's live console session.
@@ -434,8 +435,9 @@ final class Enforcer {
             delayedPolicy: dpPolicyStatus,
             delayedZones: dpZonesStatus,
             delayedGatePolicy: dpGatePolicyStatus,
+            snoozePresetInvoke: spInvokeStatus,
+            snoozePresetAdds: spAddsStatus,
             legacySafeApps: safeAppsStatus,
-            legacySnoozePresets: snoozePresetsStatus,
             lockbox: lockboxStatus))
     }
 

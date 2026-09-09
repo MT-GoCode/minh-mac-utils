@@ -166,8 +166,10 @@ enum ReleaseValve {
         }
         var sa = SafeApps.Registry.load()
         if !sa.pending.isEmpty { sa.pending.removeAll(); sa.save(); cleared.append("safe-apps") }
-        var sp = SnoozePresets.SPState.load()
-        if !sp.adds.isEmpty { sp.adds.removeAll(); sp.save(); cleared.append("snooze-preset-adds") }
+        for (q, label) in [(SnoozePresets.invokeQueue(), "snooze-invoke"),
+                           (SnoozePresets.addsQueue(), "snooze-preset-adds")] {
+            if !q.status().rows.isEmpty { q.flushAll(now: now, reason: "admin grant"); cleared.append(label) }
+        }
         var lb = Lockbox.LBState.load()
         if !lb.pending.isEmpty || !lb.unlockedUntil.isEmpty {
             lb.pending.removeAll(); lb.unlockedUntil.removeAll(); lb.save(); cleared.append("lockbox")
