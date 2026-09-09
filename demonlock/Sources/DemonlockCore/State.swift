@@ -47,12 +47,88 @@ struct StateSnapshot: Codable {
     var sshAddr: String?         // "minh@192.168.1.42 · mac.local" — shown so you can SSH in to disarm
     var health: Health
     var releaseValve: RVStatus?  // the delay-gated admin-grant valve (nil ⇒ never configured)
-    var delayedPolicy: DelayedStatus? = nil   // a queued `delay-set-policy` change (nil ⇒ none ever queued)
-    var delayedZones: DelayedStatus? = nil    // a queued zones-map change (nil ⇒ none ever queued)
-    var delayedGatePolicy: DelayedStatus? = nil  // a queued release-valve gate-policy change
-    var safeApps: SafeApps.Status? = nil            // pending delayed safe-app registrations
-    var snoozePresets: SnoozePresets.Status? = nil  // in-flight invocation + pending delayed-adds
-    var lockbox: Lockbox.Status? = nil              // password-lockbox lock state (names only, no secrets)
+
+    // DelayQueue statuses (one per surface; nil until that surface's port publishes). Final shape.
+    var delayedPolicy: DelayQueue.QStatus? = nil
+    var delayedZones: DelayQueue.QStatus? = nil
+    var delayedGatePolicy: DelayQueue.QStatus? = nil
+    var safeApps: DelayQueue.QStatus? = nil
+    var snoozePresetInvoke: DelayQueue.QStatus? = nil
+    var snoozePresetAdds: DelayQueue.QStatus? = nil
+    var lockboxUnlocks: DelayQueue.QStatus? = nil
+
+    // Legacy statuses — each dies in the task that ports its surface (Tasks 5-10).
+    var legacyDelayedPolicy: DelayedStatus? = nil
+    var legacyDelayedZones: DelayedStatus? = nil
+    var legacyDelayedGatePolicy: DelayedStatus? = nil
+    var legacySafeApps: SafeApps.Status? = nil
+    var legacySnoozePresets: SnoozePresets.Status? = nil
+    var lockbox: Lockbox.Status? = nil              // window/lock state (names only, no secrets) — kept
+
+    init(updatedEpoch: Double, lastCheckEpoch: Double, armed: Bool, snoozeUntilEpoch: Double?,
+         enforcedUser: String, phase: String, verdict: String?, reason: String,
+         countdownDeadlineEpoch: Double?, countdownSeconds: Double, pollSeconds: Double,
+         policyString: String, tree: EvalNode?, insideZones: [String], sshAddr: String?,
+         health: Health, releaseValve: RVStatus?,
+         delayedPolicy: DelayQueue.QStatus? = nil, delayedZones: DelayQueue.QStatus? = nil,
+         delayedGatePolicy: DelayQueue.QStatus? = nil, safeApps: DelayQueue.QStatus? = nil,
+         snoozePresetInvoke: DelayQueue.QStatus? = nil, snoozePresetAdds: DelayQueue.QStatus? = nil,
+         lockboxUnlocks: DelayQueue.QStatus? = nil,
+         legacyDelayedPolicy: DelayedStatus? = nil, legacyDelayedZones: DelayedStatus? = nil,
+         legacyDelayedGatePolicy: DelayedStatus? = nil, legacySafeApps: SafeApps.Status? = nil,
+         legacySnoozePresets: SnoozePresets.Status? = nil, lockbox: Lockbox.Status? = nil) {
+        self.updatedEpoch = updatedEpoch; self.lastCheckEpoch = lastCheckEpoch; self.armed = armed
+        self.snoozeUntilEpoch = snoozeUntilEpoch; self.enforcedUser = enforcedUser; self.phase = phase
+        self.verdict = verdict; self.reason = reason; self.countdownDeadlineEpoch = countdownDeadlineEpoch
+        self.countdownSeconds = countdownSeconds; self.pollSeconds = pollSeconds
+        self.policyString = policyString; self.tree = tree; self.insideZones = insideZones
+        self.sshAddr = sshAddr; self.health = health; self.releaseValve = releaseValve
+        self.delayedPolicy = delayedPolicy; self.delayedZones = delayedZones
+        self.delayedGatePolicy = delayedGatePolicy; self.safeApps = safeApps
+        self.snoozePresetInvoke = snoozePresetInvoke; self.snoozePresetAdds = snoozePresetAdds
+        self.lockboxUnlocks = lockboxUnlocks
+        self.legacyDelayedPolicy = legacyDelayedPolicy; self.legacyDelayedZones = legacyDelayedZones
+        self.legacyDelayedGatePolicy = legacyDelayedGatePolicy; self.legacySafeApps = legacySafeApps
+        self.legacySnoozePresets = legacySnoozePresets; self.lockbox = lockbox
+    }
+
+    /// LENIENT decode for every status field: synthesized Codable THROWS on a type mismatch even
+    /// for optionals, so a pre-upgrade state.json (an old `delayedPolicy` object under a key the
+    /// new QStatus field now owns) would nil out the whole snapshot → "enforcer isn't running",
+    /// blank agent panel. `(try? …) ?? nil` per field instead; core fields still decode strictly.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        updatedEpoch = try c.decode(Double.self, forKey: .updatedEpoch)
+        lastCheckEpoch = try c.decode(Double.self, forKey: .lastCheckEpoch)
+        armed = try c.decode(Bool.self, forKey: .armed)
+        snoozeUntilEpoch = try? c.decode(Double.self, forKey: .snoozeUntilEpoch)
+        enforcedUser = try c.decode(String.self, forKey: .enforcedUser)
+        phase = try c.decode(String.self, forKey: .phase)
+        verdict = try? c.decode(String.self, forKey: .verdict)
+        reason = try c.decode(String.self, forKey: .reason)
+        countdownDeadlineEpoch = try? c.decode(Double.self, forKey: .countdownDeadlineEpoch)
+        countdownSeconds = try c.decode(Double.self, forKey: .countdownSeconds)
+        pollSeconds = try c.decode(Double.self, forKey: .pollSeconds)
+        policyString = try c.decode(String.self, forKey: .policyString)
+        tree = try? c.decode(EvalNode.self, forKey: .tree)
+        insideZones = (try? c.decode([String].self, forKey: .insideZones)) ?? []
+        sshAddr = try? c.decode(String.self, forKey: .sshAddr)
+        health = try c.decode(Health.self, forKey: .health)
+        releaseValve = try? c.decode(RVStatus.self, forKey: .releaseValve)
+        delayedPolicy = try? c.decode(DelayQueue.QStatus.self, forKey: .delayedPolicy)
+        delayedZones = try? c.decode(DelayQueue.QStatus.self, forKey: .delayedZones)
+        delayedGatePolicy = try? c.decode(DelayQueue.QStatus.self, forKey: .delayedGatePolicy)
+        safeApps = try? c.decode(DelayQueue.QStatus.self, forKey: .safeApps)
+        snoozePresetInvoke = try? c.decode(DelayQueue.QStatus.self, forKey: .snoozePresetInvoke)
+        snoozePresetAdds = try? c.decode(DelayQueue.QStatus.self, forKey: .snoozePresetAdds)
+        lockboxUnlocks = try? c.decode(DelayQueue.QStatus.self, forKey: .lockboxUnlocks)
+        legacyDelayedPolicy = try? c.decode(DelayedStatus.self, forKey: .legacyDelayedPolicy)
+        legacyDelayedZones = try? c.decode(DelayedStatus.self, forKey: .legacyDelayedZones)
+        legacyDelayedGatePolicy = try? c.decode(DelayedStatus.self, forKey: .legacyDelayedGatePolicy)
+        legacySafeApps = try? c.decode(SafeApps.Status.self, forKey: .legacySafeApps)
+        legacySnoozePresets = try? c.decode(SnoozePresets.Status.self, forKey: .legacySnoozePresets)
+        lockbox = try? c.decode(Lockbox.Status.self, forKey: .lockbox)
+    }
 }
 
 // MARK: - Feed payload (agent → root over the trusted socket)

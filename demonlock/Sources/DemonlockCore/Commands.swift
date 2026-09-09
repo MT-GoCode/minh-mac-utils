@@ -77,13 +77,24 @@ func statusBody(_ s: StateSnapshot) -> String {
     if let t = s.tree { L.append("\n  policy evaluation  (✓ true · ✗ false · · unknown):\n" + t.asText(indent: 2)) }
     if !s.health.locationTrail.isEmpty { L.append("\n  location:\n" + s.health.locationTrail.joined(separator: "\n")) }
     if let rv = s.releaseValve { L.append(releaseValveLines(rv)) }
-    for (label, d) in [("policy", s.delayedPolicy), ("zones", s.delayedZones), ("gate-policy", s.delayedGatePolicy)] {
-        if let line = delayedStatusLine(label, d) { L.append(line) }
+    for (label, q, legacy, abortCmd) in [
+        ("policy",      s.delayedPolicy,     s.legacyDelayedPolicy,     "demonlock delay-set-policy --abort"),
+        ("zones",       s.delayedZones,      s.legacyDelayedZones,      "demonlock delayzones --abort"),
+        ("gate-policy", s.delayedGatePolicy, s.legacyDelayedGatePolicy, "demonlock admin-release-valve set-gate-policy --abort"),
+    ] {
+        if let q { if let lines = queueStatusLines(label, q, abortCmd: abortCmd) { L.append(lines) } }
+        else if let line = delayedStatusLine(label, legacy) { L.append(line) }
     }
-    if let sa = s.safeApps, !sa.pending.isEmpty {
+    for (label, q, cmd) in [("safe-apps", s.safeApps, "demonlock safe-apps abort"),
+                            ("snooze-invoke", s.snoozePresetInvoke, "demonlock snooze-preset abort-invoke"),
+                            ("preset-adds", s.snoozePresetAdds, "demonlock snooze-preset abort"),
+                            ("lockbox-unlocks", s.lockboxUnlocks, "demonlock password-lockbox abort")] {
+        if let q, let lines = queueStatusLines(label, q, abortCmd: cmd) { L.append(lines) }
+    }
+    if let sa = s.legacySafeApps, !sa.pending.isEmpty {
         L.append("  safe-apps     : \(sa.pending.count) pending registration(s) — `demonlock safe-apps show`")
     }
-    if let sp = s.snoozePresets {
+    if let sp = s.legacySnoozePresets {
         if let n = sp.invocationName, let a = sp.invocationApplyAtEpoch {
             L.append("  snooze-preset : '\(n)' invoked — stands down in \(TimeSpec.fmtLeft(a - nowEpoch()))")
         }
@@ -95,6 +106,36 @@ func statusBody(_ s: StateSnapshot) -> String {
         if unlocked > 0 || unlocking > 0 { L.append("  lockbox       : \(unlocked) unlocked, \(unlocking) unlocking — `demonlock password-lockbox show`") }
     }
     return L.joined(separator: "\n")
+}
+
+/// DelayQueue status section: pending rows in seq order (each with its exact abort command),
+/// recent outcomes, last-landed, and the cap flag. nil when there's nothing to say.
+func queueStatusLines(_ label: String, _ q: DelayQueue.QStatus, abortCmd: String) -> String? {
+    var L: [String] = []
+    for (i, r) in q.rows.enumerated() {
+        let left = max(0, Int(r.applyAt - nowEpoch()))
+        L.append("  \(label) \(i+1). \(r.key)  lands \(TimeSpec.fmtWhen(r.applyAt)) (\(left/3600)h \(left%3600/60)m)  abort: \(abortCmd) \"\(r.key)\"")
+        if r.preview != r.key { L.append("      \(r.preview)") }
+    }
+    if q.full { L.append("  \(label): queue full (\(DelayQueue.cap)/\(DelayQueue.cap))") }
+    if let o = q.recent.first {
+        let rel = max(0, Int(nowEpoch() - o.at))
+        var line = "  \(label) last: \(o.key) \(o.what.uppercased())"
+        if let r = o.reason { line += " (\(r))" }
+        line += " \(rel/3600)h \(rel%3600/60)m ago"
+        L.append(line)
+    }
+    if let a = q.lastAppliedAt {
+        L.append("  \(label) last landed \(TimeSpec.fmtWhen(a))")
+    }
+    return L.isEmpty ? nil : L.joined(separator: "\n")
+}
+
+/// CLI printer for a queue's status (delayzones/--status paths).
+func printQueueStatus(_ q: DelayQueue.QStatus?, label: String, abortCmd: String, emptyHint: String) {
+    guard let q, !(q.rows.isEmpty && q.recent.isEmpty && q.lastAppliedAt == nil) else { print(emptyHint); return }
+    if q.rows.isEmpty { print("\(label): none queued.") }
+    if let lines = queueStatusLines(label, q, abortCmd: abortCmd) { print(lines) }
 }
 
 /// A queued delayed-change line (only present when something is pending).

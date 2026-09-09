@@ -431,11 +431,11 @@ final class Enforcer {
             sshAddr: ssh,
             health: health,
             releaseValve: rv,
-            delayedPolicy: dpPolicyStatus,
-            delayedZones: dpZonesStatus,
-            delayedGatePolicy: dpGatePolicyStatus,
-            safeApps: safeAppsStatus,
-            snoozePresets: snoozePresetsStatus,
+            legacyDelayedPolicy: dpPolicyStatus,
+            legacyDelayedZones: dpZonesStatus,
+            legacyDelayedGatePolicy: dpGatePolicyStatus,
+            legacySafeApps: safeAppsStatus,
+            legacySnoozePresets: snoozePresetsStatus,
             lockbox: lockboxStatus))
     }
 

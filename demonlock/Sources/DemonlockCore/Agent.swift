@@ -74,9 +74,9 @@ final class AgentApp: NSObject, NSApplicationDelegate {
     /// Alert (dialog — breaks Focus/DnD, like the release valve) when a queued delayed change lands.
     /// Keyed on the persisted `lastAppliedEpoch`, so a daemon restart or the agent's faster poll can't
     /// double-fire; the first refresh only seeds the baseline.
-    private func handleDelayedApplied(_ items: [(String, DelayedStatus?)]) {
+    private func handleDelayedApplied(_ items: [(String, Double?)]) {
         for (label, d) in items {
-            let ep = d?.lastAppliedEpoch ?? 0
+            let ep = d ?? 0
             if dpSeeded, ep > (dpApplied[label] ?? 0) {
                 notify("Delayed \(label) applied", "Your queued \(label) change is now live.")
             }
@@ -198,7 +198,11 @@ final class AgentApp: NSObject, NSApplicationDelegate {
         // Show the EXACT `demonlock status` text — one source of truth (statusBody, shared with the CLI).
         treeView.string = statusBody(s)
         handleReleaseValve(s.releaseValve)
-        handleDelayedApplied([("policy", s.delayedPolicy), ("zones", s.delayedZones), ("gate-policy", s.delayedGatePolicy)])
+        handleDelayedApplied([
+            ("policy",      s.delayedPolicy?.lastAppliedAt      ?? s.legacyDelayedPolicy?.lastAppliedEpoch),
+            ("zones",       s.delayedZones?.lastAppliedAt       ?? s.legacyDelayedZones?.lastAppliedEpoch),
+            ("gate-policy", s.delayedGatePolicy?.lastAppliedAt  ?? s.legacyDelayedGatePolicy?.lastAppliedEpoch),
+        ])
         let h = s.health
         healthLabel.stringValue = s.sshAddr ?? ""          // SSH-in hint (sshd/tmux survive a lockout → disarm)
         permButton.isHidden = !h.needsPermAsk
