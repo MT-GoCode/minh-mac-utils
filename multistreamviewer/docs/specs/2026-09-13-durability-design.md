@@ -1,6 +1,6 @@
 # multistreamviewer: durability
 
-**Date:** 2026-09-13 · **Status:** v2 — adversarial pass folded (14 findings)
+**Date:** 2026-09-13 · **Status:** v3 — adversarial pass + confirm pass folded (14 + 4 findings)
 
 ## Problem
 
@@ -45,10 +45,12 @@ ThrottleInterval 30
   exit at the first upgrade install, never respawn, and MSV silently dies when the orphaned old
   instance quits). With exit 1, launchd retries every ThrottleInterval and wins the lock the
   moment the old instance is gone — self-healing, mild log noise.
-- **Install kills the old instance first**: `install.sh` gains `pkill -x multistreamviewer`
-  before deploy (the current flow `rm -rf`s the bundle out from under a running copy anyway),
-  then deploys, then bootstraps the agent — so the normal upgrade path never even hits the flock
-  race.
+- **Install order: bootout → pkill → deploy → bootstrap** (confirm-pass New-A: pkill-first
+  would, on every v2→v2 upgrade, have KeepAlive respawn the app mid-`rm -rf`/`cp -R` — running a
+  half-copied binary or crash-looping until the later bootout). `install.sh` boots out the agent
+  if loaded (no-op on first install), then `pkill -x multistreamviewer` reaps only an unmanaged
+  legacy copy, then deploys and bootstraps. `uninstall.sh` gets the same rule: bootout **before**
+  its existing `pkill`, else the agent respawns the app a second before `rm -rf`.
 - **SIGTERM/SIGINT/SIGHUP handlers exit 1, not 0** (finding #3: today `Engine.swift:55-64` exits
   0 on TERM, so a stray `pkill` or another tool's cleanup would count as "successful" and stay
   dead until next login). Handlers still clear the Karabiner gate first. At logout the gui
@@ -81,18 +83,24 @@ still eats the key by design — finding #13 noted, accepted).
 ### 3. Un-wedge the collapse guard
 
 Keep the guard (a one-tick blip must still be ignored) but give it a deadline — **which only
-counts while the session is active** (finding #2 — BLOCKER in v1: the window list also degrades
-for the whole time the session is off-console — screen lock, fast user switch — which routinely
+counts while the session is on-console and unlocked** (finding #2 — BLOCKER in v1: the window
+list degrades hard while off-console — fast user switch, login-window switch — which routinely
 exceeds any deadline; accepting that "reality" would mark every window missing, prune all
-assignments after 2 ticks, and dump every tag into one group on unlock. Total tag loss on every
-lock ≥ 11 s.):
+assignments after 2 ticks, and dump every tag into one group on return):
 
-- Subscribe to `NSWorkspace.sessionDidResignActiveNotification` /
-  `sessionDidBecomeActiveNotification`; on resign **and** on become-active, extend `graceUntil`
-  (same 3 s treatment `didWake` already gets, `Engine.swift:51-54`). While in grace or
-  off-console, the collapse clock does not run.
-- First collapsed tick (session active): record `collapsedSince = now`, skip as today.
-- Collapsed for **> 10 s of active session**: log `accepting collapsed window list (N → M)`, set
+- **Mechanism: poll, not notifications** (confirm-pass New-B:
+  `NSWorkspace.sessionDidResignActiveNotification` does *not* fire for a plain screen lock, only
+  for off-console transitions). Each engine tick reads `CGSessionCopyCurrentDictionary()` —
+  `kCGSessionOnConsoleKey` ∧ absent `CGSSessionScreenIsLocked` ⇒ "usable session"; nil
+  dictionary ⇒ not usable. One cheap call, no notification bookkeeping. (Plain lock doesn't
+  actually degrade the window list, but gating on it too costs nothing and covers display-sleep
+  edge cases.)
+- **While not-usable: hold `graceUntil`** (confirm-pass New-C — not just pause the collapse
+  clock: a partial off-console degradation below the 40 % collapse threshold would otherwise
+  still prune tags after 2 ticks). On return to usable, 3 s trailing grace, same as `didWake`
+  (`Engine.swift:51-54`).
+- First collapsed tick (session usable): record `collapsedSince = now`, skip as today.
+- Collapsed for **> 10 s of usable session**: log `accepting collapsed window list (N → M)`, set
   `lastRawCount = raw.count`, clear `collapsedSince`, process normally — a genuine mass-close
   becomes reality within ~10 s instead of wedging forever.
 - On skipped ticks, run **only the stuck-⌘ rescue** — the `flagsState` check at
@@ -149,19 +157,22 @@ briefly reads stale — say so in the output). `lastTickEpoch` vs `updatedEpoch`
 MSV has no test target; these are logic-level checks + a scripted live pass:
 
 1. Extract two pure functions and cover with a tiny XCTest target (no package split — the file
-   imports no AppKit): `collapseDecision(lastCount, newCount, collapsedSince, sessionActive,
+   imports no AppKit): `collapseDecision(lastCount, newCount, collapsedSince, sessionUsable,
    now) -> (skip, acceptReality, newSince)` and the frozen-scope candidate filter
-   `(candidates, liveIDs, frozenScope, fellBack)`. Cases: one-tick blip skipped · >10 s active
-   collapse accepted · lock-screen collapse never accepted (sessionActive false) · fallback list
-   survives a window appearing in the original group · closed windows still pruned in fallback.
+   `(candidates, liveIDs, frozenScope, fellBack)`. Cases: one-tick blip skipped · >10 s usable
+   collapse accepted · off-console/locked collapse never accepted (sessionUsable false) ·
+   fallback list survives a window appearing in the original group · closed windows still
+   pruned in fallback.
    <!-- ponytail: only these two funcs unit-tested; full target split if MSV ever grows real tests -->
 2. Live verification script (run at install time, on the Mac):
    - `launchctl print gui/<uid>/com.minh.multistreamviewer.agent` shows the job loaded (this is
      also the install script's own hard gate)
-   - `kill -9` the app → relaunched (**wait 35 s** — ThrottleInterval, finding #11); plain
-     `kill` (TERM) → also relaunched; menu Quit → stays quit; relogin → back
+   - `kill -9` the app → relaunched, and plain `kill` (TERM) → relaunched (**wait 35 s each** —
+     ThrottleInterval; findings #11, New-D); menu Quit → stays quit; relogin → back
    - close every window in the current desktop → ⌘⇥ opens the all-windows switcher (fallback)
-   - lock screen ≥ 30 s, unlock → **tags intact** (the #2 regression test)
+   - switch to the login window (fast-user-switch, ≥ 30 s) and back → **tags intact** — this,
+     not a plain lock, is what exercises the session gate (New-B: a plain lock never degrades
+     the list, so a lock-based test would pass trivially)
    - `multistreamviewer status` correct in: running / killed / tap-dead (revoke Accessibility)
      states
 
