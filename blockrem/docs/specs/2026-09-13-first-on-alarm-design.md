@@ -1,6 +1,6 @@
 # blockrem: "first-on" conditional alarms
 
-**Date:** 2026-09-13 · **Status:** v2 — adversarial pass folded (13 findings)
+**Date:** 2026-09-13 · **Status:** v3 — adversarial pass + confirm pass folded (13 + 3 findings)
 
 ## What
 
@@ -69,11 +69,18 @@ reloads from disk every tick** (`fired[id]` wins over a nil/older `lastFiredEpoc
 in `schedule.json` exists only so a daemon restart mid-block resumes the block and keeps the
 daily latch. Without this, a silently failed `ScheduleStore.save` (it `try?`s everything) would
 make the next tick's reload see an unlatched alarm and refire *every second* — a rolling
-unquittable block that could outlive the 1-hour cap for the whole window. The same merge closes
-the CLI lost-update race (finding #8): a `set`/`delete` that loaded pre-latch and clobbered
-`lastFiredEpoch` on disk cannot cause a refire, because memory still holds the latch; the daemon
-re-persists it on its next write. `delete` of a fired alarm also drops its `fired` entry
-(daemon prunes entries whose id no longer exists in the loaded schedule).
+unquittable block that could outlive the 1-hour cap for the whole window. **The merge is
+two-way** (confirm-pass N1: a one-way memory→disk merge would leave `fired` empty after a
+daemon restart and double-fire mid-day): each tick,
+`merged[id] = max(fired[id] ?? 0, disk lastFiredEpoch ?? 0)`, the guard reads `merged`, and
+`fired` is updated to it. The same merge closes the CLI lost-update race (finding #8): a
+`set`/`delete` that loaded pre-latch and clobbered `lastFiredEpoch` on disk cannot cause a
+refire, because memory still holds the latch; the daemon re-persists it on its next write.
+`delete` of a fired alarm also drops its `fired` entry (daemon prunes entries whose id no
+longer exists in the loaded schedule). Known accepted race (N2): delete the highest-id fired
+alarm and re-`set` within the same 1 s tick and the new alarm inherits the reused id's latch —
+consequence is one day's suppression, window ≤ 1 s, not worth machinery.
+<!-- ponytail: id-reuse latch transfer accepted; make nextID monotonic if it ever bites -->
 
 **Codable/migration:** the new enum case and the optional field are purely additive — Swift
 synthesizes nested-key coding for `Kind` (`{"weekly":{…}}`), so old files decode under the new
@@ -120,7 +127,8 @@ would no longer gate the latch — the deferred-fire semantics above would silen
 
 ```
 // after console guard, after snooze early-return:
-merge in-memory fired map over loaded alarms' lastFiredEpoch; prune fired ids not in schedule
+fired[id] = max(fired[id] ?? 0, loaded lastFiredEpoch ?? 0)   // two-way merge (N1)
+prune fired ids not in schedule
 for each .firstOn alarm a:
     guard today's weekday ∈ a.days
     guard nowHHMM ∈ [a.startHHMM, a.endHHMM)
@@ -182,7 +190,12 @@ touches (mirror of today's weekly×onetime branch).
 The trigger is implemented as a pure helper so it's testable (finding #10): it takes
 `(alarm, firedMap, now, inUse: Bool, snoozedUntil: Double?)` and returns fire/no-fire — `tick`
 passes the real snooze; the early-return ordering is still asserted by test 2.5 exercising the
-helper's snooze parameter.
+helper's snooze parameter. **`inUse` is itself a pure function** of
+`(sessionSnapshot: SessionState?, now)` implementing the freshness ∧ !locked ∧ !displayAsleep
+conjunction, tested separately (confirm-pass N3 — otherwise "stale heartbeat → no fire" would
+just pass a Bool and test nothing):
+- fresh + unlocked + display on → true · stale (> 90 s) → false · missing file → false ·
+  locked → false · displayAsleep → false
 
 1. `parseFirstOn`: `*0500-0900`, `MWF0700-1000`, rejects `0900-0500`, `*05000900`, `X0500-0900`,
    `*2430-2500`.
