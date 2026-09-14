@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import MSVCore
 
 // The ⌘⇥ switcher, AltTab-style but scoped: it only offers windows in the current
 // group. Hold ⌘, press ⇥ / ⇧⇥ / arrows to move the selection, release ⌘ to commit, esc
@@ -13,6 +14,11 @@ final class Switcher: ObservableObject {
     @Published private(set) var index = 0
     private var panel: NSPanel?
 
+    /// Scope frozen at open() for the whole ⌘-hold. nil = fell back to all windows (the group
+    /// was empty) — re-deriving the scope mid-hold would let a window appearing in the original
+    /// group yank the fallback list out from under the user.
+    private var frozenScope: UUID?
+
     var isOpen: Bool { panel != nil }
 
     // MARK: open / step / commit / cancel
@@ -20,9 +26,11 @@ final class Switcher: ObservableObject {
     func open() {
         // No "already open" guard: a missed release must never wedge it shut.
         Self.karabinerVar(1)
-        candidates = Engine.shared.switcherScope()
+        let scoped = Engine.shared.switcherScope()
+        candidates = scoped.wins
+        frozenScope = scoped.scope
         guard !candidates.isEmpty else {
-            Self.karabinerVar(0)          // nothing to show — don't leave the gate stuck
+            Self.karabinerVar(0)          // truly nothing on-screen — don't leave the gate stuck
             candidates = []
             return
         }
@@ -90,22 +98,33 @@ final class Switcher: ObservableObject {
         panel = nil
         candidates = []
         index = 0
+        frozenScope = nil
         Captures.shared.stopIfIdle()
     }
 
-    /// Called every engine tick: keep the candidate list in sync with reality while open
-    /// (a window closing must remove its tile, not leave a committable ghost), and rescue
-    /// a stuck-open switcher if ⌘ was released without us seeing the event.
-    func maintainTick() {
+    /// Rescue a stuck-open switcher if ⌘ was released without us seeing the event. Split out so
+    /// the engine can run it even on skipped (degraded-list) ticks — this must never pause.
+    func rescueStuckCommand() {
         guard isOpen else { return }
         if !CGEventSource.flagsState(.combinedSessionState).contains(.maskCommand) {
             commit()                 // release we missed → commit the current selection
-            return
         }
-        let live = Engine.shared.switcherScope()
-        let liveIDs = Set(live.map(\.id))
+    }
+
+    /// Called every fully-processed engine tick: keep the candidate list in sync with reality
+    /// while open (a window closing must remove its tile, not leave a committable ghost).
+    /// Filters against the scope FROZEN at open() — never re-derives it (MSVCore, unit-tested).
+    func maintainTick() {
+        guard isOpen else { return }
+        rescueStuckCommand()
+        guard isOpen else { return }
+        let ids = candidates.map(\.id)
+        let liveIDs = Set(WindowTruth.list().filter(\.onscreen).map(\.id))
+        let keep = Set(maintainCandidates(candidates: ids, liveIDs: liveIDs,
+                                          assignment: Engine.shared.assignments(for: ids),
+                                          frozenScope: frozenScope))
         let sel = candidates.indices.contains(index) ? candidates[index].id : nil
-        candidates = candidates.filter { liveIDs.contains($0.id) }
+        candidates = candidates.filter { keep.contains($0.id) }
         if candidates.isEmpty { close(); return }
         index = sel.flatMap { s in candidates.firstIndex { $0.id == s } }
             ?? min(index, candidates.count - 1)

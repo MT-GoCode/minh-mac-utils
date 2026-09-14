@@ -33,7 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Hotkeys.shared.start()
         let t = Timer(timeInterval: 1.0, repeats: true) { _ in
             Task { @MainActor in
-                Hotkeys.shared.start()          // no-op once alive; retries after a grant
+                Hotkeys.shared.ensureAlive()    // creates a missing tap, recreates a dead one
                 AppDelegate.current?.refreshTitle()
             }
         }
