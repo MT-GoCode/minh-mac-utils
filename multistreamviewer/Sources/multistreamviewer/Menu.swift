@@ -33,7 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Hotkeys.shared.start()
         let t = Timer(timeInterval: 1.0, repeats: true) { _ in
             Task { @MainActor in
-                Hotkeys.shared.start()          // no-op once alive; retries after a grant
+                Hotkeys.shared.ensureAlive()    // creates a missing tap, recreates a dead one
                 AppDelegate.current?.refreshTitle()
             }
         }
@@ -51,7 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         if !Hotkeys.shared.alive {
-            menu.addItem(withTitle: "⚠ Hotkeys off — Accessibility not granted",
+            menu.addItem(withTitle: "⚠ Hotkeys off — tap dead (Accessibility revoked or not granted?)",
                          action: nil, keyEquivalent: "")
             add(menu, "Request Permissions…", #selector(requestPermissions))
             add(menu, "Repair: reset multistreamviewer's grant & re-ask", #selector(repairPermissions))
@@ -75,7 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             add(menu, "Enable thumbnails (Screen Recording)…", #selector(requestPermissions))
         }
         if !Hotkeys.shared.alive {
-            menu.addItem(withTitle: "⚠ Hotkeys inactive — grant Accessibility, relaunch",
+            menu.addItem(withTitle: "⚠ Hotkeys inactive — check Accessibility; self-heals within ~5s of a grant",
                          action: nil, keyEquivalent: "")
         }
         menu.addItem(.separator())

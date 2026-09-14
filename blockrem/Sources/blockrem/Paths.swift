@@ -18,6 +18,7 @@ enum Paths {
     static let dataDir         = supportDir + "/data"
     static let scheduleFile    = dataDir + "/schedule.json"      // [Alarm]
     static let snoozeFile      = dataDir + "/snooze"             // epoch or "null"
+    static let sessionFile     = dataDir + "/session.json"       // agent-written lock/display heartbeat
 
     static let appPath         = "/Applications/Blockrem.app"
     static let binaryPath      = appPath + "/Contents/MacOS/blockrem"

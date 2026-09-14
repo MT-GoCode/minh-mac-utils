@@ -1,4 +1,5 @@
 import AppKit
+import MSVCore
 
 // CLI verbs post Darwin notifications to the running app:
 //   multistreamviewer [run] | new | next | gather | switch <N|next> | send <N>
@@ -16,6 +17,53 @@ func post(_ name: String) {
 func die(_ msg: String) -> Never {
     FileHandle.standardError.write((msg + "\n").data(using: .utf8)!)
     exit(1)
+}
+
+/// Diagnose "alive but dead" in 5 seconds: is the app running, is its heartbeat fresh, is the
+/// tap alive. Runs in this CLI process — no permissions needed.
+func runStatus() -> Never {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+    p.arguments = ["-f", "multistreamviewer.app/Contents/MacOS/multistreamviewer"]
+    let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+    try? p.run(); p.waitUntilExit()
+    let pids = (String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
+        .split(separator: "\n").compactMap { Int32($0) }.filter { $0 != getpid() }
+    guard let pid = pids.first else {
+        print("not running — launchd should revive it within ~30s; check: launchctl print gui/\(getuid())/com.minh.multistreamviewer.agent")
+        exit(1)
+    }
+    let url = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/multistreamviewer/health.json")
+    guard let data = try? Data(contentsOf: url),
+          let h = try? JSONDecoder().decode(Health.self, from: data) else {
+        // Normal for the first ~30s after launch; suspicious after that (unwritable state dir?)
+        let et = Process()
+        et.executableURL = URL(fileURLWithPath: "/bin/ps")
+        et.arguments = ["-o", "etime=", "-p", "\(pid)"]
+        let ep = Pipe(); et.standardOutput = ep
+        try? et.run(); et.waitUntilExit()
+        let etime = (String(data: ep.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let young = etime.count <= 5 && etime.hasPrefix("00:")   // "00:SS" = under a minute
+        print("running (pid \(pid)) but no health file\(young ? " yet (written every 30s)" : " — state dir unwritable?")")
+        exit(young ? 0 : 1)
+    }
+    let now = Date().timeIntervalSince1970
+    if now - h.updatedEpoch > 90 {
+        print("running (pid \(pid)) but heartbeat stale (\(Int(now - h.updatedEpoch))s) — main thread hung? (a Mac that just woke reads stale briefly)")
+        exit(1)
+    }
+    if !h.tapAlive {
+        print("running (pid \(pid)) but tap DEAD — check System Settings ▸ Accessibility for multistreamviewer")
+        exit(1)
+    }
+    var note = ""
+    if now - h.lastTickEpoch > 90 {
+        note = " — engine tick stalled \(Int(now - h.lastTickEpoch))s (degraded window list?)"
+    }
+    print("running (pid \(pid)), tap alive, \(h.windowCount) windows in \(h.groupCount) desktops (current: \(h.currentGroup))\(note)")
+    exit(0)
 }
 
 func runApp() -> Never {
@@ -89,12 +137,14 @@ if let cmd = args.first {
         post("send.\(intArg("send"))")
     case "run":
         runApp()
+    case "status":
+        runStatus()
     case "windows":
         // Runs in this process, not the running app — so the terminal needs Accessibility,
         // same as any AX read.
         MainActor.assumeIsolated { print(WindowTruth.debugDump()) }
     default:
-        die("usage: multistreamviewer [run|show|hide|toggle|settings|new|gather|next|switch <N|next>|send <N>|windows]")
+        die("usage: multistreamviewer [run|status|show|hide|toggle|settings|new|gather|next|switch <N|next>|send <N>|windows]")
     }
     exit(0)
 } else {

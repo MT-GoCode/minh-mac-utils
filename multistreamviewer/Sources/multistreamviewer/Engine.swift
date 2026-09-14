@@ -1,4 +1,5 @@
 import AppKit
+import MSVCore
 
 struct Group: Identifiable, Hashable {
     let id: UUID
@@ -28,8 +29,9 @@ final class Engine {
     private var assign: [CGWindowID: UUID] = [:]
     private var missing: [CGWindowID: Int] = [:]   // consecutive ticks absent from raw list
     private var mru: [UUID: [CGWindowID]] = [:]
-    private var lastRawCount = 0
+    private var collapse = CollapseState()         // collapse-guard state (MSVCore, unit-tested)
     private var graceUntil = Date.distantPast      // no prune/adopt/persist inside grace
+    private var lastTickEpoch = 0.0                // last fully-processed tick, for health.json
     private var lastSaved = Data()
     private var signals: [DispatchSourceSignal] = []
     private var seedTarget: (id: UUID, until: Date)?   // new windows adopt here while live
@@ -57,12 +59,45 @@ final class Engine {
             let s = DispatchSource.makeSignalSource(signal: sig, queue: .main)
             s.setEventHandler {
                 Switcher.karabinerVar(0)
-                exit(0)
+                // exit 1: under KeepAlive={SuccessfulExit:false} a stray pkill/TERM must
+                // relaunch — the only deliberate stay-quit path is menu → Quit (exit 0).
+                exit(1)
             }
             s.resume()
             signals.append(s)
         }
+        // Health heartbeat: its own timer, NOT the engine tick — the tick is exactly what can
+        // stall, and `multistreamviewer status` needs to see that.
+        let ht = Timer(timeInterval: 30, repeats: true) { _ in
+            Task { @MainActor in Engine.shared.writeHealth() }
+        }
+        ht.tolerance = 5
+        RunLoop.main.add(ht, forMode: .common)
         tick()
+        writeHealth()
+    }
+
+    /// True while our login session is on-console with the screen unlocked. Polled per tick
+    /// (NSWorkspace's sessionDidResignActive does NOT fire for a plain lock); while not usable
+    /// the collapse clock is held and prune/adopt is paused — accepting the off-console
+    /// degraded window list would wipe every tag.
+    private func sessionUsable() -> Bool {
+        guard let d = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+        let onConsole = (d[kCGSessionOnConsoleKey as String] as? Bool) ?? false
+        let locked = (d["CGSSessionScreenIsLocked"] as? Bool) ?? false
+        return onConsole && !locked
+    }
+
+    func writeHealth() {
+        let h = Health(updatedEpoch: Date().timeIntervalSince1970, lastTickEpoch: lastTickEpoch,
+                       tapAlive: Hotkeys.shared.alive, windowCount: collapse.lastRawCount,
+                       groupCount: groups.count,
+                       currentGroup: groups.first { $0.id == currentID }?.name ?? "?")
+        let fm = FileManager.default
+        try? fm.createDirectory(at: Self.stateDir, withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(h) {
+            try? data.write(to: Self.stateDir.appendingPathComponent("health.json"), options: .atomic)
+        }
     }
 
     // MARK: ops
@@ -227,18 +262,37 @@ final class Engine {
     /// (falling back to the current group), on-screen only, MRU order with the actual
     /// front window forced to the head — so index 1 is always "the previous window",
     /// never a half-second-stale guess.
-    func switcherScope() -> [Win] {
+    ///
+    /// `scope == nil` in the result means the group had no windows and the list FELL BACK to
+    /// every on-screen window (⌘⇥ must always work — an emptied-out group used to silently eat
+    /// the key). The switcher freezes this scope for the whole hold.
+    func switcherScope() -> (wins: [Win], scope: UUID?) {
         let raw = WindowTruth.list()
         let front = WindowTruth.frontWindowID()
         let scope = front.flatMap { assign[$0] } ?? currentID
         let wins = raw.filter { assign[$0.id] == scope && $0.onscreen }
+        if wins.isEmpty {
+            let all = raw.filter { $0.onscreen }
+            let sorted = all.sorted {
+                ((front == $0.id ? 0 : 1), Config.shared.priorityRank($0.app), $0.app, $0.id)
+                    < ((front == $1.id ? 0 : 1), Config.shared.priorityRank($1.app), $1.app, $1.id)
+            }
+            return (sorted, nil)
+        }
         var order = mru[scope] ?? []
         if let f = front, assign[f] == scope {
             order = [f] + order.filter { $0 != f }
         }
         var rank: [CGWindowID: Int] = [:]
         for (i, wid) in order.enumerated() { rank[wid] = i }
-        return wins.sorted { (rank[$0.id] ?? .max, $0.id) < (rank[$1.id] ?? .max, $1.id) }
+        return (wins.sorted { (rank[$0.id] ?? .max, $0.id) < (rank[$1.id] ?? .max, $1.id) }, scope)
+    }
+
+    /// Group assignments for the given live windows — the switcher's frozen-scope filter input.
+    func assignments(for ids: [CGWindowID]) -> [CGWindowID: UUID] {
+        var out: [CGWindowID: UUID] = [:]
+        for id in ids { if let g = assign[id] { out[id] = g } }
+        return out
     }
 
     // MARK: tick — bookkeeping only; no window is ever moved
@@ -246,14 +300,28 @@ final class Engine {
     func tick() {
         let now = Date()
         let raw = WindowTruth.list()
-        // A mass disappearance is a degraded snapshot (permission flap, mid-reconfig),
-        // not the user closing everything. Don't act on it.
-        if lastRawCount >= 5, raw.count * 5 < lastRawCount * 2 {
-            NSLog("multistreamviewer: window list collapsed (%d → %d), skipping tick",
-                  lastRawCount, raw.count)
+        let usable = sessionUsable()
+        if !usable { graceUntil = max(graceUntil, now.addingTimeInterval(3)) }  // + trailing grace on return
+        // A mass disappearance is a degraded snapshot (permission flap, off-console) — ignore
+        // it, but only for so long: after >10s of usable-session collapse, reality wins (a
+        // genuine mass-close must not wedge every future tick forever, which the old
+        // early-return did by never updating the count).
+        let d = collapseDecision(collapse, newCount: raw.count, sessionUsable: usable, now: now)
+        if d.skip {
+            if collapse.collapsedSince == nil, d.state.collapsedSince != nil {
+                NSLog("multistreamviewer: window list collapsed (%d → %d), holding",
+                      collapse.lastRawCount, raw.count)
+            }
+            collapse = d.state
+            Switcher.shared.rescueStuckCommand()   // the missed-⌘-release rescue must never pause
             return
         }
-        lastRawCount = raw.count
+        if d.accepted {
+            NSLog("multistreamviewer: accepting collapsed window list (%d → %d)",
+                  collapse.lastRawCount, raw.count)
+        }
+        collapse = d.state
+        lastTickEpoch = now.timeIntervalSince1970
         let live = Set(raw.map(\.id))
         let inGrace = now < graceUntil
 

@@ -8,6 +8,10 @@ USER_NAME="${SUDO_USER:-$(stat -f%Su /dev/console)}"
 USER_HOME="$(eval echo "~$USER_NAME")"
 
 echo "▸ stopping app"
+# bootout BEFORE pkill — otherwise KeepAlive respawns the app a second before rm -rf
+UID_TARGET="$(id -u "$USER_NAME")"
+launchctl bootout "gui/$UID_TARGET/com.minh.multistreamviewer.agent" 2>/dev/null || true
+rm -f /Library/LaunchAgents/com.minh.multistreamviewer.agent.plist
 pkill -x multistreamviewer 2>/dev/null && sleep 1 || true
 
 echo "▸ removing bundle + CLI symlink"

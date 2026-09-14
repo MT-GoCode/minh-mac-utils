@@ -15,8 +15,38 @@ final class Hotkeys {
     static let shared = Hotkeys()
     private var tap: CFMachPort?
     private var owedKeyUps: [Int64: (count: Int, at: Date)] = [:]
+    private var lastCreateAttempt = Date.distantPast
+    private var disabledStrikes = 0
 
-    var alive: Bool { tap != nil }
+    /// tap exists AND passed its last health check — so the menu ⚠ shows for a
+    /// created-then-dead tap (Accessibility revoked, port death), not just a never-created one.
+    var alive: Bool { tap != nil && disabledStrikes == 0 }
+
+    /// The 1s watchdog: create a missing tap, detect and recreate a dead one. Two consecutive
+    /// disabled observations before recreating — right after tapDisabledByTimeout there's a
+    /// window where the in-callback re-enable hasn't run yet; one sample there would tear down
+    /// a tap about to self-heal. Create attempts (and their failure logs) throttle to 1/5s.
+    func ensureAlive() {
+        guard let tap else { throttledStart(); return }
+        let valid = CFMachPortIsValid(tap)
+        let enabled = valid && CGEvent.tapIsEnabled(tap: tap)
+        if valid && enabled { disabledStrikes = 0; return }
+        disabledStrikes += 1
+        guard !valid || disabledStrikes >= 2 else { return }
+        NSLog("multistreamviewer: event tap dead (valid=%d enabled=%d) — recreating",
+              valid ? 1 : 0, enabled ? 1 : 0)
+        CFMachPortInvalidate(tap)
+        self.tap = nil
+        disabledStrikes = 0
+        if !Switcher.shared.isOpen { Switcher.karabinerVar(0) }   // never leave the gate stuck
+        throttledStart()
+    }
+
+    private func throttledStart() {
+        guard Date().timeIntervalSince(lastCreateAttempt) >= 5 else { return }
+        lastCreateAttempt = Date()
+        start()
+    }
 
     /// Idempotent: safe to retry after the user grants Accessibility (tap creation fails
     /// silently without it, and there's no notification when it's granted).

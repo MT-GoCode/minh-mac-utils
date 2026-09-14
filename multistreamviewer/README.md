@@ -49,7 +49,12 @@ sudo ./install.sh
 
 Self-contained: `install.sh` declares a small manifest and sources the shared
 `../scripts/install-lib.sh`. It builds + signs (Developer ID, team BULCQM9J2V), deploys
-**root-owned** to `/Applications`, symlinks the CLI to `/usr/local/bin/multistreamviewer`, and launches.
+**root-owned** to `/Applications`, symlinks the CLI to `/usr/local/bin/multistreamviewer`, and
+installs a **LaunchAgent** (`com.minh.multistreamviewer.agent`): starts at login, and
+`KeepAlive={SuccessfulExit:false}` relaunches it after any crash or kill (plain `kill`/TERM
+included — the app exits 1 on signals). The **only** way to stay quit is menu → Quit; that lasts
+until next login. The install hard-fails if the agent didn't actually load (e.g. no console
+session when installing over SSH).
 multistreamviewer **registers itself as a demonlock spare at install** (root-owned Regime A) — demonlock ships
 no base list, so each app registers into it. `./scripts/build.sh` alone does a quick
 dev build into `~/Applications`. Uninstall: `sudo ./uninstall.sh`.
@@ -59,6 +64,19 @@ dev build into `~/Applications`. Uninstall: `sudo ./uninstall.sh`.
 - **Accessibility** — required (raises windows). Prompted on first launch.
 - **Screen Recording** — optional; only powers the thumbnails. Without it, tiles show app
   icons and everything else works — tracking never depends on it.
+
+## Durability
+
+- **⌘⇥ always works.** If the current desktop has no windows left (they all got closed), the
+  switcher falls back to **every on-screen window** instead of silently eating the key; picking
+  one makes its desktop current again. The scope is frozen while ⌘ is held.
+- **The engine can't wedge.** A degraded window list (permission flap, mass-close) is ignored
+  for up to 10 s, then reality wins; while the screen is locked or the session is off-console
+  the clock is held entirely, so a lock/fast-user-switch never wipes your desktop tags.
+- **The tap heals itself.** A 1 s watchdog recreates a dead event tap (Accessibility revoked
+  and re-granted, port death); the menu shows ⚠ whenever the tap isn't actually working.
+- **`multistreamviewer status`** — one line: running or not, heartbeat fresh or hung, tap alive
+  or dead, window/desktop counts. Run this first whenever "it does nothing."
 
 ## Why this is robust
 

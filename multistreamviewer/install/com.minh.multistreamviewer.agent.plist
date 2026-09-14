@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.minh.multistreamviewer.agent</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Applications/multistreamviewer.app/Contents/MacOS/multistreamviewer</string>
+        <string>run</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <!-- SuccessfulExit=false: crashes/kills (exit≠0, signals) relaunch; menu→Quit (exit 0)
+         stays quit until next login. TERM handlers in the app exit 1 for the same reason. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+</dict>
+</plist>

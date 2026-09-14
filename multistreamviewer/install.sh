@@ -14,6 +14,26 @@ TEAM_ID=BULCQM9J2V
 CLI=multistreamviewer
 SPARED=yes           # register with demonlock at install (root-owned Regime A) — demonlock ships no base list
 provide_bundle() { dl_swift_bundle multistreamviewer.app; }
-post_install()   { sudo -u "$(dl_user)" open "/Applications/$BUNDLE" 2>/dev/null || true; }
 
-dl_run_manifest
+AGENT_LABEL=com.minh.multistreamviewer.agent
+UID_TARGET="$(id -u "$(dl_user)")"
+
+# Build FIRST — a failed build must leave the running copy and its agent untouched.
+ART="$(dl_swift_bundle multistreamviewer.app)" || { echo "✗ multistreamviewer: build failed"; exit 1; }
+provide_bundle() { echo "$ART"; }
+
+# Then stop, in this order (spec: bootout → pkill → deploy → bootstrap): killing a
+# launchd-managed copy first would have KeepAlive respawn it mid-deploy.
+launchctl bootout "gui/$UID_TARGET/$AGENT_LABEL" 2>/dev/null || true
+pkill -x multistreamviewer 2>/dev/null && sleep 1 || true
+
+post_install() { dl_install_launchd "$APP_DIR/install/$AGENT_LABEL.plist" agent; }
+
+dl_run_manifest || exit 1
+
+# Hard verify AFTER the manifest (so a load failure can't skip demonlock spare registration):
+# install-lib swallows launchctl errors, e.g. installing over SSH with no console session.
+if ! launchctl print "gui/$UID_TARGET/$AGENT_LABEL" >/dev/null 2>&1; then
+  echo "✗ agent not loaded in gui/$UID_TARGET — is a console session active? (over SSH: log in locally, then: launchctl bootstrap gui/$UID_TARGET /Library/LaunchAgents/$AGENT_LABEL.plist)"
+  exit 1
+fi

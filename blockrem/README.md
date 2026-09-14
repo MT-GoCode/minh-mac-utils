@@ -34,6 +34,7 @@ Every command is **user-runnable — no sudo**:
 blockrem list                      # all alarms + the active block + any snooze
 blockrem set --weekly <DAYS|*><HHMM> --label "…" --duration <5-3600>
 blockrem set --onetime "<for…|at…>"  --label "…" --duration <5-3600>
+blockrem set --first-on <DAYS|*><HHMM>-<HHMM> --label "…" --duration <5-3600>
 blockrem delete <id>
 blockrem snooze "<for…|at…>"        # suppress ALL blocks until that instant
 blockrem help  ·  blockrem perm-ask
@@ -54,6 +55,24 @@ blockrem set --weekly *0800   --label "water break" --duration 30   # every day 
 blockrem set --weekly MWF1230 --label "lunch — walk" --duration 300 # Mon/Wed/Fri 12:30, 5 min
 blockrem set --weekly R1600   --label "stretch"     --duration 60   # Thursdays  16:00, 60 sec
 ```
+
+### `--first-on` — once per day, at first use inside a window
+
+`<DAYS|*><HHMM>-<HHMM>` (start < end, same day). Fires **once per listed day** at the **first
+instant inside the window** that the machine is actually in use — awake, display on, you at the
+console, screen unlocked (the GUI agent heartbeats lock/display state to `data/session.json`;
+stale/unknown counts as *not* in use, so it never fires where nothing could render the block).
+Already in use at window start → fires at window start sharp. Never in use during the window →
+skipped that day. Snooze gates the trigger: it fires when the snooze clears if still inside the
+window. `list` shows `fired today h:mm` once latched.
+
+```sh
+blockrem set --first-on "*0500-0900" --label "morning pages" --duration 300   # first use 5–9 AM
+blockrem set --first-on MTWRF0700-1000 --label "plan first"  --duration 60
+```
+
+For overlap checks a first-on alarm occupies its **whole window plus the block length**, so no
+other alarm can be scheduled inside it (and vice versa).
 
 ### `--onetime` and `snooze` — the instant spec
 
@@ -104,6 +123,7 @@ management commands run without sudo:
 |---|---|---|---|
 | `data/schedule.json` | you | `set`/`delete` (no sudo) | `[Alarm]` |
 | `data/snooze` | you | `snooze` (no sudo) / daemon auto-clear | epoch or `null` |
+| `data/session.json` | you | agent (lock/display heartbeat) | gates `--first-on` triggers |
 | `settings.json` | root | install | per-machine `enforcedUser` |
 | `active.json` | root | daemon, each tick | the agent's only read surface |
 | `logs/enforcerd.log` | root | daemon | |

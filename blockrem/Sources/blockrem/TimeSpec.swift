@@ -54,6 +54,21 @@ enum TimeSpec {
         return days.isEmpty ? nil : (days.sorted(), hhmm)
     }
 
+    // MARK: --first-on  <DAYS|*><HHMM>-<HHMM>
+
+    /// Parse e.g. "*0500-0900", "MTWRF0700-1000" → (days, start, end). Requires start < end
+    /// (no cross-midnight windows). nil on any malformation.
+    static func parseFirstOn(_ raw: String) -> (days: [Int], start: Int, end: Int)? {
+        let s = raw.trimmingCharacters(in: .whitespaces)
+        let parts = s.split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 2, parts[1].count == 4, parts[1].allSatisfy(\.isNumber),
+              let end = Int(parts[1]), validHHMM(end),
+              let head = parseWeekly(String(parts[0])),
+              head.hhmm < end
+        else { return nil }
+        return (head.days, head.hhmm, end)
+    }
+
     // MARK: instant spec  —  "for <duration>"  |  "at <[day]HHMM>"
 
     /// Resolve an instant spec to an absolute future Date, or a human error.
