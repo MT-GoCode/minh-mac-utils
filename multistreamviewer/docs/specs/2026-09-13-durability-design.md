@@ -1,6 +1,6 @@
 # multistreamviewer: durability
 
-**Date:** 2026-09-13 · **Status:** v3 — adversarial pass + confirm pass folded (14 + 4 findings)
+**Date:** 2026-09-13 · **Status:** FINAL (as built 2026-09-14) — adversarial + confirm + implementation-review passes folded (14 + 4 + 7 findings); 8/8 XCTests green, ship verdict
 
 ## Problem
 
@@ -45,11 +45,13 @@ ThrottleInterval 30
   exit at the first upgrade install, never respawn, and MSV silently dies when the orphaned old
   instance quits). With exit 1, launchd retries every ThrottleInterval and wins the lock the
   moment the old instance is gone — self-healing, mild log noise.
-- **Install order: bootout → pkill → deploy → bootstrap** (confirm-pass New-A: pkill-first
-  would, on every v2→v2 upgrade, have KeepAlive respawn the app mid-`rm -rf`/`cp -R` — running a
-  half-copied binary or crash-looping until the later bootout). `install.sh` boots out the agent
-  if loaded (no-op on first install), then `pkill -x multistreamviewer` reaps only an unmanaged
-  legacy copy, then deploys and bootstraps. `uninstall.sh` gets the same rule: bootout **before**
+- **Install order: build → bootout → pkill → deploy → bootstrap** (confirm-pass New-A:
+  pkill-first would, on every v2→v2 upgrade, have KeepAlive respawn the app mid-`rm -rf`/`cp -R`
+  — running a half-copied binary or crash-looping until the later bootout; implementation
+  review: and building FIRST means a failed build leaves the running copy and its agent
+  untouched). `install.sh` builds the bundle, boots out the agent if loaded (no-op on first
+  install), then `pkill -x multistreamviewer` reaps only an unmanaged legacy copy, then deploys
+  and bootstraps. `uninstall.sh` gets the same rule: bootout **before**
   its existing `pkill`, else the agent respawns the app a second before `rm -rf`.
 - **SIGTERM/SIGINT/SIGHUP handlers exit 1, not 0** (finding #3: today `Engine.swift:55-64` exits
   0 on TERM, so a stray `pkill` or another tool's cleanup would count as "successful" and stay
@@ -60,8 +62,10 @@ ThrottleInterval 30
   `dl_install_launchd <plist> agent`, replacing the `post_install` `open` — then **hard-verify**
   with `launchctl print gui/<uid>/com.minh.multistreamviewer.agent` and fail the install if it
   isn't loaded (finding #12: install-lib swallows all launchctl errors, e.g. installing over SSH
-  with no console session would otherwise print ✓ and do nothing). `uninstall.sh`:
-  `launchctl bootout gui/<uid>/…agent` + remove the plist.
+  with no console session would otherwise print ✓ and do nothing). The hard verify runs
+  AFTER the full manifest (implementation review: aborting inside post_install would skip
+  demonlock spare registration). `uninstall.sh`: `launchctl bootout gui/<uid>/…agent` + remove
+  the plist.
 - MSV stays a demonlock spare (unchanged), so lockouts still don't close it.
 
 ### 2. Empty scope → fall back to all windows (decided with user)
@@ -140,7 +144,9 @@ wedge) writes `~/Library/Application Support/multistreamviewer/health.json`:
 `/Applications/...` binary path **excluding its own pid** (finding #8: bare `pgrep -x` matches
 the status process itself) + read health.json → one of `not running` /
 `running, tap alive, N windows in M desktops` / `running but tap DEAD — check Accessibility` /
-`running but heartbeat stale (hung?)`. Stale threshold **90 s** (3× cadence; a just-woken Mac
+`running but heartbeat stale (hung?)` / `running but no health file` (exit 0 only in the first
+minute after launch — after that an absent file means an unwritable state dir, exit 1;
+implementation review). Stale threshold **90 s** (3× cadence; a just-woken Mac
 briefly reads stale — say so in the output). `lastTickEpoch` vs `updatedEpoch` distinguishes
 "engine stopped ticking" from "whole main thread hung."
 
@@ -156,10 +162,13 @@ briefly reads stale — say so in the output). `lastTickEpoch` vs `updatedEpoch`
 
 MSV has no test target; these are logic-level checks + a scripted live pass:
 
-1. Extract two pure functions and cover with a tiny XCTest target (no package split — the file
-   imports no AppKit): `collapseDecision(lastCount, newCount, collapsedSince, sessionUsable,
-   now) -> (skip, acceptReality, newSince)` and the frozen-scope candidate filter
-   `(candidates, liveIDs, frozenScope, fellBack)`. Cases: one-tick blip skipped · >10 s usable
+1. Extract two pure functions and cover with a tiny XCTest target. As built this needed a
+   minimal library target `MSVCore` (one file, Foundation-only) — XCTest cannot import an
+   executable target, so "no package split" was unachievable; the executable depends on MSVCore.
+   Functions: `collapseDecision(state, newCount, sessionUsable, now) -> (skip, accepted,
+   newState)` and the frozen-scope candidate filter `maintainCandidates(candidates, liveIDs,
+   assignment, frozenScope)`. The shared `Health` struct also lives there so the status
+   writer/reader can't drift. Cases: one-tick blip skipped · >10 s usable
    collapse accepted · off-console/locked collapse never accepted (sessionUsable false) ·
    fallback list survives a window appearing in the original group · closed windows still
    pruned in fallback.

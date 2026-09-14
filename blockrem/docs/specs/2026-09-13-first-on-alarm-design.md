@@ -1,6 +1,6 @@
 # blockrem: "first-on" conditional alarms
 
-**Date:** 2026-09-13 · **Status:** v3 — adversarial pass + confirm pass folded (13 + 3 findings)
+**Date:** 2026-09-13 · **Status:** FINAL (as built 2026-09-14) — adversarial + confirm + implementation-review passes folded (13 + 3 + 3 findings); 78/78 `_selftest` green
 
 ## What
 
@@ -187,10 +187,12 @@ touches (mirror of today's weekly×onetime branch).
 
 ## Tests (`SelfTest.swift`, extends `blockrem _selftest`)
 
-The trigger is implemented as a pure helper so it's testable (finding #10): it takes
-`(alarm, firedMap, now, inUse: Bool, snoozedUntil: Double?)` and returns fire/no-fire — `tick`
-passes the real snooze; the early-return ordering is still asserted by test 2.5 exercising the
-helper's snooze parameter. **`inUse` is itself a pure function** of
+The trigger is implemented as pure helpers so it's testable (finding #10): the two-way merge is
+its own function `mergeFirstOnLatches(fired:alarms:) → (fired, alarms, mutated)` (implementation
+review: the load-bearing merge needs direct coverage, not inline daemon code), and
+`firstOnShouldFire(alarm, now, inUse: Bool, snoozedUntil: Double?)` reads the merged latch off
+the alarm — `tick` passes the real snooze; the early-return ordering is still asserted by test
+2.5 exercising the helper's snooze parameter. **`inUse` is itself a pure function** of
 `(sessionSnapshot: SessionState?, now)` implementing the freshness ∧ !locked ∧ !displayAsleep
 conjunction, tested separately (confirm-pass N3 — otherwise "stale heartbeat → no fire" would
 just pass a Bool and test nothing):
@@ -205,8 +207,9 @@ just pass a Bool and test nothing):
    - locked (or display asleep) whole window → never fires; next day resets
    - stale heartbeat → no fire; fresh unlocked heartbeat → fires
    - `snoozedUntil` 07:00, in use from 06:00 → no fire before 07:00, fires at 07:00
-   - **memory-vs-disk:** firedMap latched + disk `lastFiredEpoch == nil` (failed save / CLI
-     clobber) → no refire
+   - **memory-vs-disk (via `mergeFirstOnLatches`):** memory latched + disk nil (failed save /
+     CLI clobber) → latch restored, no refire · memory empty + disk latched (daemon restart) →
+     fired map reseeded, no double-fire · newer memory wins over older disk · deleted ids dropped
 3. `activeEnd` for `.firstOn`: inside/outside the fired window; daemon-restart resume (latch
    persisted, now mid-window → block active).
 4. Overlap (occupied span `[05:00, 09:05)` for `*0500-0900` dur 300):
