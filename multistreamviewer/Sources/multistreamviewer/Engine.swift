@@ -74,7 +74,9 @@ final class Engine {
         ht.tolerance = 5
         RunLoop.main.add(ht, forMode: .common)
         tick()
-        writeHealth()
+        // First health write is deferred: Hotkeys.start() runs after Engine.start(), so writing here
+        // would publish tapAlive=false for 30s and make `status` cry wolf right after launch.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { Engine.shared.writeHealth() }
     }
 
     /// True while our login session is on-console with the screen unlocked. Polled per tick
