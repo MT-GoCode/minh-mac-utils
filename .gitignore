@@ -41,6 +41,8 @@ wtalk/.env
 
 # ---------- nextdns-sidecar (Swift; merges the retired nextdns-discipline + nextdns-lockdown) ----------
 nextdns-sidecar/.build/
+# contains your NextDNS profile ID in the DoH URL — that ID IS the credential
+nextdns-sidecar/profiles/NextDNS-hardened.mobileconfig
 
 # ---------- betterat (bash) ----------
 # Pure source — nothing to ignore. Runtime state + credentials live OUTSIDE the repo:
@@ -58,3 +60,9 @@ multistreamviewer/.build/
 multistreamviewer/build/
 stayup/.build/
 stayup/build/
+
+# build/dist artifacts (never commit)
+blockrem/.build/
+blockrem/dist/
+blockrem/Blockrem.app/
+forcecalls/dist/

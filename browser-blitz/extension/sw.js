@@ -412,7 +412,6 @@ async function handle(m) {
           out.push({ tabId: move, ok: true, from });
         } catch (e) { out.push({ tabId: id, ok: false, reason: String((e && e.message) || e) }); }
       }
-      await dropBlanks(gid, new Set(out.filter((o) => o.ok).map((o) => o.tabId)));
       return { results: out };
     }
 
@@ -467,6 +466,27 @@ async function handle(m) {
       return { tabId: t.id, windowId: t.windowId };
     }
 
+    // Put a resumed session's tabs back. One command rather than N createTabInGroup round-trips,
+    // because the placeholder can only be dropped once every real tab exists.
+    // A url that will not open (a file:// the profile cannot read, a dead scheme) is skipped and
+    // counted, never fatal: losing one tab must not cost the user the other nine.
+    case 'reopenTabs': {
+      const gid = await requireGroup(m.slug);
+      const dest = (await chrome.tabs.query({ groupId: gid }))[0];
+      const made = [];
+      for (const url of (m.urls || [])) {
+        try {
+          const t = await chrome.tabs.create({ url, active: false,
+                                               windowId: dest ? dest.windowId : undefined });
+          await chrome.tabs.group({ tabIds: [t.id], groupId: gid });
+          await tryAttach(t.id);
+          made.push(t.id);
+        } catch { /* skipped, counted below */ }
+      }
+      await dropPlaceholder(gid, new Set(made));
+      return { reopened: made.length, skipped: (m.urls || []).length - made.length };
+    }
+
     case 'closeTab': { await chrome.tabs.remove(await inSession(m.slug, m.tabId)); return { closed: true }; }
     case 'activateTab': {
       const id = await inSession(m.slug, m.tabId);
@@ -479,17 +499,23 @@ async function handle(m) {
   }
 }
 
-// Drops the blank placeholder once a group has real tabs. Called at the END of commands that add
-// tabs, never from the push path: a push can fire mid-move, when the placeholder still reads
-// about:blank, and the sweep would close the tab about to become the first real one.
-async function dropBlanks(groupId, keep = new Set()) {
-  // `keep` is what the caller just added and already reported success for — closing one of those
-  // would make that reply a lie.
-  const tabs = (await chrome.tabs.query({ groupId }).catch(() => [])).filter((t) => !keep.has(t.id));
-  if (tabs.length < 2) return;                      // never empty a group; Chrome deletes it
-  const blank = tabs.filter((t) => (t.url || t.pendingUrl || '') === 'about:blank');
-  const kill = blank.length === tabs.length ? blank.slice(1) : blank;   // all blank? keep one
-  if (kill.length) await chrome.tabs.remove(kill.map((t) => t.id)).catch(() => {});
+// The group's first tab is a placeholder. Chrome deletes a tab group when its last tab leaves,
+// so createSession opens about:blank purely to hold the group open — substrate, not a page.
+// Once resume has put the real tabs back it has nothing on it, so it goes.
+//
+// ONLY resume calls this. grab-tab and createTabInGroup deliberately leave the placeholder
+// alone: closing a tab out from under Playwright mid-command dangles whatever it holds as the
+// current page, and neither of those commands is worth that risk.
+//
+// The predecessor filtered `added` out BEFORE counting and then refused to act on fewer than two
+// tabs, so on the one path that mattered — resume, where every other tab is freshly added — it
+// counted one tab and returned. Count the whole group; `added` only says which blanks are real.
+async function dropPlaceholder(groupId, added) {
+  if (!added.size) return;                       // nothing replaced it; removing it kills the group
+  const tabs = await chrome.tabs.query({ groupId }).catch(() => []);
+  const blank = tabs.filter((t) => !added.has(t.id) && (t.url || t.pendingUrl || '') === 'about:blank');
+  if (!blank.length || blank.length >= tabs.length) return;    // never empty the group
+  await chrome.tabs.remove(blank.map((t) => t.id)).catch(() => {});
 }
 
 // Returns the tabId only if it really is in that session's group. `slug` is optional: with none,

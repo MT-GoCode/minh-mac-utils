@@ -42,6 +42,7 @@ const SLUG_RE = /^[a-zA-Z0-9._-]{1,64}$/;
 const LAUNCH_URL = (token) => `data:text/html,<title>browser-blitz</title><h2>bb:${token}</h2>`;
 
 const PING_MS = 15000;            // inside the ~30s MV3 worker kill window
+const PING_MISS_MAX = 2;          // 2 x PING_MS of silence = worker died with the socket still up
 const LAUNCH_TIMEOUT_MS = 15000;
 const PROBE_TIMEOUT_MS = 2000;    // must stay well under LAUNCH_TIMEOUT_MS
 const STABILIZE_MS = 1000;
@@ -226,11 +227,20 @@ wss.on('connection', (ws) => {
     if (m.type === 'hello') {
       if (typeof m.id !== 'string' || !m.id) return;
       identityId = m.id;
-      profiles.set(identityId, { ws, build: m.build || '?' });
+      profiles.set(identityId, { ws, build: m.build || '?', missed: 0 });
       log('◆ hello', { id: identityId, build: m.build });
       return;
     }
     if (!identityId) return;                   // nothing before hello: no identity to attribute it to
+
+    // Any frame at all proves the worker is running this instant. The ping below is fire-and-
+    // forget by design (its reply is not in `pending`), so this is the ONLY place a pong counts
+    // for anything: without it a worker Chrome killed keeps its socket, answers nothing, and
+    // stays 'connected' forever while every call burns a full timeout.
+    {
+      const live = profiles.get(identityId);
+      if (live && live.ws === ws) live.missed = 0;
+    }
 
     if (m.type === 'sessions') return onSessions(identityId, m.sessions || []);
     if (m.type === 'closedDuplicate') return log('◆ closedDuplicate', m);
@@ -811,8 +821,19 @@ const cli = {
       const r = await callExt(p.id, { type: 'createSession', slug: a.slug, colour: colourFor(a.slug), reuseTabId: p.launchTabId });
       if (!r.ok) throw new Error(r.error);
       if (p.launchTabId != null) used.consumed = true;
-      // Reopening is Playwright's job now — it is attached the moment the group is live.
-      return { slug: a.slug, profile: rec.profileDir, adopted: false, saved: rec.tabs.length, cdp: cdpUrlFor(a.slug) };
+      // Put the tabs back. bb is what remembers them, so bb is what restores them — this used to
+      // be left to Playwright, which never did it, so resume reported `saved: 3` and handed back
+      // an empty group. about:blank entries are dropped: they are the placeholder from last time,
+      // not a page anyone wants back.
+      const urls = rec.tabs.map((t) => t.url).filter((u) => u && u !== 'about:blank');
+      let reopened = 0, skipped = 0;
+      if (urls.length) {
+        const rr = await callExt(p.id, { type: 'reopenTabs', slug: a.slug, urls });
+        if (rr.ok) ({ reopened, skipped } = rr.result);
+        else skipped = urls.length;          // the group is live either way; say so and move on
+      }
+      return { slug: a.slug, profile: rec.profileDir, adopted: false,
+               reopened, ...(skipped ? { skipped } : {}), cdp: cdpUrlFor(a.slug) };
     });
   }),
 
@@ -926,7 +947,17 @@ startCliSocket();
 // `open -na` just to wake it — a window blip, and a focus steal if the launch foregrounds.
 // A worker parked on a WebSocket costs approximately nothing; interrupting someone does.
 setInterval(() => {
-  for (const [, p] of profiles) {
+  for (const [id, p] of [...profiles]) {
+    // Two unanswered pings is 30s of silence - past the ~30s MV3 kill window, so the worker is
+    // gone even though the socket lingers (a dead worker socket accepts sends without error).
+    // Terminate it: the close handler drops it from profiles, extension-status stops lying, and
+    // ensureProfileReady cold-launches to wake it instead of probing a corpse.
+    if (p.missed >= PING_MISS_MAX) {
+      log('◆ stale', { id, missed: p.missed });
+      try { p.ws.terminate(); } catch {}
+      continue;
+    }
+    p.missed++;
     try { p.ws.send(JSON.stringify({ type: 'ping', id: seq++ })); } catch {}
   }
 }, PING_MS);

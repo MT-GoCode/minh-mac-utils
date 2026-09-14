@@ -39,12 +39,19 @@ final class Daemon {
         processMarkers(now: now, euid: euid)
         runDelayQueue(now: now, euid: euid, delay: cfg.clampedDelay)
 
-        if isArmedFlag() {
+        // Publish BEFORE the marker phase too: processMarkers can run for minutes on a bulk block, and
+        // a snapshot only written at tick end would age past stateStaleAfter and read as a dead daemon.
+        Lockdown.publishState(armed: isArmedFlag())
+
+        let armed = isArmedFlag()
+        if armed {
             Lockdown.assertPF()
             pstate = Lockdown.assertProfile(prev: pstate)
         } else {
             Lockdown.restorePF()
         }
+        // AFTER enforcing, so the snapshot describes this tick's outcome rather than the last one.
+        Lockdown.publishState(armed: armed)
     }
 
     /// Consume the four inbox markers (owner-checked via MarkerIO). No enforced uid (fresh install) ⇒

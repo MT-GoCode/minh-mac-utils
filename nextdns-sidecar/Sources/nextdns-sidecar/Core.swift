@@ -13,6 +13,7 @@ enum Paths {
     static let supportDir  = "/Library/Application Support/NextDNSSidecar"
     static let armedFile   = supportDir + "/armed"
     static let pendingFile = supportDir + "/delayed-adds.json"   // 0644 root: domain-keyed pending allows
+    static let pfStateFile = supportDir + "/pf-state.json"       // 0644 root: pf snapshot for the no-sudo `status`
     static let inboxDir    = supportDir + "/inbox"               // USER-owned: markers dropped here (no sudo)
     static let mArm        = inboxDir + "/arm"                   // flag: request enforcement ON
     static let mBlock      = inboxDir + "/block"                 // contents = domains to block (immediate)
@@ -147,6 +148,20 @@ enum Proc {
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
         do { try p.run(); p.waitUntilExit(); return p.terminationStatus } catch { return -1 }
+    }
+    /// stdout AND exit status, for probes where "the command failed" and "the command succeeded but
+    /// printed nothing" must not collapse into one verdict.
+    static func captureStatus(_ path: String, _ args: [String]) -> (out: String, status: Int32) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: path)
+        p.arguments = args
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return ("", -1) }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return (String(data: data, encoding: .utf8) ?? "", p.terminationStatus)
     }
     static func capture(_ path: String, _ args: [String]) -> String {
         let p = Process()

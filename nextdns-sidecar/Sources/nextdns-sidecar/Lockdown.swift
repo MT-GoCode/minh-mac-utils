@@ -9,8 +9,22 @@ enum Lockdown {
     static let route  = "/sbin/route"
     static let scutil = "/usr/sbin/scutil"
 
+    /// /dev/pf is root-only. As a normal user pfctl fails, `Proc.capture` discards stderr, and the
+    /// resulting EMPTY stdout reads as "not enabled" — so these two are meaningless unless `isRoot`.
+    /// `printStatus` used to call them ungated and therefore reported a healthy armed system as
+    /// "pf: disabled / not loaded" on every no-sudo run. Gate every DISPLAY use on `isRoot`; the
+    /// daemon (always root) may call them directly.
+    static var isRoot: Bool { geteuid() == 0 }
     static func pfEnabled()      -> Bool { Proc.capture(pfctl, ["-s", "info"]).contains("Status: Enabled") }
     static func pfOursLoaded()   -> Bool { Proc.capture(pfctl, ["-sr"]).contains(marker) }
+
+    /// A published snapshot older than this is reported as `unknown`, not as its last value — a stopped
+    /// enforcerd must never look like a healthy one. Sized well above one tick, NOT 6*interval: a tick
+    /// that consumes a bulk `domains block` marker runs one synchronous API call per domain and can
+    /// last minutes, and a healthy-but-busy daemon reading as dead is the same false alarm this gauge
+    /// exists to kill. The daemon also publishes at the TOP of each tick, so the worst case is one
+    /// marker phase, not one full tick.
+    static let stateStaleAfter = 120.0
     static func profilePresent() -> Bool { FileManager.default.fileExists(atPath: Paths.profilePlist) }
     /// The no-browser-doh profile installed? It forces Secure-DNS OFF for all common browsers in one
     /// profile; Chrome's managed pref (always a payload, world-readable) is the non-root signal it's on.
@@ -40,6 +54,38 @@ enum Lockdown {
             Proc.run(pfctl, ["-d"])
             logLine("DISARMED: restored default pf ruleset and disabled pf")
         }
+    }
+
+    // ---- published pf state (lets the no-sudo `status` tell "off" apart from "couldn't look") ----
+
+    /// What the ROOT daemon last observed. Written world-readable every tick so `status`, a no-sudo
+    /// verb, reports something it actually saw rather than the artifact of a pfctl call it was never
+    /// permitted to make.
+    struct PFState: Codable {
+        var enabled: Bool
+        var oursLoaded: Bool
+        var armed: Bool
+        var at: Double                                    // epoch seconds, stamped by the daemon
+        var age: Double { max(0, nowEpoch() - at) }        // computed ⇒ not encoded
+    }
+
+    /// Root-only; a no-op anywhere else. Called on EVERY tick (not just on change) so that snapshot
+    /// age doubles as a liveness signal for the daemon itself.
+    static func publishState(armed: Bool) {
+        guard isRoot else { return }
+        let s = PFState(enabled: pfEnabled(), oursLoaded: pfOursLoaded(), armed: armed, at: nowEpoch())
+        let e = JSONEncoder(); e.outputFormatting = [.sortedKeys]
+        guard let d = try? e.encode(s) else { return }
+        try? d.write(to: URL(fileURLWithPath: Paths.pfStateFile), options: .atomic)
+        // .atomic writes a temp file then renames, so the mode has to be re-asserted: if this ends up
+        // root-only, status silently falls back to "unknown" and we're halfway back to the old bug.
+        try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: Paths.pfStateFile)
+    }
+
+    static func readState() -> PFState? {
+        guard let d = try? Data(contentsOf: URL(fileURLWithPath: Paths.pfStateFile)),
+              let s = try? JSONDecoder().decode(PFState.self, from: d) else { return nil }
+        return s
     }
 
     // ---- captive-portal door ----
@@ -107,11 +153,10 @@ enum Lockdown {
     // ---- status (no sudo) ----
 
     static func printStatus() {
-        let red = "\u{1b}[31m", rst = "\u{1b}[0m"
+        let red = "\u{1b}[31m", dim = "\u{1b}[2m", rst = "\u{1b}[0m"
         print("== NextDNS Sidecar :: network lockdown ==")
         print("  state:        " + (isArmedFlag() ? "ARMED (enforcing)" : "disarmed"))
-        print("  pf:           " + (pfEnabled() ? "enabled" : "disabled"))
-        print("  pf rules:     " + (pfOursLoaded() ? "loaded" : "not loaded"))
+        printPFGauge(red: red, dim: dim, rst: rst)
         if profilePresent() {
             print("  DoH profile:  installed")
             print("  DoH server:   \(profileURL())")
@@ -123,6 +168,26 @@ enum Lockdown {
         print("  resolution:   " + (resolvesSystem() ? "working" : "NOT resolving"))
         let daemon = !Proc.capture("/bin/launchctl", ["print", "system/\(Paths.label)"]).isEmpty
         print("  daemon:       " + (daemon ? "loaded" : "NOT loaded"))
+    }
+
+    /// The pf gauge: three sources in descending authority, with `unknown` as a FIRST-CLASS answer.
+    /// Printing "disabled" when we merely failed to look is exactly the bug this replaces — it made a
+    /// fully-enforcing system read as off after every reboot, which trained the operator to ignore it.
+    private static func printPFGauge(red: String, dim: String, rst: String) {
+        func report(_ enabled: Bool, _ loaded: Bool, _ note: String) {
+            print("  pf:           " + (enabled ? "enabled" : "disabled") + "\(dim)  \(note)\(rst)")
+            print("  pf rules:     " + (loaded ? "loaded" : "not loaded"))
+        }
+        func unknown(_ why: String) {
+            print("  pf:           \(red)unknown\(rst)\(dim)  \(why)\(rst)")
+            print("  pf rules:     \(red)unknown\(rst)")
+        }
+        if isRoot { report(pfEnabled(), pfOursLoaded(), "(live)"); return }
+        guard let s = readState() else {
+            unknown("(no snapshot — daemon not running, or pre-dates this build)"); return
+        }
+        if s.age < stateStaleAfter { report(s.enabled, s.oursLoaded, "(daemon snapshot, \(Int(s.age))s ago)") }
+        else { unknown("(snapshot \(Int(s.age))s stale — is enforcerd running?)") }
     }
 
     // ---- resolution + profile URL helpers ----
@@ -153,6 +218,35 @@ enum Lockdown {
         return real.isEmpty
     }
 
+    /// A real resolved address from `dig +short`, or nil if the lookup produced none.
+    ///
+    /// `+short` prints only answers on SUCCESS — but on failure dig still writes its banner and
+    /// diagnostics to STDOUT (`; <<>> DiG 9.10.6 <<>> ...`, `;; connection timed out; no servers could
+    /// be reached`). The old check took `.split("\n").first`, so a correctly BLOCKED resolver handed
+    /// back the banner line, which is non-empty, and got reported as `LEAKS -> ; <<>> DiG 9.10.6`.
+    /// Every successful block looked like a failure. Only an actual address counts as resolution.
+    /// .answered = a real address came back; .blocked = dig ran and got nothing; .broken = dig itself
+    /// couldn't run. The third case must NOT read as "blocked" — that's the unearned PASS this whole
+    /// pass is about, and `Proc.capture` alone can't tell it apart because it discards exit status.
+    enum DigOutcome { case answered(String), blocked, broken(Int32) }
+
+    static func digAnswer(_ server: String, _ host: String = "example.com") -> DigOutcome {
+        let (out, rc) = Proc.captureStatus("/usr/bin/dig", ["+time=3", "+tries=1", "@\(server)", host, "+short"])
+        if rc == -1 { return .broken(rc) }                       // couldn't exec dig at all
+        if let ip = out.split(separator: "\n")
+            .map({ String($0).trimmingCharacters(in: .whitespaces) })
+            .first(where: isIPLiteral) { return .answered(ip) }
+        return .blocked
+    }
+
+    /// Strict: dotted-quad or colon-hex only. dig's `;`-prefixed diagnostics and CNAME targets are not
+    /// evidence that anything resolved.
+    static func isIPLiteral(_ s: String) -> Bool {
+        if s.isEmpty || s.hasPrefix(";") { return false }
+        var v4 = in_addr(), v6 = in6_addr()
+        return inet_pton(AF_INET, s, &v4) == 1 || inet_pton(AF_INET6, s, &v6) == 1
+    }
+
     // ---- reload (root) + selftest (no sudo) ----
 
     /// Re-validate + reload the pf ruleset, picking up on-disk table edits without a disarm/arm cycle.
@@ -176,17 +270,34 @@ enum Lockdown {
         print("")
 
         for server in ["8.8.8.8", "1.1.1.1"] {
-            let ans = Proc.capture("/usr/bin/dig", ["+time=3", "+tries=1", "@\(server)", "example.com", "+short"])
-                .split(separator: "\n").first.map { String($0).trimmingCharacters(in: .whitespaces) } ?? ""
-            if ans.isEmpty { ok("plain DNS to \(server) is blocked") }
-            else if armed { bad("plain DNS to \(server) LEAKS -> \(ans)") }
-            else { note("plain DNS to \(server) open (\(ans))") }
+            switch digAnswer(server) {
+            case .answered(let ans):
+                if armed { bad("plain DNS to \(server) LEAKS -> \(ans)") }
+                else { note("plain DNS to \(server) open (\(ans))") }
+            case .blocked:      ok("plain DNS to \(server) is blocked")
+            case .broken(let rc): note("plain DNS to \(server) INCONCLUSIVE — dig failed to run (rc=\(rc))")
+            }
         }
-        let doh = Proc.capture("/usr/bin/curl", ["-s", "--max-time", "6", "-H", "accept: application/dns-json",
-                  "https://1.1.1.1/dns-query?name=example.com&type=A"])
-        if doh.isEmpty { ok("DoH to https://1.1.1.1 is blocked") }
-        else if armed { bad("DoH to https://1.1.1.1 LEAKS") }
-        else { note("DoH to https://1.1.1.1 open") }
+        // Empty stdout used to mean "blocked", but curl also prints nothing when the network is simply
+        // broken — a PASS you have not earned. Split it: non-zero exit = genuinely couldn't connect;
+        // a parsed DNS answer = a real leak; anything else is inconclusive and says so.
+        let (dohOut, dohRC) = Proc.captureStatus("/usr/bin/curl",
+                  ["-s", "--max-time", "6", "-H", "accept: application/dns-json",
+                   "https://1.1.1.1/dns-query?name=example.com&type=A"])
+        // rc != 0 alone can't distinguish "pf dropped it" from "the network is down" — both give 28.
+        // Gate the PASS on a control probe; without it a broken network scores as protection.
+        // And while armed, completing the TLS handshake at all IS the leak: curl returns 0 on HTTP
+        // 4xx/5xx too, so judging by body would let a rate-limited but REACHABLE 1.1.1.1 read as safe.
+        let netUp = resolvesSystem()
+        if dohRC == 0 {
+            if armed { bad("DoH to https://1.1.1.1 LEAKS (reachable, rc=0)") }
+            else { note("DoH to https://1.1.1.1 open") }
+        } else if netUp {
+            ok("DoH to https://1.1.1.1 is blocked (curl rc=\(dohRC))")
+        } else {
+            note("DoH to https://1.1.1.1 INCONCLUSIVE — curl rc=\(dohRC) but system DNS is down too")
+        }
+        _ = dohOut
 
         if Proc.run("/usr/bin/nc", ["-z", "-G", "3", "-w", "3", "1.1.1.1", "853"]) == 0 {
             if armed { bad("DoT 853 to 1.1.1.1 reachable") } else { note("DoT 853 to 1.1.1.1 reachable (open)") }
