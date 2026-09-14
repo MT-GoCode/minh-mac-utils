@@ -14,6 +14,12 @@ final class Enforcer {
     private var lastWatchdog = Date.distantPast
     private static let watchdogSeconds = 5.0
 
+    /// Memory-authoritative first-on latches (alarm id → fired epoch). Merged two-way with the
+    /// on-disk `lastFiredEpoch` each tick: memory survives a silently failed save (which would
+    /// otherwise refire every second — a rolling block outliving the 1h cap) and a CLI write that
+    /// clobbered the latch; disk survives a daemon restart.
+    private var fired: [Int: Double] = [:]
+
     func run() {
         if geteuid() != 0 { log("WARNING: not running as root — the watchdog (relaunch agent) will fail") }
         log("blockrem enforcerd starting (uid \(getuid()))")
@@ -30,7 +36,7 @@ final class Enforcer {
         // 1. Prune fully-past onetime alarms.
         var alarms = ScheduleStore.load()
         let pruned = alarms.filter { !$0.isExpiredOnetime(now: now) }
-        if pruned.count != alarms.count { ScheduleStore.save(pruned); alarms = pruned }
+        if pruned.count != alarms.count { saveSchedule(pruned); alarms = pruned }
 
         // Only guard the configured console session. If someone else is at the console (or nobody),
         // publish "inactive" and don't fight for an agent that isn't ours.
@@ -49,6 +55,30 @@ final class Enforcer {
             try? SnoozeStore.set(nil)   // expired → clear
         }
 
+        // 2.5 First-on alarms. Placement is load-bearing: this must sit AFTER the snooze
+        // early-return above (snooze gates the trigger — deferred-fire semantics) and BEFORE
+        // activeBlock() (the merged latch is what activeEnd reads).
+        var mutated = false
+        for i in alarms.indices {
+            guard case .firstOn = alarms[i].kind else { continue }
+            let merged = max(fired[alarms[i].id] ?? 0, alarms[i].lastFiredEpoch ?? 0)
+            guard merged > 0 else { continue }
+            fired[alarms[i].id] = merged
+            if alarms[i].lastFiredEpoch != merged { alarms[i].lastFiredEpoch = merged; mutated = true }
+        }
+        let liveIDs = Set(alarms.map { $0.id })
+        fired = fired.filter { liveIDs.contains($0.key) }   // deleted alarm drops its latch
+        let inUse = sessionInUse(SessionStore.read(), now: now.timeIntervalSince1970)
+        for i in alarms.indices
+        where firstOnShouldFire(alarms[i], now: now, inUse: inUse, snoozedUntil: nil) {
+            let t = now.timeIntervalSince1970
+            fired[alarms[i].id] = t
+            alarms[i].lastFiredEpoch = t
+            mutated = true
+            log("first-on [\(alarms[i].id)] \"\(alarms[i].label)\" fired")
+        }
+        if mutated { saveSchedule(alarms) }
+
         // 3. Compute + publish the winning block.
         if let blk = activeBlock(alarms, now: now) {
             ActiveStore.write(ActiveState(updatedEpoch: now.timeIntervalSince1970, active: true,
@@ -58,6 +88,15 @@ final class Enforcer {
         }
 
         watchdog(uid: uid, now: now)
+    }
+
+    /// Save the schedule and hand ownership back to the enforced user — a root-atomic write
+    /// leaves the file root-owned in the user's dataDir, breaking the documented ownership story.
+    private func saveSchedule(_ alarms: [Alarm]) {
+        ScheduleStore.save(alarms)
+        if let uid = settings.enforcedUID() {
+            chown(Paths.scheduleFile, uid, gid_t(bitPattern: ~0))   // gid -1 = leave unchanged
+        }
     }
 
     /// Keep the GUI agent alive. KeepAlive restarts a crashed/killed process on its own, but a user

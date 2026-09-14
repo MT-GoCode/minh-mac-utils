@@ -79,9 +79,40 @@ final class AgentApp: NSObject, NSApplicationDelegate {
         return l
     }
 
+    // MARK: session heartbeat — lock/display state for the daemon's first-on gate
+
+    private var lastSessionPoll = Date.distantPast
+    private var lastSessionWrite = Date.distantPast
+    private var lastSession: SessionState?
+
+    /// Poll (never trust lock/unlock notifications — they're private, best-effort, and one missed
+    /// event would poison the whole day). Inconclusive session dictionary ⇒ locked: never let the
+    /// daemon fire a first-on alarm it can't be sure anyone would see.
+    private func pollSession() {
+        let now = Date()
+        guard lastSession == nil || now.timeIntervalSince(lastSessionPoll) >= 5 else { return }
+        lastSessionPoll = now
+        let locked: Bool
+        if let d = CGSessionCopyCurrentDictionary() as? [String: Any] {
+            locked = (d["CGSSessionScreenIsLocked"] as? Bool) ?? false
+        } else {
+            locked = true
+        }
+        let asleep = CGDisplayIsAsleep(CGMainDisplayID()) != 0
+        let changed = lastSession.map { $0.locked != locked || $0.displayAsleep != asleep } ?? true
+        if changed || now.timeIntervalSince(lastSessionWrite) >= 30 {
+            let s = SessionState(updatedEpoch: now.timeIntervalSince1970,
+                                 locked: locked, displayAsleep: asleep)
+            SessionStore.write(s)
+            lastSession = s
+            lastSessionWrite = now
+        }
+    }
+
     // MARK: tick — render from active.json
 
     private func tick() {
+        pollSession()
         let st = ActiveStore.read()
         let now = nowEpoch()
         let isActive = (st?.active ?? false) && (st?.endsEpoch ?? 0) > now   // missing/garbage ⇒ fail open

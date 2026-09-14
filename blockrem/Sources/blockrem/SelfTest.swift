@@ -94,6 +94,88 @@ func runSelfTest() {
     check("weekly×onetime miss", !alarmsOverlap(w1, Alarm(id: 8, label: "o", durationSec: 300,
             kind: .onetime(start: date(2026, 6, 24, 9, 0).timeIntervalSince1970))))
 
+    // --- parseFirstOn ---
+    check("fo *0500-0900", TimeSpec.parseFirstOn("*0500-0900").map { $0.days.count == 7 && $0.start == 500 && $0.end == 900 } ?? false)
+    check("fo MWF0700-1000", TimeSpec.parseFirstOn("MWF0700-1000").map { $0.days == [2,4,6] && $0.start == 700 && $0.end == 1000 } ?? false)
+    check("fo reversed", TimeSpec.parseFirstOn("*0900-0500") == nil)
+    check("fo equal", TimeSpec.parseFirstOn("*0500-0500") == nil)
+    check("fo no dash", TimeSpec.parseFirstOn("*05000900") == nil)
+    check("fo bad day", TimeSpec.parseFirstOn("X0500-0900") == nil)
+    check("fo bad hhmm", TimeSpec.parseFirstOn("*2430-2500") == nil)
+
+    // --- sessionInUse (pure freshness ∧ !locked ∧ !displayAsleep) ---
+    let t0 = 1_000_000.0
+    func sess(_ age: Double, _ locked: Bool, _ asleep: Bool) -> SessionState {
+        SessionState(updatedEpoch: t0 - age, locked: locked, displayAsleep: asleep)
+    }
+    check("inUse fresh unlocked", sessionInUse(sess(10, false, false), now: t0))
+    check("inUse stale", !sessionInUse(sess(120, false, false), now: t0))
+    check("inUse missing", !sessionInUse(nil, now: t0))
+    check("inUse locked", !sessionInUse(sess(10, true, false), now: t0))
+    check("inUse display asleep", !sessionInUse(sess(10, false, true), now: t0))
+
+    // --- firstOnShouldFire (Wed 2026-06-24; window *0500-0900, 300s) ---
+    func fo(_ fired: Double? = nil, days: [Int] = [1,2,3,4,5,6,7]) -> Alarm {
+        var a = Alarm(id: 9, label: "fo", durationSec: 300, kind: .firstOn(days: days, startHHMM: 500, endHHMM: 900))
+        a.lastFiredEpoch = fired
+        return a
+    }
+    let wed0500 = date(2026, 6, 24, 5, 0)
+    check("fo fires at window start", firstOnShouldFire(fo(), now: wed0500, inUse: true, snoozedUntil: nil))
+    check("fo fires mid-window", firstOnShouldFire(fo(), now: date(2026, 6, 24, 7, 23), inUse: true, snoozedUntil: nil))
+    check("fo not before window", !firstOnShouldFire(fo(), now: date(2026, 6, 24, 4, 59), inUse: true, snoozedUntil: nil))
+    check("fo not at window end", !firstOnShouldFire(fo(), now: date(2026, 6, 24, 9, 0), inUse: true, snoozedUntil: nil))
+    check("fo not when not in use", !firstOnShouldFire(fo(), now: wed0500, inUse: false, snoozedUntil: nil))
+    check("fo wrong day", !firstOnShouldFire(fo(days: [2]), now: wed0500, inUse: true, snoozedUntil: nil))
+    let fired0700 = date(2026, 6, 24, 7, 0).timeIntervalSince1970
+    check("fo no refire same day", !firstOnShouldFire(fo(fired0700), now: date(2026, 6, 24, 8, 0), inUse: true, snoozedUntil: nil))
+    let firedYesterday = date(2026, 6, 23, 7, 0).timeIntervalSince1970
+    check("fo next day resets", firstOnShouldFire(fo(firedYesterday), now: wed0500, inUse: true, snoozedUntil: nil))
+    let snUntil = date(2026, 6, 24, 7, 0).timeIntervalSince1970
+    check("fo snoozed no fire", !firstOnShouldFire(fo(), now: date(2026, 6, 24, 6, 0), inUse: true, snoozedUntil: snUntil))
+    check("fo fires when snooze clears", firstOnShouldFire(fo(), now: date(2026, 6, 24, 7, 0), inUse: true, snoozedUntil: snUntil))
+    // memory-vs-disk: a clobbered disk latch (nil) with memory latched is merged BEFORE the
+    // helper runs; the helper itself must honor whatever merged value it's handed.
+    check("fo merged latch blocks refire", !firstOnShouldFire(fo(fired0700), now: date(2026, 6, 24, 7, 30), inUse: true, snoozedUntil: nil))
+
+    // --- activeEnd for firstOn (block resume after daemon restart = latch persisted) ---
+    check("fo block active mid", fo(fired0700).activeEnd(now: date(2026, 6, 24, 7, 2)) == fired0700 + 300)
+    check("fo block over", fo(fired0700).activeEnd(now: date(2026, 6, 24, 7, 6)) == nil)
+    check("fo unfired inactive", fo().activeEnd(now: date(2026, 6, 24, 7, 2)) == nil)
+
+    // --- overlap: firstOn *0500-0900 dur 300 occupies [05:00, 09:05) each day ---
+    let foAll = fo()
+    func wk(_ hhmm: Int, dur: Int = 30) -> Alarm {
+        Alarm(id: 10, label: "w", durationSec: dur, kind: .weekly(days: [1,2,3,4,5,6,7], hhmm: hhmm))
+    }
+    check("fo×wk 0830 clash", alarmsOverlap(foAll, wk(830)))
+    check("fo×wk 0904 clash", alarmsOverlap(foAll, wk(904)))
+    check("fo×wk 0906 ok", !alarmsOverlap(foAll, wk(906)))
+    check("fo×wk 0910 ok", !alarmsOverlap(foAll, wk(910)))
+    check("fo×wk 0456 dur300 clash", alarmsOverlap(foAll, wk(456, dur: 300)))
+    check("fo×wk 0454 dur300 ok", !alarmsOverlap(foAll, wk(454, dur: 300)))
+    check("fo×once inside", alarmsOverlap(foAll, Alarm(id: 11, label: "o", durationSec: 60,
+            kind: .onetime(start: date(2026, 6, 24, 8, 0).timeIntervalSince1970))))
+    check("fo×once outside", !alarmsOverlap(foAll, Alarm(id: 12, label: "o", durationSec: 60,
+            kind: .onetime(start: date(2026, 6, 24, 10, 0).timeIntervalSince1970))))
+    let foLate = Alarm(id: 13, label: "fo2", durationSec: 300, kind: .firstOn(days: [1,2,3,4,5,6,7], startHHMM: 900, endHHMM: 1100))
+    let foLater = Alarm(id: 14, label: "fo3", durationSec: 300, kind: .firstOn(days: [1,2,3,4,5,6,7], startHHMM: 910, endHHMM: 1100))
+    check("fo×fo overlapping", alarmsOverlap(foAll, foLate))       // [05:00,09:05) ∩ [09:00,…)
+    check("fo×fo disjoint", !alarmsOverlap(foAll, foLater))        // [09:10,…) misses 09:05
+
+    // --- Codable migration ---
+    let oldJSON = """
+    [{"id":1,"label":"legacy","durationSec":30,"kind":{"weekly":{"days":[4],"hhmm":800}}}]
+    """.data(using: .utf8)!
+    let decodedOld = try? JSONDecoder().decode([Alarm].self, from: oldJSON)
+    check("old schedule decodes", decodedOld?.count == 1 && decodedOld?[0].lastFiredEpoch == nil)
+    let enc = JSONEncoder()
+    if let data = try? enc.encode([fo(fired0700)]),
+       let back = try? JSONDecoder().decode([Alarm].self, from: data) {
+        check("firstOn round-trips with latch", back[0].lastFiredEpoch == fired0700
+              && { if case .firstOn(_, 500, 900) = back[0].kind { return true }; return false }())
+    } else { check("firstOn round-trips with latch", false) }
+
     print("\n\(pass) passed, \(fail) failed")
     exit(fail == 0 ? 0 : 1)
 }

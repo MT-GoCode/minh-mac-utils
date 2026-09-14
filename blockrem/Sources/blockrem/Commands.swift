@@ -43,13 +43,21 @@ func runList() {
     }
     if alarms.isEmpty { print("no alarms set — add one with `blockrem set …` (see `blockrem help`)."); return }
     print("blockrem alarms (\(alarms.count)):")
+    let cal = Calendar.current
     for a in alarms.sorted(by: { $0.id < $1.id }) {
-        let when: String
+        var when: String
         switch a.kind {
         case .weekly(let days, let hhmm):
             when = "weekly  \(TimeSpec.letters(for: days)) \(TimeSpec.hhmmString(hhmm))"
         case .onetime(let start):
             when = "once    \(fmtInstant(start))"
+        case .firstOn(let days, let s, let e):
+            when = "first-on \(TimeSpec.letters(for: days)) \(TimeSpec.hhmmString(s))–\(TimeSpec.hhmmString(e))"
+            if let fired = a.lastFiredEpoch,
+               cal.isDate(Date(timeIntervalSince1970: fired), inSameDayAs: now) {
+                let f = DateFormatter(); f.dateFormat = "h:mm a"
+                when += " · fired today \(f.string(from: Date(timeIntervalSince1970: fired)))"
+            }
         }
         print(String(format: "  [%d]  %-32@  %5ds   \"%@\"", a.id, when as NSString, a.durationSec, a.label))
     }
@@ -60,8 +68,9 @@ func runList() {
 func runSet(_ args: [String]) {
     let f = parseFlags(args)
     let hasWeekly = f["weekly"] != nil, hasOnetime = f["onetime"] != nil
-    guard hasWeekly != hasOnetime else {
-        fail("✗ give exactly one of --weekly or --onetime.\n" + usageSet)
+    let hasFirstOn = f["first-on"] != nil
+    guard [hasWeekly, hasOnetime, hasFirstOn].filter({ $0 }).count == 1 else {
+        fail("✗ give exactly one of --weekly, --onetime, or --first-on.\n" + usageSet)
     }
     guard let label = f["label"], !label.trimmingCharacters(in: .whitespaces).isEmpty else {
         fail("✗ --label \"…\" is required.\n" + usageSet)
@@ -79,6 +88,11 @@ func runSet(_ args: [String]) {
             fail("✗ --weekly must be <DAYS|*><HHMM>, e.g. R0800, *0800, MWF0730 (days M T W R F S U, R=Thu U=Sun).")
         }
         kind = .weekly(days: parsed.days, hhmm: parsed.hhmm)
+    } else if hasFirstOn {
+        guard let parsed = TimeSpec.parseFirstOn(f["first-on"] ?? "") else {
+            fail("✗ --first-on must be <DAYS|*><HHMM>-<HHMM> with start < end (same day, no midnight cross), e.g. *0500-0900, MTWRF0700-1000.")
+        }
+        kind = .firstOn(days: parsed.days, startHHMM: parsed.start, endHHMM: parsed.end)
     } else {
         switch TimeSpec.parseWhen(f["onetime"] ?? "") {
         case .failure(let why): fail("✗ --onetime \(why)")
@@ -90,16 +104,27 @@ func runSet(_ args: [String]) {
     let id = ScheduleStore.nextID(alarms)
     let candidate = Alarm(id: id, label: label, durationSec: dur, kind: kind)
     if let clash = alarms.first(where: { alarmsOverlap($0, candidate) }) {
-        fail("✗ that overlaps existing alarm [\(clash.id)] \"\(clash.label)\" — delete it (blockrem delete \(clash.id)) or pick a non-overlapping time.")
+        var msg = "✗ that overlaps existing alarm [\(clash.id)] \"\(clash.label)\" (\(describeWhen(clash)))"
+        if isFirstOn(candidate) || isFirstOn(clash) {
+            msg += " — a first-on alarm occupies its WHOLE window plus the block length for overlap purposes"
+        }
+        fail(msg + ". Delete it (blockrem delete \(clash.id)) or pick a non-overlapping time.")
     }
     alarms.append(candidate)
     ScheduleStore.save(alarms)
+    print("✓ added [\(id)] \(describeWhen(candidate)) for \(dur)s — \"\(label)\"")
+}
 
-    switch kind {
+private func isFirstOn(_ a: Alarm) -> Bool { if case .firstOn = a.kind { return true }; return false }
+
+private func describeWhen(_ a: Alarm) -> String {
+    switch a.kind {
     case .weekly(let d, let hhmm):
-        print("✓ added [\(id)] weekly \(TimeSpec.letters(for: d)) \(TimeSpec.hhmmString(hhmm)) for \(dur)s — \"\(label)\"")
+        return "weekly \(TimeSpec.letters(for: d)) \(TimeSpec.hhmmString(hhmm))"
     case .onetime(let start):
-        print("✓ added [\(id)] once \(fmtInstant(start)) for \(dur)s — \"\(label)\"")
+        return "once \(fmtInstant(start))"
+    case .firstOn(let d, let s, let e):
+        return "first-on \(TimeSpec.letters(for: d)) \(TimeSpec.hhmmString(s))–\(TimeSpec.hhmmString(e))"
     }
 }
 
@@ -146,6 +171,7 @@ private let usageSet = """
 USAGE:
   blockrem set --weekly <DAYS|*><HHMM> --label "…" --duration <5-3600>
   blockrem set --onetime "for <dur>" | "at <[day]HHMM>" --label "…" --duration <5-3600>
+  blockrem set --first-on <DAYS|*><HHMM>-<HHMM> --label "…" --duration <5-3600>
   (--duration is the block length in SECONDS, 5–3600)
 """
 
@@ -173,6 +199,14 @@ func printHelp() {
                              "at U0800"  → starts next Sunday 08:00
                              "at 0930"   → starts the next time it's 09:30
                            e.g.  blockrem set --onetime "at 1400" --label "standup" --duration 120
+      set --first-on <DAYS|*><HHMM>-<HHMM> --label "…" --duration <5-3600>
+                           Fires ONCE PER LISTED DAY, at the first instant inside the window that
+                           the machine is actually in use (awake, display on, you at the console,
+                           screen unlocked). Already in use at window start → fires at window
+                           start; never in use during the window → skipped that day. Start < end
+                           (same day). For overlap checks it occupies its whole window + duration,
+                           so nothing else can be scheduled inside it.
+                           e.g.  blockrem set --first-on *0500-0900 --label "morning pages" --duration 300
       delete <id>          Remove an alarm by id (from `list`)
       snooze "<for…|at…>"  Suppress ALL blocks until that instant (same spec as --onetime)
                            e.g.  blockrem snooze "for 90m"   ·   blockrem snooze "at U0800"
