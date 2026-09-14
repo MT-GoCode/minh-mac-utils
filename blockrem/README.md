@@ -67,7 +67,7 @@ skipped that day. Snooze gates the trigger: it fires when the snooze clears if s
 window. `list` shows `fired today h:mm` once latched.
 
 ```sh
-blockrem set --first-on *0500-0900   --label "morning pages" --duration 300   # first use 5–9 AM
+blockrem set --first-on "*0500-0900" --label "morning pages" --duration 300   # first use 5–9 AM
 blockrem set --first-on MTWRF0700-1000 --label "plan first"  --duration 60
 ```
 

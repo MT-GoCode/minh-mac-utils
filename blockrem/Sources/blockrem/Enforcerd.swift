@@ -37,6 +37,10 @@ final class Enforcer {
         var alarms = ScheduleStore.load()
         let pruned = alarms.filter { !$0.isExpiredOnetime(now: now) }
         if pruned.count != alarms.count { saveSchedule(pruned); alarms = pruned }
+        // Drop latches of deleted alarms HERE, before the console/snooze early-returns — else
+        // an id reused during a long snooze would inherit the old latch for the whole snooze.
+        let scheduleIDs = Set(alarms.map { $0.id })
+        fired = fired.filter { scheduleIDs.contains($0.key) }
 
         // Only guard the configured console session. If someone else is at the console (or nobody),
         // publish "inactive" and don't fight for an agent that isn't ours.
@@ -59,15 +63,7 @@ final class Enforcer {
         // early-return above (snooze gates the trigger — deferred-fire semantics) and BEFORE
         // activeBlock() (the merged latch is what activeEnd reads).
         var mutated = false
-        for i in alarms.indices {
-            guard case .firstOn = alarms[i].kind else { continue }
-            let merged = max(fired[alarms[i].id] ?? 0, alarms[i].lastFiredEpoch ?? 0)
-            guard merged > 0 else { continue }
-            fired[alarms[i].id] = merged
-            if alarms[i].lastFiredEpoch != merged { alarms[i].lastFiredEpoch = merged; mutated = true }
-        }
-        let liveIDs = Set(alarms.map { $0.id })
-        fired = fired.filter { liveIDs.contains($0.key) }   // deleted alarm drops its latch
+        (fired, alarms, mutated) = mergeFirstOnLatches(fired: fired, alarms: alarms)
         let inUse = sessionInUse(SessionStore.read(), now: now.timeIntervalSince1970)
         for i in alarms.indices
         where firstOnShouldFire(alarms[i], now: now, inUse: inUse, snoozedUntil: nil) {

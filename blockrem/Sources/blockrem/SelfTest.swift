@@ -134,9 +134,23 @@ func runSelfTest() {
     let snUntil = date(2026, 6, 24, 7, 0).timeIntervalSince1970
     check("fo snoozed no fire", !firstOnShouldFire(fo(), now: date(2026, 6, 24, 6, 0), inUse: true, snoozedUntil: snUntil))
     check("fo fires when snooze clears", firstOnShouldFire(fo(), now: date(2026, 6, 24, 7, 0), inUse: true, snoozedUntil: snUntil))
-    // memory-vs-disk: a clobbered disk latch (nil) with memory latched is merged BEFORE the
-    // helper runs; the helper itself must honor whatever merged value it's handed.
-    check("fo merged latch blocks refire", !firstOnShouldFire(fo(fired0700), now: date(2026, 6, 24, 7, 30), inUse: true, snoozedUntil: nil))
+    // --- mergeFirstOnLatches (memory-authoritative, two-way) ---
+    // failed save / CLI clobber: memory latched, disk nil → latch restored + re-persist flagged
+    let mClobber = mergeFirstOnLatches(fired: [9: fired0700], alarms: [fo(nil)])
+    check("merge restores clobbered latch", mClobber.alarms[0].lastFiredEpoch == fired0700 && mClobber.mutated
+          && mClobber.fired[9] == fired0700)
+    check("merge blocks refire after clobber", !firstOnShouldFire(mClobber.alarms[0],
+          now: date(2026, 6, 24, 7, 30), inUse: true, snoozedUntil: nil))
+    // daemon restart: memory empty, disk latched → fired map reseeded, no double-fire
+    let mRestart = mergeFirstOnLatches(fired: [:], alarms: [fo(fired0700)])
+    check("merge reseeds after restart", mRestart.fired[9] == fired0700 && !mRestart.mutated)
+    check("merge blocks refire after restart", !firstOnShouldFire(mRestart.alarms[0],
+          now: date(2026, 6, 24, 8, 0), inUse: true, snoozedUntil: nil))
+    // newer memory wins over older disk; deleted id dropped
+    let older = fired0700 - 3600
+    let mNewer = mergeFirstOnLatches(fired: [9: fired0700, 99: fired0700], alarms: [fo(older)])
+    check("merge newer memory wins", mNewer.alarms[0].lastFiredEpoch == fired0700 && mNewer.mutated)
+    check("merge drops deleted ids", mNewer.fired[99] == nil)
 
     // --- activeEnd for firstOn (block resume after daemon restart = latch persisted) ---
     check("fo block active mid", fo(fired0700).activeEnd(now: date(2026, 6, 24, 7, 2)) == fired0700 + 300)

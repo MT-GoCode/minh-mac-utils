@@ -138,6 +138,28 @@ func alarmsOverlap(_ a: Alarm, _ b: Alarm) -> Bool {
     }
 }
 
+// MARK: - first-on latch merge (pure, so `_selftest` can exercise it)
+
+/// Two-way merge of the daemon's memory-authoritative fired map with the on-disk latches:
+/// memory survives a silently failed save or a CLI write that clobbered `lastFiredEpoch`
+/// (either would otherwise refire — the rolling-block BLOCKER); disk survives a daemon restart
+/// (else a restart mid-day double-fires — confirm-pass N1). Ids absent from `alarms` are
+/// dropped (deleted alarm loses its latch). `mutated` = disk needs a re-persist.
+func mergeFirstOnLatches(fired: [Int: Double], alarms: [Alarm])
+    -> (fired: [Int: Double], alarms: [Alarm], mutated: Bool) {
+    var fired = fired, alarms = alarms, mutated = false
+    let liveIDs = Set(alarms.map { $0.id })
+    fired = fired.filter { liveIDs.contains($0.key) }
+    for i in alarms.indices {
+        guard case .firstOn = alarms[i].kind else { continue }
+        let merged = max(fired[alarms[i].id] ?? 0, alarms[i].lastFiredEpoch ?? 0)
+        guard merged > 0 else { continue }
+        fired[alarms[i].id] = merged
+        if alarms[i].lastFiredEpoch != merged { alarms[i].lastFiredEpoch = merged; mutated = true }
+    }
+    return (fired, alarms, mutated)
+}
+
 // MARK: - first-on trigger (pure, so `_selftest` can exercise it)
 
 /// Should this `.firstOn` alarm fire at `now`? `alarm.lastFiredEpoch` must already carry the

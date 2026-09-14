@@ -206,7 +206,7 @@ func printHelp() {
                            start; never in use during the window → skipped that day. Start < end
                            (same day). For overlap checks it occupies its whole window + duration,
                            so nothing else can be scheduled inside it.
-                           e.g.  blockrem set --first-on *0500-0900 --label "morning pages" --duration 300
+                           e.g.  blockrem set --first-on "*0500-0900" --label "morning pages" --duration 300
       delete <id>          Remove an alarm by id (from `list`)
       snooze "<for…|at…>"  Suppress ALL blocks until that instant (same spec as --onetime)
                            e.g.  blockrem snooze "for 90m"   ·   blockrem snooze "at U0800"

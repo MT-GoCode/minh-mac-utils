@@ -37,8 +37,17 @@ func runStatus() -> Never {
         .appendingPathComponent("Library/Application Support/multistreamviewer/health.json")
     guard let data = try? Data(contentsOf: url),
           let h = try? JSONDecoder().decode(Health.self, from: data) else {
-        print("running (pid \(pid)) but no health file yet (written every 30s)")
-        exit(0)
+        // Normal for the first ~30s after launch; suspicious after that (unwritable state dir?)
+        let et = Process()
+        et.executableURL = URL(fileURLWithPath: "/bin/ps")
+        et.arguments = ["-o", "etime=", "-p", "\(pid)"]
+        let ep = Pipe(); et.standardOutput = ep
+        try? et.run(); et.waitUntilExit()
+        let etime = (String(data: ep.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let young = etime.count <= 5 && etime.hasPrefix("00:")   // "00:SS" = under a minute
+        print("running (pid \(pid)) but no health file\(young ? " yet (written every 30s)" : " — state dir unwritable?")")
+        exit(young ? 0 : 1)
     }
     let now = Date().timeIntervalSince1970
     if now - h.updatedEpoch > 90 {
