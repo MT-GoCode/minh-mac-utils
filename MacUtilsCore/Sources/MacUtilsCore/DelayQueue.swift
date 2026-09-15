@@ -7,7 +7,7 @@ import Foundation
 /// `.drop`; retry-with-backoff for `.retry`; full audit trail. Per-surface key/validate/apply logic
 /// stays in app closures — the queue never knows what a zone is.
 ///
-/// Self-containment contract (this file vendors byte-identical into nextdns-sidecar): Foundation
+/// Self-containment contract (this file lives once in MacUtilsCore, linked by demonlock and nextdns-sidecar): Foundation
 /// plus exactly four free symbols — `loadJSON`, `saveJSON`, `logStderr`, `nowEpoch` — and
 /// `MarkerIO.consumeLines`. No `Paths.*` (the audit path arrives via `auditLog`). Any future
 /// `.retry` apply must be idempotent (a crash between apply-success and save re-applies once).

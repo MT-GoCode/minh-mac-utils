@@ -67,12 +67,10 @@ extension TimeSpec {
                 weekdayFilter = wd
                 rest = String(rest.dropFirst())
             }
-            guard rest.count == 4, rest.allSatisfy(\.isNumber), let v = Int(rest), validHHMM(v) else {
+            // A valid HHMM always resolves within the 8-day search (nil is unreachable) — fail closed anyway.
+            guard rest.count == 4, rest.allSatisfy(\.isNumber), let v = Int(rest), validHHMM(v),
+                  let d = nextTimeOfDay(hhmm: v, weekday: weekdayFilter, from: now) else {
                 return .failure(ParseError(message: "bad time after 'at' — use \"at HHMM\" or \"at <day>HHMM\" like \"at U0800\""))
-            }
-            // Fail CLOSED on an unresolvable calendar date (never a made-up minute).
-            guard let d = nextTimeOfDay(hhmm: v, weekday: weekdayFilter, from: now) else {
-                return .failure(ParseError(message: "couldn't resolve 'at' to a calendar date — try a plain \"at HHMM\""))
             }
             return .success(d)
         }

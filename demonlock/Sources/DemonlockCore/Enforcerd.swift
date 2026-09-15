@@ -93,7 +93,7 @@ final class Enforcer {
         (lockboxStatus, lockboxUnlocksStatus) = Lockbox.tick(now: now.timeIntervalSince1970, enforcedUID: euid)
 
         // STANDBY: only enforce the configured user's live console session.
-        guard let consoleUID = MacUtilsCore.consoleUID() else {
+        guard let cuid = consoleUID() else {
             resetSession(nil)
             publish(phase: "standby", verdict: nil, reason: "no user logged in", now: now, armed: armed)
             return poll
@@ -101,17 +101,17 @@ final class Enforcer {
         // Keep enforcing the last-known uid if the name transiently fails to resolve (fail-closed, not
         // standby). nil only when nothing was ever configured (fresh install) → standby is correct. [L1]
         guard let target = euid else {
-            resetSession(consoleUID)
+            resetSession(cuid)
             publish(phase: "standby", verdict: nil, reason: "no enforced user configured", now: now, armed: armed)
             return poll
         }
-        guard consoleUID == target else {
-            resetSession(consoleUID)
+        guard cuid == target else {
+            resetSession(cuid)
             let who = settings.enforcedUser.isEmpty ? "(unset)" : settings.enforcedUser
             publish(phase: "standby", verdict: nil, reason: "console user isn't the enforced user \(who)", now: now, armed: armed)
             return poll
         }
-        if sessionUID != consoleUID { resetSession(consoleUID) }
+        if sessionUID != cuid { resetSession(cuid) }
 
         if armed && settings.wifiKeepOn { Wifi.ensureOn(settings.wifiDevice) }
 
@@ -187,11 +187,11 @@ final class Enforcer {
             nextAgentKick = nil
         } else if armed, now.timeIntervalSince(lastAgentSeen) >= settings.agentGraceSeconds,
                   now >= (nextAgentKick ?? .distantPast) {
-            log("agent silent \(Int(now.timeIntervalSince(lastAgentSeen)))s → re-bootstrap+kickstart gui/\(consoleUID)/\(Paths.agentLabel)")
+            log("agent silent \(Int(now.timeIntervalSince(lastAgentSeen)))s → re-bootstrap+kickstart gui/\(cuid)/\(Paths.agentLabel)")
             // bootstrap FIRST so a `launchctl bootout` (which KeepAlive won't undo) is reversed — this
             // subsumes the old settingslock guard daemon; then kickstart to force a fresh start.
-            Proc.run("/bin/launchctl", ["bootstrap", "gui/\(consoleUID)", Paths.agentPlist])
-            Proc.run("/bin/launchctl", ["kickstart", "-k", "gui/\(consoleUID)/\(Paths.agentLabel)"])
+            Proc.run("/bin/launchctl", ["bootstrap", "gui/\(cuid)", Paths.agentPlist])
+            Proc.run("/bin/launchctl", ["kickstart", "-k", "gui/\(cuid)/\(Paths.agentLabel)"])
             nextAgentKick = now.addingTimeInterval(settings.agentKickSeconds)
         }
 
@@ -223,7 +223,7 @@ final class Enforcer {
 
         let inside = fix.map { ZoneStore.containing(lat: $0.lat, lon: $0.lon, zones: zones) } ?? []
         let policyStr = policyText ?? ""
-        let ssh = sshHint(consoleUID: consoleUID)
+        let ssh = sshHint(consoleUID: cuid)
         var health = Health()
         health.agentFeedFresh = agentLive
         health.locState = locState

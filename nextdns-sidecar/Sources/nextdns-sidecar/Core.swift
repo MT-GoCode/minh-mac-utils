@@ -48,9 +48,10 @@ struct Config: Codable {
     }
 
     static func load() -> Config { loadJSON(Paths.configFile) ?? Config() }
-    struct SaveError: Error {}
+    /// Throws the underlying write error (its text reaches `set-delay`'s stderr) — not routed via saveJSON.
     func save() throws {
-        guard saveJSON(self, to: Paths.configFile, pretty: true) else { throw SaveError() }
+        let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try e.encode(self).write(to: URL(fileURLWithPath: Paths.configFile), options: .atomic)
     }
     var clampedDelay: Double { Bounds.clamp(delaySec, Bounds.addDelay) }
 

@@ -1,7 +1,7 @@
 import Foundation
 import MacUtilsCore
 
-/// The delay-add DelayQueue (vendored abstraction): domain-keyed, idempotent re-request, .retry
+/// The delay-add DelayQueue (from MacUtilsCore): domain-keyed, idempotent re-request, .retry
 /// with backoff on API failure (a failed allow keeps the domain blocked — retrying is safe/idempotent).
 /// NOTE: the pending cap drops 4096 → DelayQueue.cap (64) — spec-mandated; >64 pending is unrealistic.
 func delayAddQueue() -> DelayQueue {

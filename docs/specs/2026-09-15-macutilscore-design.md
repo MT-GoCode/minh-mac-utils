@@ -97,7 +97,7 @@ in `extension Legacy { }`. Blockrem's top-level `ParseError` is deleted — core
 | resolveUID / userName(for:) / consoleUID | `Settings.enforcedUID` → one-liner; `enforcedUserName`, `Enforcerd.userName`, `usernameForUID` → `userName(for:)`; `Enforcerd.consoleUser` → `consoleUID()` and the local binding at `Enforcerd.swift:95` is renamed (`guard let cuid = consoleUID()`) | `Config.enforcedUID` → one-liner | `Settings.enforcedUID` → one-liner; `Util.consoleUID` deleted |
 | fail / errOut / requireRoot | private `fail`/`requireRoot` deleted; `requireRoot("demonlock \(cmd): requires sudo — …")` keeps the exact text | `fail` deleted; the four `geteuid()` guards → `requireRoot("<their exact current text>")` | `fail`/`errOut` deleted |
 | TimeSpec | delete `parseDuration`, `weekday`, `nextWeekdayHHMM`, `nextHHMM`, `fmtLeft`, `fmtWhen`; keep `parseTarget` + `TimeError` verbatim (same strings), now calling `nextTimeOfDay(hhmm:weekday:from:)` for both branches (`nextHHMM`'s `?? 500` junk default was dead: `parseTarget` rejects before it) | delete free `parseDuration` | delete `parseDuration`, `weekday(for:)` (→ `weekday(_:)`), `letters`, `validHHMM`, `nextTimeOfDay`; keep `parseWhen` verbatim (same strings) |
-| lenient decode | `Settings.init(from:)` uses `c.lenient(.x, default: d.x)` | `Config.init(from:)` | `Settings.init(from:)` |
+| lenient decode | left as-is (its local `dbl()` helper is already one line per field; converting buys nothing) | `Config.init(from:)` | `Settings.init(from:)` |
 | EpochFile | `SnoozeStore` → 2-line wrapper | — | `SnoozeStore` → 2-line wrapper |
 
 `nextTimeOfDay(hhmm:weekday:from:calendar: = .current) -> Date?`: blockrem's 0…8-day loop,
@@ -118,6 +118,10 @@ current tz"; a cached `DateFormatter` freezes the tz in a long-lived daemon). Sa
 3. **`Proc.capture` stderr → `/dev/null`** in demonlock/blockrem (was an undrained `Pipe()`: a
    child writing >64 KiB to stderr would deadlock the daemon). Not observable — the pipe was never
    read. The sidecar already did this.
+4. **DST spring-forward gap, demonlock `until HHMM` with no weekday** (implementation review): for an
+   HHMM inside the skipped 02:00–02:59 hour that has already passed on the spring-forward day, the old
+   today-then-`+1 day` arithmetic answered 03:30 tomorrow; the shared day-loop answers 02:30 tomorrow —
+   the correct instant. Once a year, one hour, only that edge.
 
 Everything else — every `status` output, every stderr message on bad input, every demonlock /
 blockrem log line, every byte on disk — must be identical.
