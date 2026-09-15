@@ -92,17 +92,19 @@ enum Lockbox {
         let q = unlocksQueue()
 
         // add (no sudo): the secret transits the user-owned 0600 inbox marker (self-binding).
-        if let euid = enforcedUID,
-           let line = MarkerIO.consumeLast(Paths.lbAddMarker, enforcedUID: euid),
-           let e = try? JSONDecoder().decode(LockboxEntry.self, from: Data(line.utf8)),
-           rejectReason(e.name, delaySec: e.delaySec, secretLen: e.secret.utf8.count,
-                        entryCount: entries.count, nameExists: entries.contains(where: { $0.name == e.name })) == nil {
-            entries.removeAll { $0.name == e.name }
-            entries.append(e); LockboxStore.save(entries)
-            // Re-adding resets any in-flight/open unlock — else the NEW secret inherits the OLD
-            // one's unlock window and is instantly copyable. The pending row dies via the queue store.
-            var f = LBFile.load(); f.unlockedUntil.removeValue(forKey: e.name); f.save()
-            q.rootCancel(keys: [e.name], now: now, reason: "secret re-added")
+        if let euid = enforcedUID, let lines = MarkerIO.consumeLines(Paths.lbAddMarker, enforcedUID: euid) {
+            for line in lines {   // every add in the tick lands (last write for a repeated name wins)
+                guard let e = try? JSONDecoder().decode(LockboxEntry.self, from: Data(line.utf8)),
+                      rejectReason(e.name, delaySec: e.delaySec, secretLen: e.secret.utf8.count,
+                                   entryCount: entries.count, nameExists: entries.contains(where: { $0.name == e.name })) == nil
+                else { continue }
+                entries.removeAll { $0.name == e.name }
+                entries.append(e); LockboxStore.save(entries)
+                // Re-adding resets any in-flight/open unlock — else the NEW secret inherits the OLD
+                // one's unlock window and is instantly copyable. The pending row dies via the queue store.
+                var f = LBFile.load(); f.unlockedUntil.removeValue(forKey: e.name); f.save()
+                q.rootCancel(keys: [e.name], now: now, reason: "secret re-added")
+            }
         }
         // remove (tightening, immediate): delete from the vault + clear all lock state.
         if let euid = enforcedUID, let names = MarkerIO.consumeLines(Paths.lbRemoveMarker, enforcedUID: euid) {
@@ -131,12 +133,14 @@ enum Lockbox {
         }
 
         // copy: if unlocked, write the secret to a fresh 0600 user-owned outbox, then relock now.
-        if let euid = enforcedUID, let name = MarkerIO.consumeLast(Paths.lbCopyMarker, enforcedUID: euid) {
-            var f = LBFile.load()
-            if let until = f.unlockedUntil[name], now < until,
-               let e = LockboxStore.load().first(where: { $0.name == name }) {
-                writeOutbox(e.secret, ownerUID: euid)
-                f.unlockedUntil.removeValue(forKey: name); f.save()   // relock immediately on copy
+        if let euid = enforcedUID, let names = MarkerIO.consumeLines(Paths.lbCopyMarker, enforcedUID: euid) {
+            for name in names.map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) }) where !name.isEmpty {
+                var f = LBFile.load()
+                if let until = f.unlockedUntil[name], now < until,
+                   let e = LockboxStore.load().first(where: { $0.name == name }) {
+                    writeOutbox(e.secret, ownerUID: euid)             // last copy in the tick owns the outbox
+                    f.unlockedUntil.removeValue(forKey: name); f.save()   // relock immediately on copy
+                }
             }
         }
 

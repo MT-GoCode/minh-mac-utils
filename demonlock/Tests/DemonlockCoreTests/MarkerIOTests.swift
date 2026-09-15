@@ -149,3 +149,13 @@ extension MarkerIOTests {
         XCTAssertEqual(Set(lines ?? []), ["allnighter", "midnight"])
     }
 }
+
+extension MarkerIOTests {
+    /// Two secret (0600) adds inside one tick both survive, and the file stays 0600 throughout.
+    func testSecretMarkerAppendsWhenAlreadySafe() {
+        XCTAssertTrue(MarkerIO.append(path(), line: "one", mode: 0o600))
+        XCTAssertTrue(MarkerIO.append(path(), line: "two", mode: 0o600))
+        XCTAssertEqual(mode(path()) & 0o077, 0)
+        XCTAssertEqual(MarkerIO.consumeLines(path(), enforcedUID: uid), ["one", "two"])
+    }
+}

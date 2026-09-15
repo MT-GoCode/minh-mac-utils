@@ -434,3 +434,26 @@ final class DelayQueueTests: XCTestCase {
         XCTAssertEqual(seen, 1234)                             // daemon-stamped, frozen
     }
 }
+
+extension DelayQueueTests {
+    /// Same-tick ordering must not matter: abort-all then a keyed abort (and vice versa) both flush
+    /// everything. Under the old zero-byte-truncate writer, all-then-key silently lost the all.
+    func testAbortAllThenKeyedSameTickFlushesAll() {
+        let q = queue()
+        _ = MarkerIO.append(reqM, lines: ["aaaa", "bbbb"])
+        consume(q, now: 1000)
+        _ = MarkerIO.append(abortM, line: "--all")
+        _ = MarkerIO.append(abortM, line: "k:aaaa")
+        consume(q, now: 1001)
+        XCTAssertTrue(q.status().rows.isEmpty)
+    }
+    func testKeyedThenAbortAllSameTickFlushesAll() {
+        let q = queue()
+        _ = MarkerIO.append(reqM, lines: ["aaaa", "bbbb"])
+        consume(q, now: 1000)
+        _ = MarkerIO.append(abortM, line: "k:aaaa")
+        _ = MarkerIO.append(abortM, line: "--all")
+        consume(q, now: 1001)
+        XCTAssertTrue(q.status().rows.isEmpty)
+    }
+}

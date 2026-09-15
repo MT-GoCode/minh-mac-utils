@@ -858,9 +858,10 @@ func runDelayZones(_ args: [String]) {
 /// Drop a delayed-change marker in the user-owned inbox (non-root). `payload` (the new policy/zones)
 /// becomes the request marker's contents; the daemon reads, validates, and stamps the real time itself.
 func dropDelayMarker(_ path: String, payload: String = "") {
-    // Empty payload ⇒ zero-byte TRUNCATE (the abort-all signal must clear stale key lines);
-    // otherwise append one escaped line. All inbox writes go through MarkerIO.
-    guard MarkerIO.append(path, line: payload.isEmpty ? nil : payload) else {
+    // Empty payload ⇒ the abort-all signal. Appended as a literal "--all" line (NOT a zero-byte
+    // truncate): an abort-all followed by a keyed abort inside one tick must not lose the all.
+    // The daemon treats a zero-byte file the same way, for older CLIs. All inbox writes go through MarkerIO.
+    guard MarkerIO.append(path, line: payload.isEmpty ? "--all" : payload) else {
         fail("✗ couldn't write the marker (\(path)). Is the inbox present? Try reinstalling demonlock.")
     }
 }

@@ -130,11 +130,12 @@ func fail(_ msg: String) -> Never {
 }
 
 /// Drop a marker into the user-owned inbox (no sudo). One escaped line per newline-separated token;
-/// empty payload ⇒ zero-byte TRUNCATE (the abort-all signal must clear stale key lines). All inbox
-/// writes go through MarkerIO — same contract as demonlock.
+/// empty payload ⇒ a literal "--all" line (abort-all / flag), never a truncate, so an abort-all and a
+/// keyed abort inside one tick survive in either order. All inbox writes go through MarkerIO — same
+/// contract as demonlock.
 func dropMarker(_ path: String, _ payload: String = "") {
     let lines = payload.split(separator: "\n").map(String.init)
-    let ok = lines.isEmpty ? MarkerIO.append(path, line: nil) : MarkerIO.append(path, lines: lines)
+    let ok = lines.isEmpty ? MarkerIO.append(path, line: "--all") : MarkerIO.append(path, lines: lines)
     if !ok { fail("error: couldn't write marker \(path) — is the inbox present? Reinstall nextdns-sidecar.") }
 }
 

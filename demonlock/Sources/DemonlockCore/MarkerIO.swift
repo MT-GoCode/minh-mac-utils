@@ -36,7 +36,16 @@ enum MarkerIO {
 
     private static func append(_ path: String, lines: [String], truncate: Bool, mode: mode_t) -> Bool {
         var flags = O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC | (truncate ? O_TRUNC : O_APPEND)
-        if mode != 0o644 { unlink(path); flags |= O_EXCL }   // secret marker: fresh file, exact mode
+        if mode != 0o644 {
+            // Secret marker: must be exactly `mode` from the first byte. Reuse (append to) an existing
+            // file ONLY if it's already a regular, single-link, self-owned file with that exact mode —
+            // so two adds inside one tick both survive; anything else is recreated fresh (O_EXCL, so
+            // an attacker-precreated 0644 file can't keep its mode).
+            var st = stat()
+            let reusable = lstat(path, &st) == 0 && (st.st_mode & S_IFMT) == S_IFREG
+                && st.st_nlink == 1 && st.st_uid == getuid() && (st.st_mode & 0o777) == mode
+            if !reusable { unlink(path); flags |= O_EXCL }
+        }
         let fd = open(path, flags, mode)
         guard fd >= 0 else { return false }
         defer { close(fd) }
