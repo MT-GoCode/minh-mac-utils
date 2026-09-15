@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 
 let argv = Array(CommandLine.arguments.dropFirst())
 let cmd = argv.first ?? "help"

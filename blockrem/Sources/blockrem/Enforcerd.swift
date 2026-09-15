@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 
 /// The root daemon — sole owner of the schedule and the published active-state. Each tick it:
 ///   1. prunes onetime alarms whose window has fully passed,
@@ -110,8 +111,5 @@ final class Enforcer {
         }
     }
 
-    private func log(_ s: String) {
-        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        FileHandle.standardError.write(Data("[\(f.string(from: Date()))] \(s)\n".utf8))
-    }
+    private func log(_ s: String) { logStderr(s) }
 }

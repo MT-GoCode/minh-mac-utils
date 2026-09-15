@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 
 /// The delay-add DelayQueue (vendored abstraction): domain-keyed, idempotent re-request, .retry
 /// with backoff on API failure (a failed allow keeps the domain blocked — retrying is safe/idempotent).

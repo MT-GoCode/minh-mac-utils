@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 
 // nextdns-sidecar — merged NextDNS self-discipline tool (list manager + DNS-bypass lockdown).
 //
@@ -75,7 +76,7 @@ func cmdBlock(_ ds: [String]) {
 
 /// add — sudo, immediate allow. Runs as root, reads creds, calls the API directly (like nextdns-allow).
 func cmdAdd(_ ds: [String]) {
-    guard geteuid() == 0 else { fail("nextdns-sidecar domains add: must run as root — use `sudo nextdns-sidecar domains add ...`") }
+    requireRoot(or: "nextdns-sidecar domains add: must run as root — use `sudo nextdns-sidecar domains add ...`")
     let doms = collectDomains(ds).filter { !$0.isEmpty }
     guard !doms.isEmpty else { fail("usage: sudo nextdns-sidecar domains add <domain>... | -f FILE") }
     for d in doms where !validDomain(d) { fail("error: invalid domain: \(d)") }
@@ -170,7 +171,7 @@ func runNetworkLockdown(_ a: [String]) {
 
 /// reload — sudo. Re-validate + reload the pf ruleset after editing the on-disk tables.
 func cmdReload() {
-    guard geteuid() == 0 else { fail("nextdns-sidecar networklockdown reload: requires root — `sudo nextdns-sidecar networklockdown reload`") }
+    requireRoot(or: "nextdns-sidecar networklockdown reload: requires root — `sudo nextdns-sidecar networklockdown reload`")
     Lockdown.reload()
 }
 
@@ -207,11 +208,11 @@ func cmdArm() {
 /// disarm — sudo, loosening. Runs as root: removes the armed flag AND tears pf down NOW (works even if
 /// the daemon is wedged). The Encrypted-DNS profile is untouched, so DNS stays filtered.
 func cmdDisarm() {
-    guard geteuid() == 0 else { fail("nextdns-sidecar networklockdown disarm: requires root — `sudo nextdns-sidecar networklockdown disarm`") }
+    requireRoot(or: "nextdns-sidecar networklockdown disarm: requires root — `sudo nextdns-sidecar networklockdown disarm`")
     try? FileManager.default.removeItem(atPath: Paths.armedFile)
-    Proc.run(Lockdown.pfctl, ["-t", "local_dns", "-T", "flush"])
-    Proc.run(Lockdown.pfctl, ["-f", "/etc/pf.conf"])
-    Proc.run(Lockdown.pfctl, ["-d"])
+    Proc.run(Lockdown.pfctl, ["-t", "local_dns", "-T", "flush"], quiet: true)
+    Proc.run(Lockdown.pfctl, ["-f", "/etc/pf.conf"], quiet: true)
+    Proc.run(Lockdown.pfctl, ["-d"], quiet: true)
     print("Disarmed — pf restored to macOS defaults now (not on a delay).")
     print("The NextDNS Encrypted-DNS profile is untouched, so DNS keeps being filtered.")
 }
@@ -220,8 +221,8 @@ func cmdDisarm() {
 
 /// set-delay "<dur>" — sudo. Sets the delay-add landing delay, clamped into Bounds.addDelay [8h,168h].
 func runSetDelay(_ s: String) {
-    guard geteuid() == 0 else { fail("nextdns-sidecar set-delay: requires root — `sudo nextdns-sidecar set-delay \"12h\"`") }
-    guard let secs = parseDuration(s), secs > 0 else { fail("bad duration — use e.g. \"12h\", \"1d\", \"8h30m\"") }
+    requireRoot(or: "nextdns-sidecar set-delay: requires root — `sudo nextdns-sidecar set-delay \"12h\"`")
+    guard let secs = TimeSpec.parseDuration(s), secs > 0 else { fail("bad duration — use e.g. \"12h\", \"1d\", \"8h30m\"") }
     let clamped = Bounds.clamp(secs, Bounds.addDelay)
     var c = Config.load(); c.delaySec = clamped
     do { try c.save() } catch { fail("error: couldn't write \(Paths.configFile): \(error)") }

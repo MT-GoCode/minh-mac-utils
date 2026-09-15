@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 
 /// Published by the root daemon every tick; the agent's ONLY read surface. The agent renders
 /// purely from this — it never reads the schedule itself, so all timing truth stays root-owned.
@@ -26,15 +27,8 @@ struct SessionState: Codable {
 }
 
 enum SessionStore {
-    static func read() -> SessionState? {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: Paths.sessionFile)) else { return nil }
-        return try? JSONDecoder().decode(SessionState.self, from: data)
-    }
-    static func write(_ s: SessionState) {
-        let enc = JSONEncoder(); enc.outputFormatting = [.sortedKeys]
-        guard let data = try? enc.encode(s) else { return }
-        try? data.write(to: URL(fileURLWithPath: Paths.sessionFile), options: .atomic)
-    }
+    static func read() -> SessionState? { loadJSON(Paths.sessionFile) }
+    static func write(_ s: SessionState) { saveJSON(s, to: Paths.sessionFile) }
 }
 
 /// The pure in-use conjunction (freshness ∧ unlocked ∧ display on), separated for `_selftest`.
@@ -44,13 +38,6 @@ func sessionInUse(_ s: SessionState?, now: Double) -> Bool {
 }
 
 enum ActiveStore {
-    static func read() -> ActiveState? {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: Paths.activeFile)) else { return nil }
-        return try? JSONDecoder().decode(ActiveState.self, from: data)
-    }
-    static func write(_ s: ActiveState) {
-        let enc = JSONEncoder(); enc.outputFormatting = [.sortedKeys]
-        guard let data = try? enc.encode(s) else { return }
-        try? data.write(to: URL(fileURLWithPath: Paths.activeFile), options: .atomic)
-    }
+    static func read() -> ActiveState? { loadJSON(Paths.activeFile) }
+    static func write(_ s: ActiveState) { saveJSON(s, to: Paths.activeFile) }
 }

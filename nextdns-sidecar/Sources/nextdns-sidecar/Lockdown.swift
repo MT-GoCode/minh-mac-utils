@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 
 /// The pf "bypass wall" — ported from nextdns-lockdownd. Asserts our ruleset while armed, keeps the
 /// captive-portal door (<local_dns>) tracking the current network, and fails closed (flushes the door)
@@ -38,11 +39,11 @@ enum Lockdown {
     /// Ensure pf is enabled and OUR ruleset is loaded; re-assert if tampered. Validate before loading.
     static func assertPF() {
         if pfEnabled() && pfOursLoaded() { return }
-        if Proc.run(pfctl, ["-n", "-f", Paths.pfConf]) != 0 {
+        if Proc.run(pfctl, ["-n", "-f", Paths.pfConf], quiet: true) != 0 {
             logLine("ERROR: ruleset failed validation; refusing to load"); return
         }
-        Proc.run(pfctl, ["-f", Paths.pfConf])
-        Proc.run(pfctl, ["-e"])                          // harmless 'already enabled' if it was
+        Proc.run(pfctl, ["-f", Paths.pfConf], quiet: true)
+        Proc.run(pfctl, ["-e"], quiet: true)                          // harmless 'already enabled' if it was
         if pfEnabled() && pfOursLoaded() { logLine("re-asserted pf ruleset (was tampered or not loaded)") }
         else { logLine("WARNING: pf re-assert attempted but state still off") }
     }
@@ -50,8 +51,8 @@ enum Lockdown {
     /// While disarmed: remove our ruleset once and idle.
     static func restorePF() {
         if pfOursLoaded() {
-            Proc.run(pfctl, ["-f", "/etc/pf.conf"])
-            Proc.run(pfctl, ["-d"])
+            Proc.run(pfctl, ["-f", "/etc/pf.conf"], quiet: true)
+            Proc.run(pfctl, ["-d"], quiet: true)
             logLine("DISARMED: restored default pf ruleset and disabled pf")
         }
     }
@@ -129,7 +130,7 @@ enum Lockdown {
     static func syncCaptiveDoor() {
         let desired = Array(Set(staticRanges() + learnHosts())).filter { !$0.isEmpty }.sorted()
         guard !desired.isEmpty else { return }
-        if Proc.run(pfctl, ["-t", "local_dns", "-T", "replace"] + desired) != 0 {
+        if Proc.run(pfctl, ["-t", "local_dns", "-T", "replace"] + desired, quiet: true) != 0 {
             logLine("WARNING: <local_dns> replace failed — captive door may be stale")
         }
     }
@@ -144,7 +145,7 @@ enum Lockdown {
             if prev != "present" { logLine("Encrypted-DNS profile: present") }
             return "present"
         } else {
-            Proc.run(pfctl, ["-t", "local_dns", "-T", "flush"])
+            Proc.run(pfctl, ["-t", "local_dns", "-T", "flush"], quiet: true)
             if prev != "absent" { logLine("ALERT: Encrypted-DNS profile MISSING — flushed <local_dns> (fail-closed)") }
             return "absent"
         }
@@ -251,8 +252,8 @@ enum Lockdown {
 
     /// Re-validate + reload the pf ruleset, picking up on-disk table edits without a disarm/arm cycle.
     static func reload() {
-        if Proc.run(pfctl, ["-n", "-f", Paths.pfConf]) != 0 { fail("ruleset FAILED validation — not reloaded") }
-        Proc.run(pfctl, ["-f", Paths.pfConf]); Proc.run(pfctl, ["-e"])
+        if Proc.run(pfctl, ["-n", "-f", Paths.pfConf], quiet: true) != 0 { fail("ruleset FAILED validation — not reloaded") }
+        Proc.run(pfctl, ["-f", Paths.pfConf], quiet: true); Proc.run(pfctl, ["-e"], quiet: true)
         print("Ruleset re-validated and reloaded.")
     }
 
@@ -299,7 +300,7 @@ enum Lockdown {
         }
         _ = dohOut
 
-        if Proc.run("/usr/bin/nc", ["-z", "-G", "3", "-w", "3", "1.1.1.1", "853"]) == 0 {
+        if Proc.run("/usr/bin/nc", ["-z", "-G", "3", "-w", "3", "1.1.1.1", "853"], quiet: true) == 0 {
             if armed { bad("DoT 853 to 1.1.1.1 reachable") } else { note("DoT 853 to 1.1.1.1 reachable (open)") }
         } else { ok("DoT 853 to 1.1.1.1 is blocked") }
 

@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 
 /// Drives a NextDNS profile's denylist/allowlist via the API — ported from nextdns_discipline.c.
 /// The API key is fed to `curl` through a stdin config (`-K -`), NEVER argv/env, so it can't appear in

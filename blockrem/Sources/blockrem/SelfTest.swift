@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 
 /// Pure-logic regression tests for the time parsing + active-window math (the root-gated paths the
 /// CLI can't exercise without sudo). Run: `blockrem _selftest`. Exits nonzero on any failure.

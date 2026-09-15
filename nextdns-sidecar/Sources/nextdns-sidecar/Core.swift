@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 
 /// Single source of truth for on-disk paths, the launchd label, and identifiers.
 enum Paths {
@@ -42,31 +43,19 @@ struct Config: Codable {
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        enforcedUser = (try? c.decode(String.self, forKey: .enforcedUser)) ?? ""
-        delaySec     = (try? c.decode(Double.self, forKey: .delaySec)) ?? 12 * 3600
+        enforcedUser = c.lenient(.enforcedUser, default: "")
+        delaySec     = c.lenient(.delaySec, default: 12 * 3600)
     }
 
-    static func load() -> Config {
-        guard let d = try? Data(contentsOf: URL(fileURLWithPath: Paths.configFile)),
-              let c = try? JSONDecoder().decode(Config.self, from: d) else { return Config() }
-        return c
-    }
+    static func load() -> Config { loadJSON(Paths.configFile) ?? Config() }
+    struct SaveError: Error {}
     func save() throws {
-        let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try e.encode(self).write(to: URL(fileURLWithPath: Paths.configFile), options: .atomic)
+        guard saveJSON(self, to: Paths.configFile, pretty: true) else { throw SaveError() }
     }
     var clampedDelay: Double { Bounds.clamp(delaySec, Bounds.addDelay) }
 
     /// enforcedUser (name or numeric uid) → uid. nil if unset/unknown.
-    func enforcedUID() -> uid_t? {
-        let v = enforcedUser.trimmingCharacters(in: .whitespacesAndNewlines)
-        if v.isEmpty { return nil }
-        if let n = UInt32(v) { return uid_t(n) }
-        return v.withCString { cstr -> uid_t? in
-            guard let pw = getpwnam(cstr) else { return nil }
-            return pw.pointee.pw_uid
-        }
-    }
+    func enforcedUID() -> uid_t? { resolveUID(enforcedUser) }
 }
 
 /// Ported verbatim from nextdns_discipline.c valid_domain(): ASCII alnum + . - _, no leading/trailing
@@ -86,27 +75,6 @@ func validProfile(_ p: String) -> Bool {
     return chars.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) }
 }
 
-/// Sum of d/h/m/s tokens ("12h" → 43200, "1h30m" → 5400). nil on junk. (Trimmed TimeSpec.parseDuration.)
-func parseDuration(_ raw: String) -> Double? {
-    let s = raw.lowercased().filter { !$0.isWhitespace }
-    guard !s.isEmpty else { return nil }
-    var total = 0.0, num = "", sawUnit = false
-    for ch in s {
-        if ch.isNumber { num.append(ch); continue }
-        guard let n = Double(num) else { return nil }
-        switch ch {
-        case "d": total += n * 86400
-        case "h": total += n * 3600
-        case "m": total += n * 60
-        case "s": total += n
-        default: return nil
-        }
-        num = ""; sawUnit = true
-    }
-    guard num.isEmpty, sawUnit else { return nil }
-    return total
-}
-
 /// Split a marker's bytes into candidate domains (whitespace/newline separated, empties dropped).
 func parseDomains(_ data: Data) -> [String] {
     (String(data: data, encoding: .utf8) ?? "")
@@ -114,20 +82,10 @@ func parseDomains(_ data: Data) -> [String] {
         .map(String.init)
 }
 
-func nowEpoch() -> Double { Date().timeIntervalSince1970 }
-
 func isArmedFlag() -> Bool { FileManager.default.fileExists(atPath: Paths.armedFile) }
 
 /// Timestamped daemon log line → stderr (launchd redirects it to the log file; see the LaunchDaemon plist).
-func logLine(_ s: String) {
-    let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
-    FileHandle.standardError.write(Data("\(f.string(from: Date())) \(s)\n".utf8))
-}
-
-func fail(_ msg: String) -> Never {
-    FileHandle.standardError.write(Data((msg + "\n").utf8))
-    exit(1)
-}
+func logLine(_ s: String) { logStderr(s) }
 
 /// Drop a marker into the user-owned inbox (no sudo). One escaped line per newline-separated token;
 /// empty payload ⇒ a literal "--all" line (abort-all / flag), never a truncate, so an abort-all and a
@@ -139,41 +97,3 @@ func dropMarker(_ path: String, _ payload: String = "") {
     if !ok { fail("error: couldn't write marker \(path) — is the inbox present? Reinstall nextdns-sidecar.") }
 }
 
-/// Small process helpers. `run` discards output; `capture` returns stdout (stderr discarded).
-enum Proc {
-    @discardableResult
-    static func run(_ path: String, _ args: [String]) -> Int32 {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: path)
-        p.arguments = args
-        p.standardOutput = FileHandle.nullDevice
-        p.standardError = FileHandle.nullDevice
-        do { try p.run(); p.waitUntilExit(); return p.terminationStatus } catch { return -1 }
-    }
-    /// stdout AND exit status, for probes where "the command failed" and "the command succeeded but
-    /// printed nothing" must not collapse into one verdict.
-    static func captureStatus(_ path: String, _ args: [String]) -> (out: String, status: Int32) {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: path)
-        p.arguments = args
-        let out = Pipe()
-        p.standardOutput = out
-        p.standardError = FileHandle.nullDevice
-        do { try p.run() } catch { return ("", -1) }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        return (String(data: data, encoding: .utf8) ?? "", p.terminationStatus)
-    }
-    static func capture(_ path: String, _ args: [String]) -> String {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: path)
-        p.arguments = args
-        let out = Pipe()
-        p.standardOutput = out
-        p.standardError = FileHandle.nullDevice
-        do { try p.run() } catch { return "" }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        return String(data: data, encoding: .utf8) ?? ""
-    }
-}

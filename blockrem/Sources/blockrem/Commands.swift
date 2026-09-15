@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 
 // MARK: - helpers
 
@@ -6,7 +7,6 @@ import Foundation
 // Only install/uninstall need sudo (the app/daemon/plists are root-owned), so you still can't
 // uninstall or stop the blocker without your password.
 
-private func fail(_ msg: String) -> Never { errOut(msg); exit(1) }
 
 /// Pull `--key value` pairs out of argv. A flag whose next token is missing or itself a `--flag`
 /// is recorded as present-but-empty (callers treat empty as "missing value").

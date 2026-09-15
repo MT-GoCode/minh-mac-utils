@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 
 /// Block-length bounds, in SECONDS. The floor avoids accidental flicker-blocks; the ceiling (1h)
 /// bounds how long an un-quittable cover can ever sit up — a safety rail, not a usage guide.
@@ -189,28 +190,12 @@ func activeBlock(_ alarms: [Alarm], now: Date) -> (label: String, endsEpoch: Dou
 }
 
 enum ScheduleStore {
-    static func load() -> [Alarm] {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: Paths.scheduleFile)),
-              let a = try? JSONDecoder().decode([Alarm].self, from: data) else { return [] }
-        return a
-    }
-    static func save(_ alarms: [Alarm]) {
-        let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? enc.encode(alarms) else { return }
-        try? data.write(to: URL(fileURLWithPath: Paths.scheduleFile), options: .atomic)
-    }
+    static func load() -> [Alarm] { loadJSON(Paths.scheduleFile) ?? [] }
+    static func save(_ alarms: [Alarm]) { saveJSON(alarms, to: Paths.scheduleFile, pretty: true) }
     static func nextID(_ alarms: [Alarm]) -> Int { (alarms.map { $0.id }.max() ?? 0) + 1 }
 }
 
 enum SnoozeStore {
-    static func until() -> Date? {
-        guard let s = try? String(contentsOfFile: Paths.snoozeFile, encoding: .utf8) else { return nil }
-        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty, t != "null", let epoch = Double(t), epoch > 0 else { return nil }
-        return Date(timeIntervalSince1970: epoch)
-    }
-    static func set(_ date: Date?) throws {
-        try (date.map { String($0.timeIntervalSince1970) } ?? "null")
-            .write(toFile: Paths.snoozeFile, atomically: true, encoding: .utf8)
-    }
+    static func until() -> Date? { EpochFile.read(Paths.snoozeFile) }
+    static func set(_ date: Date?) throws { try EpochFile.write(date, to: Paths.snoozeFile) }
 }

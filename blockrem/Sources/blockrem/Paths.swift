@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 
 /// Single source of truth for every on-disk path, launchd label, and identifier.
 enum Paths {

@@ -1,4 +1,5 @@
 import AppKit
+import MacUtilsCore
 import ApplicationServices
 import CoreGraphics
 
