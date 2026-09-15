@@ -1,31 +1,35 @@
 # MacUtilsCore + one-shot install — commonization design
 
-**Date:** 2026-09-15 · **Status:** v1 draft · **Author of the tools:** Minh Trinh
+**Date:** 2026-09-15 · **Status:** v2 — two adversarial passes folded (17 + 40 findings) ·
+**Author of the tools:** Minh Trinh
 
 ## Goal
 
-One home for every piece of plumbing the discipline tools currently carry as private copies, and a
-fresh Mac that sets itself up by running one script. **Zero behavior change** to any CLI command,
-delay, enforcement decision, file format, or on-disk path — the acceptance test is "every existing
-test still passes and every status output is byte-identical", with the few deliberate cosmetic
-exceptions listed in §Deliberate changes.
+One home for the plumbing the discipline tools carry as private copies, and a fresh Mac that sets
+itself up by running one script. **Zero behavior change** to any CLI command, delay, enforcement
+decision, file format, or on-disk path. Acceptance = every existing test green + the golden-output
+gate (§Gate) byte-identical, with only the items in §Deliberate changes allowed to differ.
 
 Two halves:
 
 1. **`MacUtilsCore/`** — a Foundation-only local SwiftPM library at the repo root, depended on by
    demonlock, nextdns-sidecar, and blockrem via `.package(path: "../MacUtilsCore")`. Statically
-   linked, so signing, bundles, and installers are untouched. Kills the sidecar's vendored copies
-   and the `VendorSyncTests` byte-identity guard.
-2. **Installer commonization + `install-all.sh`** — the four bespoke installers adopt the shared
-   `scripts/install-lib.sh` they currently re-implement, the lib gains the four helpers it's missing,
-   every uninstaller collapses onto one, and a top-level driver runs the whole fresh-machine setup
-   with the human-only steps batched at the end.
+   linked: signing, bundles, installers untouched. Kills the sidecar's vendored copies and the
+   `VendorSyncTests` byte-identity guard.
+2. **Installer commonization + `install-all.sh`** — bespoke installers adopt the shared
+   `scripts/install-lib.sh`, the lib gains the helpers it's missing, uninstallers collapse onto one,
+   and a top-level driver runs the whole fresh-machine setup with human-only steps batched last.
 
-Out of scope (deliberately): `multistreamviewer` (nothing overlaps beyond a 2-line AX prompt),
-`stayup` (150 lines, two `Process()` calls — a package dependency costs more than it saves),
-`remote-agent-connector` (single-file `swiftc` build; it is the SSH lifeline and stays untouched),
-`wtalk` (python), `browser-blitz` (node). TCC-prompt helpers (need ApplicationServices, 2 lines
-each), `parseFlags`, a `Paths` builder, the daemon run-loop — surveyed, not worth an abstraction.
+Out of scope, deliberately: `multistreamviewer` (nothing overlaps beyond a 2-line AX prompt),
+`stayup` (150 lines; a package dependency costs more than two `Process()` calls), the
+`remote-agent-connector` *binary* (single-file `swiftc`, the SSH lifeline — untouched; its installer
+is touched only where §Part 2 says), `wtalk` (python), `browser-blitz` (node). Surveyed and rejected
+as not worth an abstraction: TCC-prompt helpers, `parseFlags`, a `Paths` builder, the daemon
+run-loop, launchd/pgrep wrappers (two watchdogs with different semantics — `kickstart -k` vs not —
+four one-liners are not an abstraction), `clamp` (one line, 20 call-site edits), the sidecar's
+`future` layout (stays), `dropMarker` (**cannot** be shared: demonlock appends the payload as ONE
+line — a multi-line policy must stay one request — while the sidecar splits on `\n` into N domain
+rows; both already route through the shared `MarkerIO.append`, which is the real common piece).
 
 ## Part 1 — MacUtilsCore
 
@@ -33,171 +37,216 @@ each), `parseFlags`, a `Paths` builder, the daemon run-loop — surveyed, not wo
 
 ```
 MacUtilsCore/
-  Package.swift            // swift-tools 5.9, macOS 13, one library target + one test target
-  README.md                // what lives here, the "edit here, never copy" rule, author
+  Package.swift            // swift-tools 5.9, macOS 13; library + test target
+  README.md                // what lives here; the "edit here, nothing is vendored" rule; author
   Sources/MacUtilsCore/
-    MarkerIO.swift         // moved verbatim from demonlock (public)
-    DelayQueue.swift       // moved verbatim (public: DelayQueue, Item, Outcome, Row, QStatus, QStateStore, Failure)
-    DelayQueueLegacy.swift // Legacy.keyOnlyMap only (the sidecar's migration; demonlock's own decoders stay)
-    JSON.swift             // loadJSON, saveJSON(mode:pretty:), lenient KeyedDecodingContainer helper
-    Proc.swift             // Proc.run(quiet:), capture, captureStatus
-    Users.swift            // resolveUID(String), userName(for:), consoleUID()
-    Log.swift              // logStderr, nowEpoch, errOut, fail, isRoot, requireRoot
-    TimeSpec.swift         // parseDuration, weekday(letter), letters(for:), validHHMM,
-                           //   nextTimeOfDay, parseInstant(keywords:), fmtLeft, fmtWhen (cached formatters)
-    EpochFile.swift        // the "epoch or null" scalar file (demonlock + blockrem SnoozeStore)
-    Clamp.swift            // ClosedRange<Double>.clamp
-    Launchd.swift          // bootstrap/kickstart/isLoaded + pgrepRunning
-    Markers.swift          // dropMarker(path, payload) -> Bool (CLI side), queueStatusLines(...)
+    MarkerIO.swift         // verbatim from demonlock, `public`
+    DelayQueue.swift       // verbatim, `public`
+    DelayQueueLegacy.swift // `public enum Legacy { static func keyOnlyMap() }` — the sidecar's migration
+    JSON.swift             // loadJSON, saveJSON(mode:pretty:), KeyedDecodingContainer.lenient(_:default:)
+    Proc.swift             // Proc.run(_:_:quiet:) / capture / captureStatus
+    Users.swift            // resolveUID(_:), userName(for:), consoleUID()
+    Log.swift              // logStderr, nowEpoch, errOut, fail(_:), requireRoot(_ message:)
+    TimeSpec.swift         // PRIMITIVES ONLY: parseDuration, weekday(_:), letters(for:), validHHMM,
+                           //   nextTimeOfDay(hhmm:weekday:from:calendar:) -> Date?, fmtLeft, fmtWhen, ParseError
+    EpochFile.swift        // read(path) -> Date? / write(_:to:) — the "epoch or null" scalar file
   Tests/MacUtilsCoreTests/
-    MarkerIOTests.swift    // moved from demonlock
-    DelayQueueTests.swift  // moved from demonlock
-    MigrationTests.swift   // the keyOnlyMap cases moved; demonlock keeps its app-specific ones
-    TimeSpecTests.swift    // new: both keywords, both error paths, nextTimeOfDay edge cases
-    JSONUsersTests.swift   // new: lenient decode, saveJSON mode, resolveUID
+    MarkerIOTests.swift, DelayQueueTests.swift   // moved from demonlock, bodies unchanged
+    MigrationTests.swift                          // only the keyOnlyMap cases move
+    TimeSpecTests.swift                           // new — fixed America/Los_Angeles calendar
+    JSONUsersTests.swift                          // new
 ```
 
-`Package.swift` carries the author: `// MacUtilsCore — shared plumbing for Minh Trinh's macOS
-self-discipline tools (minh-mac-utils). Edit here; nothing is vendored.` README repeats it.
+`Package.swift` header: `// MacUtilsCore — shared plumbing for Minh Trinh's macOS self-discipline
+tools (minh-mac-utils). Edit here; nothing is vendored anywhere.` README repeats the author line.
+`.gitignore` gains `MacUtilsCore/.build/`.
 
-Everything exported is `public`. Types that today are `internal` in `DemonlockCore` get `public`
-+ `public init` where a caller constructs them (Item, Outcome, QStatus, Row, Failure).
+### Public surface (compile-blocking if missed — enumerated)
 
-### What moves, per consumer (all zero-change unless marked)
+`public` + `public init` with today's default arguments for: `DelayQueue.init(kind:store:
+requestMarker:abortMarker:onFailure:payloadIsJSON:auditLog:)`, `DelayQueue.QStateStore.init(load:
+save:)`, `DelayQueue.QState.init(pending:nextSeq:lastAppliedAt:recent:)` + `QState()`,
+`DelayQueue.Item.init(payload:requestedAt:applyAt:seq:retries: = nil, nextRetryAt: = nil)`,
+`Outcome.init`, `Row.init`, `QStatus.init`; methods `QState.fixSeq()`, `DelayQueue.cap`,
+`DelayQueue.maxLinesPerMarker`, every `MarkerIO` static, `Failure` (enum). Anything `private` that
+`DelayQueue` uses internally stays private.
+
+Each consumer re-exports with ONE line — `@_exported import MacUtilsCore` — in
+`DemonlockCore/Util.swift`, `nextdns-sidecar/Core.swift`, `blockrem/Util.swift`, so the ~15
+source files and every `@testable import DemonlockCore` test see the symbols unchanged.
+
+App-side additions to core types are **extensions, never same-named local types** (a module-local
+`enum TimeSpec` would shadow the core one and break every call site): demonlock's `parseTarget`,
+`TimeError`, `nextHHMM`-replacement live in `extension TimeSpec { }`; blockrem's `parseWhen`,
+`parseWeekly`, `parseFirstOn`, `hhmmString` likewise; demonlock's app-specific migration decoders
+in `extension Legacy { }`. Blockrem's top-level `ParseError` is deleted — core's (same shape,
+`message`) replaces it.
+
+### What moves, per consumer
 
 | Concept | demonlock | nextdns-sidecar | blockrem |
 |---|---|---|---|
-| MarkerIO, DelayQueue, keyOnlyMap | delete local copies | delete vendored copies + `DelayQueueSupport`'s shims + the VENDORED headers | — |
-| loadJSON/saveJSON/nowEpoch | delete from `Util.swift` | delete from `DelayQueueSupport` | `ScheduleStore`, `ActiveStore`, `SessionStore`, `Settings.load` rewritten onto them |
-| logStderr | delete; `Enforcer.log` stays (it prints to stdout — kept) | `logLine` becomes a one-line wrapper over `logStderr` — **format change, see §Deliberate** | `Enforcer.log` stays |
-| Proc | delete; `run` keeps inherit-stdio via `quiet: false` default | delete; sidecar's `Proc` was silent → call sites pass `quiet: true` via a 3-line local `enum Proc` shim that forwards to core | delete |
-| resolveUID / userName(for:) / consoleUID | `Settings.enforcedUID` → one-liner; the three getpwuid→name copies (`enforcedUserName`, `Enforcerd.userName`, `usernameForUID`) collapse onto `userName(for:)`; `Enforcerd.consoleUser` → `consoleUID` | `Config.enforcedUID` → one-liner | `Settings.enforcedUID` → one-liner; `Util.consoleUID` deleted |
-| fail/errOut/isRoot/requireRoot | private `fail`/`requireRoot` deleted, messages stay at call sites | `fail` + four inline `geteuid()` guards → `requireRoot` | `fail`/`errOut` deleted |
-| TimeSpec | `parseDuration`, `weekday`, `nextWeekdayHHMM`, `fmtLeft`, `fmtWhen` deleted; `parseTarget` = `try parseInstant(s, keywords: ["until"], from:)` mapping `ParseError` → its `TimeError`; `nextHHMM(String)` deleted — its two callers use `nextTimeOfDay(hhmm:weekday:nil)` (**junk-input edge, see §Deliberate**) | `parseDuration` free function deleted | `parseDuration`, `weekday(for:)`, `letters`, `validHHMM`, `nextTimeOfDay` deleted; `parseWhen` = `Result(catching: parseInstant(s, keywords: ["at"]))`; `parseWeekly`, `parseFirstOn`, `hhmmString` stay (app-specific) |
-| clamp | `Bounds.clamp` → `range.clamp(v)` | same | — |
-| lenient decode | `Settings.init(from:)` shrinks | `Config.init(from:)` shrinks | `Settings.init(from:)` shrinks |
+| MarkerIO, DelayQueue, keyOnlyMap | delete local files; `Legacy` keeps `singleSlot`/`zonesDropSnapshot`/`safeApps` as an extension | delete vendored files + `DelayQueueSupport.swift` entirely | — |
+| loadJSON / saveJSON / nowEpoch | delete from `Util.swift` | delete from `Core.swift`/`DelayQueueSupport` | `ScheduleStore` → `saveJSON(pretty: true)` (today `[.prettyPrinted,.sortedKeys]`); `ActiveStore`, `SessionStore` → default (today `[.sortedKeys]`); `Settings.load` → `loadJSON ?? Settings()` |
+| logStderr | delete; `Enforcer.log` **stays** (it prints to stdout — different sink) | `logLine` → `logStderr` — **format change, §Deliberate #1** | `Enforcer.log` → `logStderr` (byte-identical format + sink) |
+| Proc | delete; `run` default `quiet: false` = today's inherit-stdio; `capture` stderr → `nullDevice` (§Deliberate #3) | delete; its ~12 `Proc.run` sites pass `quiet: true` (today's silence); `captureStatus` is core's | delete |
+| resolveUID / userName(for:) / consoleUID | `Settings.enforcedUID` → one-liner; `enforcedUserName`, `Enforcerd.userName`, `usernameForUID` → `userName(for:)`; `Enforcerd.consoleUser` → `consoleUID()` and the local binding at `Enforcerd.swift:95` is renamed (`guard let cuid = consoleUID()`) | `Config.enforcedUID` → one-liner | `Settings.enforcedUID` → one-liner; `Util.consoleUID` deleted |
+| fail / errOut / requireRoot | private `fail`/`requireRoot` deleted; `requireRoot("demonlock \(cmd): requires sudo — …")` keeps the exact text | `fail` deleted; the four `geteuid()` guards → `requireRoot("<their exact current text>")` | `fail`/`errOut` deleted |
+| TimeSpec | delete `parseDuration`, `weekday`, `nextWeekdayHHMM`, `nextHHMM`, `fmtLeft`, `fmtWhen`; keep `parseTarget` + `TimeError` verbatim (same strings), now calling `nextTimeOfDay(hhmm:weekday:from:)` for both branches (`nextHHMM`'s `?? 500` junk default was dead: `parseTarget` rejects before it) | delete free `parseDuration` | delete `parseDuration`, `weekday(for:)` (→ `weekday(_:)`), `letters`, `validHHMM`, `nextTimeOfDay`; keep `parseWhen` verbatim (same strings) |
+| lenient decode | `Settings.init(from:)` uses `c.lenient(.x, default: d.x)` | `Config.init(from:)` | `Settings.init(from:)` |
 | EpochFile | `SnoozeStore` → 2-line wrapper | — | `SnoozeStore` → 2-line wrapper |
-| Launchd | watchdog's two `launchctl` calls + `pgrep` | `Lockdown`'s `launchctl print` | watchdog's calls |
-| dropMarker | `dropDelayMarker` → wrapper adding its fail message | `dropMarker` → wrapper | — |
-| queueStatusLines | moved; `printQueueStatus` calls it | `cmdFuture` adopts it — **layout change, see §Deliberate** | — |
 
-`parseInstant` grammar (superset of both today's parsers, keyword-parameterised):
-`"for <dur>"` → `now + parseDuration`; `"<kw> <HHMM>"` / `"<kw> <D>HHMM"` → `nextTimeOfDay`.
-Rejects: bad duration, non-4-digit or invalid HHMM, unknown day letter, nil from the calendar
-(fail closed — never a fallback minute). Error messages are built from the keyword so each app's
-text stays exactly what it prints today (both current strings are tested).
+`nextTimeOfDay(hhmm:weekday:from:calendar: = .current) -> Date?`: blockrem's 0…8-day loop,
+strictly future, optional weekday filter, **nil** instead of `now+60`. Blockrem's caller can't hit
+nil (a valid HHMM resolves within 8 days); demonlock's `parseTarget` throws on nil exactly as it
+did via `nextWeekdayHHMM`. Both today derive the candidate from day components + hh:mm with
+`Calendar.current`, so DST behavior is identical; the `calendar:` parameter exists so tests pin
+`America/Los_Angeles`.
 
-`nextTimeOfDay(hhmm:weekday:from:) -> Date?` is blockrem's loop (0…8 days, strictly future,
-optional weekday filter) returning nil instead of `now+60` — blockrem's only caller already can't
-hit nil (a valid HHMM always resolves within 8 days); demonlock's `parseTarget` throws on nil as it
-does today via `nextWeekdayHHMM`.
+`fmtWhen(epoch, format)` — **no formatter cache** (demonlock's header mandates "render in the
+current tz"; a cached `DateFormatter` freezes the tz in a long-lived daemon). Same body as today.
 
-`fmtWhen(epoch, format)` keeps a per-format `DateFormatter` cache (formatters are expensive and
-every call site allocates one today). Output identical for identical format strings.
+### Deliberate changes (cosmetic; listed so they're reviewed, not discovered)
 
-### Deliberate changes (cosmetic, listed so they're reviewed, not discovered)
+1. **nextdns-sidecar log prefix** `2026-09-15T10:00:00 msg` → `[2026-09-15 10:00:00] msg`.
+   Nothing parses that log (`status` reads `pf-state.json`).
+2. **`VendorSyncTests` deleted** — nothing left to keep in sync.
+3. **`Proc.capture` stderr → `/dev/null`** in demonlock/blockrem (was an undrained `Pipe()`: a
+   child writing >64 KiB to stderr would deadlock the daemon). Not observable — the pipe was never
+   read. The sidecar already did this.
 
-1. **nextdns-sidecar log prefix**: `2026-09-15T10:00:00 msg` → `[2026-09-15 10:00:00] msg`
-   (demonlock/blockrem format). Nothing parses that log. `nextdns-sidecar status` reads
-   `pf-state.json`, not the log.
-2. **`nextdns-sidecar domains future` layout** adopts demonlock's `queueStatusLines`: rows get a
-   number and the `last landed` line; same data.
-3. **demonlock `nextHHMM("junk")`** used to silently mean 05:00 tomorrow; after: `parseTarget`
-   already rejects non-4-digit input before reaching it, so no CLI path could observe this — the
-   only change is that the helper no longer exists.
-4. **`VendorSyncTests` deleted** — there is nothing left to keep in sync.
-
-Everything else must be byte-identical: every `status` output, every log line in demonlock and
-blockrem, every file on disk.
+Everything else — every `status` output, every stderr message on bad input, every demonlock /
+blockrem log line, every byte on disk — must be identical.
 
 ### Build / install implications
 
-`swift build` inside each tool dir resolves `../MacUtilsCore` from the repo checkout — the only
-new requirement is that the repo is cloned whole (it always is). demonlock's committed prebuilt
-`dist/` (the no-toolchain path) is unaffected. Each tool's `Package.swift` adds the path dependency
-and the target dependency; nothing else in build/sign/deploy changes.
-
-### Tests
-
-- MacUtilsCore: the moved MarkerIO/DelayQueue/keyOnlyMap suites (unchanged bodies) + new TimeSpec
-  (both keywords; `for`/`at`/`until`; invalid HHMM; `U0730` next-Sunday; nil-calendar fail-closed;
-  `fmtLeft` boundaries; `fmtWhen` cache returns identical strings), JSON (lenient decode: missing
-  key, wrong type; `saveJSON(mode:)` result mode), Users (`resolveUID("501")`, name, garbage → nil).
-- demonlock: `DemonlockCoreTests` minus the moved files still green (`_policytest` 49/49 unchanged).
-- blockrem: `_selftest` 78/78 unchanged — it exercises `parseWhen`/`parseDuration`/`parseWeekly`
-  through blockrem's wrappers, which is exactly the regression net for the TimeSpec merge.
-- **Golden-output check (the zero-regression gate):** before the change, capture on the Mac
-  `demonlock status`, `demonlock delayzones`, `demonlock delay-set-policy --status`,
-  `demonlock safe-apps show`, `demonlock snooze-preset show`, `demonlock password-lockbox show`,
-  `demonlock admin-release-valve status`, `blockrem list`, `nextdns-sidecar domains future`,
-  `nextdns-sidecar networklockdown status`; after install, diff — only timestamps/countdowns and the
-  two listed sidecar cosmetics may differ.
+`swift build` inside each tool dir resolves `../MacUtilsCore` from the whole-repo checkout
+(`install/build.sh` and the sidecar's `--package-path` both run there, as the user). Linking is
+static; `codesign` on the bundle is unchanged. demonlock's committed prebuilt `dist/` is refreshed
+(`--refresh-dist`) and committed at rollout so the no-toolchain path ships the same code.
 
 ## Part 2 — installers and one-shot setup
 
 ### install-lib additions (`scripts/install-lib.sh`)
 
-| Helper | Replaces |
+| Helper | Semantics (pinned) |
 |---|---|
-| `dl_pick_bundle <app> <build.sh>` — Dev-ID/dist/build ladder: Dev ID in keychain → build; no CLT → committed `dist/` if present; else fail with the CLT hint | 3 inline copies (demonlock, blockrem, wtalk-variant) |
-| `dl_stop <label> <procname> [agent\|daemon]` — bootout → pkill → sleep, **always before deploy** | MSV/wtalk/rac inline; stayup didn't stop at all (overwrote a running bundle) |
-| `dl_verify_launchd <label> <agent\|daemon>` — `launchctl print`, non-zero with a "no console session — log in and run …" hint | MSV's inline hard-verify; `dl_install_launchd` now calls it and **returns non-zero** instead of swallowing |
-| `dl_install_launchd … [--as-user] [--sed 'a=b' …]` | wtalk's user-context bootstrap; demonlock/blockrem's agent-log-path sed |
-| `dl_install_cli_wrapper <name> <exe>` | the heredoc wrapper in demonlock/blockrem/wtalk (kept as wrapper, not symlink — demonlock's sudoers grant references it) |
-| `dl_codesign <app> [entitlements]` — ladder + `--options runtime --timestamp` everywhere | 5 build.sh copies with inconsistent flags |
-| `dl_uninstall_common <app> <bundle> <cli…> <label…>` + `dl_unregister_spare <bid>` | 7 hand-rolled uninstallers; the python3 JSON edit duplicated in two of them |
-| `dl_user_launchd <label> <plist-body>` — no-root LaunchAgent writer + bootstrap + verify | browser-blitz, paseo |
+| `dl_pick_bundle <app> <build.sh> [committed-dist]` | **Four explicit rungs**: (1) CLT present → build (the ladder picks Dev ID → stable self-signed → ad-hoc); (2) no CLT + committed `dist/` present → deploy it; (3) neither → fail with the CLT hint. **Build always wins when a toolchain exists** — today's "no Dev ID → prefer dist" rung is deleted (it installed a month-stale committed bundle on any no-Dev-ID machine). Never consumes a locally produced dist: blockrem/wtalk `build.sh` stop writing `dist/` unconditionally (demonlock's `--refresh-dist` gate everywhere). Never falls back to "any existing bundle" on build failure (today's `dl_swift_bundle` does; that path is removed). |
+| `dl_stop <procname> [--label L --domain gui\|system] [--pre <fn>]` | pkill (+ bootout when a label is given), after an optional graceful `--pre` hook. Used **only** by the apps whose launchd job would respawn or that overwrite a running GUI app: MSV (`SuccessfulExit=false`), wtalk, stayup (label-less; today it `open`s a second instance every run), rac (`--pre` = its osascript quit + tunnel pkill, kept bespoke). demonlock/blockrem keep **deploy → bootout → bootstrap** (their daemons stay up through the deploy — no enforcement gap while armed). Invariant everywhere: **build before stop**. |
+| `dl_verify_launchd <label> <gui\|system>` | `launchctl print` parsed for `state = running` and a `pid` (loaded-but-crash-looping is a failure); non-zero with a "no console session — log in locally, then: launchctl bootstrap …" hint. `dl_install_launchd` calls it and **returns non-zero** (no more `\|\| true`). |
+| `dl_install_launchd <plist> <agent\|daemon> [--as-user] [--sed 'K=V' …]` | `--sed` only substitutes; the manifest pre-creates dirs (`~/Library/Logs`, chown) and computes values (wtalk's ffmpeg PATH discovery stays in its `post_install`). `--as-user` = wtalk's `sudo -u USER launchctl bootstrap gui/…`; both error texts ("Bootstrap failed: 5" root / "Domain does not support specified action" user) map to the same hint. |
+| `dl_install_cli_wrapper <name> <exe>` | the heredoc wrapper (demonlock, blockrem, wtalk). Kept as a wrapper for parity with today; **not** because sudoers needs it — demonlock's sudoers grant references the bundle binary (deliberately, review H4), and `Agent.swift`'s `do shell script` would work with a symlink too. |
+| `dl_seed_support_dir` | **not shared** — demonlock *merges* `settings.json` (user state lives there), blockrem *overwrites* (code defaults must win; nothing else writes it). Each stays in its `post_install`. demonlock's `chown -R root:wheel $SUPPORT` is fixed to exclude `rv/` (a pending user marker was re-owned to root and rejected by the owner check). |
+| `dl_uninstall_common <app> <bundle> <cli…> <label…> [--purge]` + `dl_unregister_spare <bid>` | replaces 7 uninstallers. Keeps the **console-user fallback when `SUDO_USER` is empty** (uninstall from a root/Recovery shell is the lock-out escape). **No `tccutil reset`** in the common path (opt-in flag; only MSV uses it today). `--purge` = remove the support dir; MSV/stayup/rac keep their current "always"/"never" prefs behavior, documented. |
+| `dl_user_launchd <label> <plist-body>` | no-root LaunchAgent writer + bootstrap + verify (browser-blitz, paseo). |
 
-Then demonlock, blockrem, wtalk, rac `install.sh` become manifests + `provide_bundle` + a short
-`post_install` (seed support dir, sudoers, spare), like MSV/stayup today. nextdns-sidecar keeps its
-bespoke credential/profile flow but adopts `dl_require_root` (drops its accept-root-shell
-exception — it's the only installer that does, and the README says never run from a root shell),
-`dl_install_launchd`, `dl_verify_launchd`. Every installer: `set -uo pipefail` + explicit
-`|| exit 1` on the steps that matter (the manifest style), no silent `|| true` on launchd loads.
+Not added: `dl_codesign` — making `--options runtime --timestamp` universal is a behavior change
+for MSV/stayup/rac (rac sends Apple events; `--timestamp` makes builds network-dependent). Each
+`build.sh` keeps its flags; the two-line ladder call is not worth a helper.
 
-### `install-all.sh` (repo root, run as the user, calls sudo itself)
+Then demonlock, blockrem, wtalk `install.sh` become manifests (`provide_bundle` = `dl_pick_bundle`,
+`post_install` = seed + sudoers (written **before** deploy so an invalid sudoers can't leave a
+half-install) + spare). rac's installer stays bespoke except `dl_deploy_app`/`dl_register_spare`.
+nextdns-sidecar keeps its credential/profile flow, adopts `dl_require_root` (drops its accept-root
+exception — the README forbids root shells; the *uninstaller* keeps the fallback per above),
+`dl_install_launchd`, `dl_verify_launchd`, and gains `--credentials-file <path>` (two-line
+`PROFILE=…\nAPI_KEY=…`, the file it already writes) so the profile ID never appears on argv.
+Every installer forwards `CODESIGN_IDENTITY` through its `sudo -u USER … build.sh` (sudo's
+`env_reset` strips it otherwise, and the ladder would re-prompt the keychain per build).
+
+### `install-all.sh` (repo root, run as the user from a **local terminal or tmux**)
 
 ```
 ./install-all.sh [--from <phase>] [--only <tool>] [--no-secrets]
- 0 preflight   xcode-select -p · brew · uv · ffmpeg · node/npm · jq · python3 · Karabiner ·
-               ~/Downloads/NextDNS-*.mobileconfig — prints ONE fix-it block (the exact brew/curl
-               lines) and exits 1 if anything is missing. SUDO_USER≠root. Console session present.
- 1 secrets     ONE tty pass, skipped per-file when already filled: NextDNS profile id + API key
-               (→ 0600 temp handed to the sidecar via --profile/--key-file), Gemini key
-               (→ ~/.wtalk/.env), rac MIDDLEMAN/MACHINE_NAME (→ ~/.remote-agent-connector/config)
- 2 identity    bash signing-ladder.sh once as the user → export CODESIGN_IDENTITY (one keychain /
-               smartcard prompt instead of five; creates the self-signed cert before any build)
- 3 root        sudo -v; demonlock → blockrem → multistreamviewer → stayup → remote-agent-connector
-               → wtalk (setup.sh as user, then install) → nextdns-sidecar (all flags passed; no tty
-               reads). demonlock is first because every other installer registers as its spare.
- 4 user        browser-blitz install, setup-paseo-daemon (if Paseo present), then
-               sudo demonlock/register-recommended-spares.sh
- 5 verify      launchctl print for every label (system + gui), each tool's `status`, one table
- 6 checklist   opens every TCC pane and both mobileconfigs, then prints the numbered human list:
-               Location Always + Accessibility (demonlock) · Accessibility (blockrem, MSV, wtalk) ·
-               Screen Recording (MSV, rac) · Microphone (wtalk) · approve 2 profiles · Karabiner
-               key → wtalk toggle · Chrome Load-unpacked · rac setup · then the arm commands and
-               `demonlock nosudo` (never automated — README §3).
+ 0 preflight   ORDER MATTERS: `xcode-select -p` FIRST (the /usr/bin/python3 + git stubs pop the CLT
+               GUI dialog if CLT is absent); then export PATH=/opt/homebrew/bin:$HOME/.local/bin:$PATH;
+               probe brew · uv · ffmpeg · node/npm · jq · Karabiner · Paseo(optional) by absolute
+               path; repo path is stable (not /tmp, /private/var/folders, no '#'); SUDO_USER≠root;
+               console session = $USER (`who | grep console`); **admin membership**
+               (`dseditgroup -o checkmember -m $USER admin`) — if false: "request admin via
+               demonlock admin-release-valve request, then re-run" and exit; if the admin is a live
+               release-valve grant, require ≥30 min left (else print the i-still-need-sudo line);
+               if $SSH_CONNECTION: warn, require tmux/nohup, and SKIP rac (its reinstall kills the
+               tunnel this shell rides on; run `--only remote-agent-connector` locally);
+               NextDNS: resolve `~/Downloads/NextDNS-*.mobileconfig` to the NEWEST single file (two
+               matches would be "unknown argument" to the sidecar) — downloading it (browser login at
+               apple.nextdns.io) is a human step BEFORE this phase, said so in the fix-it block.
+               Prints ONE fix-it block (exact brew/curl/xcode-select lines, noting which ones open a
+               GUI dialog) and exits 1 if anything is missing.
+ 1 secrets     ONE tty pass, never `set -x`, each skipped when its target already has content:
+               NextDNS profile id + API key → `mktemp` 0600 two-line credentials file, deleted by
+               `trap EXIT` (a leftover from a failed run is never reused — re-prompt); Gemini key →
+               `~/.wtalk/.env` written as the user with wtalk's FULL template (GROQ/HF lines too),
+               0600; rac MIDDLEMAN/MACHINE_NAME → `~/.remote-agent-connector/config` as valid shell
+               (quoted, no managed-values section).
+ 2 identity    `bash signing-ladder.sh` once as the user → CODESIGN_IDENTITY; over SSH with a Dev ID
+               that needs a smartcard PIN, refuse (no GUI to answer it).
+ 3 root        ONE `sudo` root subshell (not one `sudo` per installer — the timestamp expires during
+               wtalk's 10-min PyInstaller build, and a release-valve revoke mid-run would strand later
+               steps) running: demonlock → blockrem → multistreamviewer → stayup → wtalk (setup.sh as
+               the user first) → nextdns-sidecar (--profile-src/--credentials-file; zero tty reads)
+               → remote-agent-connector LAST (skipped over SSH). CODESIGN_IDENTITY passed explicitly.
+               **Stop at first failure** (a demonlock failure would make every later spare
+               registration a no-op and register-recommended-spares hard-exit).
+ 4 user        browser-blitz install; setup-paseo-daemon ONLY if Paseo is present and its daemon
+               isn't already loaded with an unchanged binary path (it bounces running agents);
+               `sudo demonlock/register-recommended-spares.sh` (inside the same root subshell).
+ 5 verify      inside the root subshell: `launchctl print` state=running+pid for every label
+               (system + gui), each tool's `status`; one table. Spares registered for apps not yet
+               installed are fine (`test-lockout` lists them; not a failure).
+ 6 checklist   runs from the console session (or via `rac exec`): opens every TCC pane + both
+               mobileconfigs, prints the numbered human list — demonlock: Location Always +
+               Accessibility · blockrem: Accessibility · MSV: Accessibility + Screen Recording ·
+               wtalk: Microphone + Accessibility · rac: Screen Recording + Accessibility +
+               Automation · Karabiner: Input Monitoring + driver-extension approval · approve the 2
+               profiles · Chrome Load-unpacked · `rac setup` (scriptable, but needs MIDDLEMAN
+               reachable) · Karabiner rule → `wtalk toggle` (written for you into karabiner.json via
+               jq if Karabiner is present — Karabiner hot-reloads) · then the arm commands and
+               `demonlock nosudo`, never automated (README §3).
 ```
 
-Re-runnable end to end: every installer is already idempotent; the driver skips secrets that exist,
-and `--only`/`--from` resume a failed phase. Exit code = first failing phase. `uninstall-all.sh`
-mirrors the README's uninstall block using `dl_uninstall_common`.
+Re-run semantics: `--only <tool>` runs phases 0–2 then that tool; `--from <phase>` resumes.
+Idempotency fixes that make "re-run end to end" true: wtalk `--no-prime-perms` (the driver passes it
+when `~/.wtalk` pre-existed — `--prime-perms` blocks on a pending dialog with no GUI); stayup and rac
+`open` only when not already running; paseo skip rule above. `uninstall-all.sh [--purge]` mirrors the
+README block via `dl_uninstall_common`.
 
-### Tests for Part 2
+README: clone via **https** (a fresh machine has no SSH key), `cd minh-mac-utils && ./install-all.sh`;
+the "no top-level driver" paragraph is replaced.
 
-- `bash -n` on every script; `shellcheck` clean on the lib and driver (warnings allowed only where
-  annotated).
-- Live: reinstall demonlock, blockrem, nextdns-sidecar, multistreamviewer, stayup, wtalk on the
-  Mac through their new manifests under the current grant; the golden-output diff above; `launchctl
-  print` for all labels; `demonlock test-lockout` still lists all spares.
-- `install-all.sh --from verify` on the Mac (phases 5–6) must pass; phases 0–4 are exercised by
-  `--only <tool>` for each tool. A true fresh-machine run can't be tested here — the design
-  compensates by making each phase a function that is also what `--only` runs.
+## Gate (the zero-regression check, run on the Mac before and after)
+
+1. **stdout**: `demonlock status`, `delayzones`, `delay-set-policy --status`, `safe-apps show`,
+   `snooze-preset show`, `password-lockbox show`, `admin-release-valve status`, `help`;
+   `blockrem list`, `help`; `nextdns-sidecar domains future`, `networklockdown status`, `help`.
+2. **stderr on bad input** (where string drift would hide): `demonlock snooze "until junk"`,
+   `demonlock snooze "for x"`, `blockrem snooze "at x"`, `blockrem set --onetime "for x" …`,
+   non-root `nextdns-sidecar … set-delay`.
+3. **on-disk bytes**: `shasum` of `schedule.json` after a blockrem `set`+`delete` round-trip,
+   demonlock `state.json`/`settings.json`, sidecar `config.json`/`pf-state.json` after one daemon
+   tick.
+4. **daemon logs**: tail the three logs across one watchdog tick (child `launchctl` noise must be
+   present/absent exactly as before).
+5. **marker line semantics**: a test in each app's wrapper — demonlock's `dropDelayMarker` with an
+   embedded `\n` yields ONE line; the sidecar's `dropMarker` yields N.
+
+Only timestamps/countdowns and §Deliberate #1 may differ.
+
+## Tests
+
+- MacUtilsCore: moved suites unchanged + TimeSpec (both keywords via each app's wrapper tests;
+  `parseDuration` table; `nextTimeOfDay` with a fixed LA calendar: today-later, tomorrow, weekday
+  filter, 8-day search, DST spring-forward day) + JSON (lenient missing/wrong-type; `saveJSON(mode:)`
+  result mode; `pretty` bytes) + Users.
+- demonlock: remaining `DemonlockCoreTests` green; `_policytest` 49/49.
+- blockrem: `_selftest` 78/78 (exercises `parseWhen`/`parseWeekly` through its wrappers).
+- Part 2: `bash -n` all scripts; `shellcheck` on lib + driver; live reinstall of demonlock, blockrem,
+  nextdns-sidecar, multistreamviewer, stayup, wtalk through the new manifests under the current
+  grant; the Gate; `install-all.sh --from verify`; `--only <tool>` for each tool.
 
 ## Rollout
 
-1. Part 1 (core + three consumers), tests green locally on the Mac, review round.
-2. Part 2 (lib + manifests + driver), review round.
-3. Reinstall the six tools under the live grant, golden diff, push. README index updated: the
-   "no top-level driver" paragraph is replaced by `install-all.sh`.
+1. Part 1 + tests green on the Mac → implementation review round (code vs this spec).
+2. Part 2 + `bash -n`/shellcheck → review round.
+3. Refresh + commit `demonlock/dist`; reinstall the six tools under the live grant; run the Gate;
+   push. README updated.
