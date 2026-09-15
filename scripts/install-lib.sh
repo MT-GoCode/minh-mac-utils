@@ -88,6 +88,7 @@ dl_deploy_app() {  # <src_app_path> <bundle_name>
 
 # Symlink a CLI in /usr/local/bin → a bundle executable.
 dl_install_cli() {  # <cli_name> <target_exec_path>
+  mkdir -p /usr/local/bin
   ln -sf "$2" "/usr/local/bin/$1" && dl_ok "/usr/local/bin/$1 → $2"
 }
 
@@ -104,6 +105,7 @@ dl_install_cli_wrapper() {  # <cli_name> <target_exec_path>
 # Install a plain script/binary as a root-owned CLI.
 dl_install_script_cli() {  # <cli_name> <src>
   [ -e "$2" ] || { echo "✗ no file at: $2"; return 1; }
+  mkdir -p /usr/local/bin
   install -m 0755 -o root -g wheel "$2" "/usr/local/bin/$1" && dl_ok "/usr/local/bin/$1"
 }
 
@@ -195,7 +197,7 @@ dl_user_launchd() {  # <label>   (plist body on stdin)
   launchctl bootstrap "gui/$uid" "$dst" 2>/dev/null || launchctl kickstart -k "gui/$uid/$label" 2>/dev/null || true
   for i in 1 2 3 4 5 6; do
     out="$(launchctl print "gui/$uid/$label" 2>/dev/null)" || out=""
-    printf '%s' "$out" | grep -q "state = running" && { echo "  ✓ $label running"; return 0; }
+    printf '%s' "$out" | grep -q "state = running" && printf '%s' "$out" | grep -qE "pid = [0-9]+" && { echo "  ✓ $label running"; return 0; }
     sleep 1
   done
   echo "✗ gui/$uid/$label is not running (launchctl print gui/$uid/$label)" >&2; return 1
@@ -241,9 +243,13 @@ dl_register_spare() {  # <name(unused)> <bid> <tid> [--no-root-ownership]
 
 # Drop an app from demonlock's spare list (root; used by uninstallers). Silent no-op without demonlock.
 dl_unregister_spare() {  # <bid>
-  local dl=/Applications/Demonlock.app/Contents/MacOS/demonlock
+  # `safe-apps remove` is NAME-keyed (name = last bid component) and drops a marker into the USER-owned
+  # rv/ inbox, so it must run as the console user (root's marker fails the owner check). Applied on the
+  # daemon's next tick — demonlock must still be running (uninstall-all removes it last).
+  local dl=/Applications/Demonlock.app/Contents/MacOS/demonlock name="${1##*.}"
   [ -x "$dl" ] || return 0
-  "$dl" safe-apps remove "$1" >/dev/null 2>&1 && echo "  removed $1 from the demonlock spare list" || true
+  sudo -u "$(dl_console_user)" "$dl" safe-apps remove "$name" >/dev/null 2>&1 \
+    && echo "  removed '$name' from the demonlock spare list (applies on the next tick)" || true
 }
 
 # ---------------------------------------------------------------- uninstall
@@ -289,16 +295,22 @@ dl_run_manifest() {
       fi
       dl_deploy_app "$art" "$BUNDLE" || return 1
       if [ -n "${CLI:-}" ]; then
-        if [ "${CLI_WRAPPER:-no}" = yes ]; then dl_install_cli_wrapper "$CLI" "/Applications/$BUNDLE/Contents/MacOS/${CLI_EXEC:-$CLI}"
-        else dl_install_cli "$CLI" "/Applications/$BUNDLE/Contents/MacOS/${CLI_EXEC:-$CLI}"; fi
+        if [ "${CLI_WRAPPER:-no}" = yes ]; then dl_install_cli_wrapper "$CLI" "/Applications/$BUNDLE/Contents/MacOS/${CLI_EXEC:-$CLI}" || return 1
+        else dl_install_cli "$CLI" "/Applications/$BUNDLE/Contents/MacOS/${CLI_EXEC:-$CLI}" || return 1; fi
+      fi
+      # Spare registration BEFORE post_install: if the launchd verify fails (no console session over
+      # SSH), the deployed bundle must still be spared or the next lockout kills it at login.
+      if [ "${SPARED:-no}" = yes ]; then
+        dl_register_spare "$APP_NAME" "$BUNDLE_ID" "$TEAM_ID" "${SPARE_FLAG:-}" || dl_warn "spare registration failed — later: sudo demonlock safe-apps register $BUNDLE_ID"
       fi
       if declare -F post_install >/dev/null; then post_install || { echo "✗ ${APP_NAME}: post_install failed"; return 1; }; fi
-      [ "${SPARED:-no}" = yes ] && dl_register_spare "$APP_NAME" "$BUNDLE_ID" "$TEAM_ID" "${SPARE_FLAG:-}"
+      return 0
       ;;
     cli)
       local art; art="$(provide_bundle)" || { echo "✗ ${APP_NAME}: provide_bundle failed"; return 1; }
-      dl_install_script_cli "$CLI" "$art"
+      dl_install_script_cli "$CLI" "$art" || return 1
       if declare -F post_install >/dev/null; then post_install || return 1; fi
+      return 0
       ;;
     *) echo "✗ ${APP_NAME:-app}: unknown APP_TYPE '${APP_TYPE:-}'"; return 1 ;;
   esac

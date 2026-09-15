@@ -9,7 +9,7 @@ REPO="$(cd "$(dirname "$0")" && pwd)"; cd "$REPO"
 P="${1:-}"
 sudo -v || exit 1
 sudo bash -c "
-set -uo pipefail; cd '$REPO'
+set -uo pipefail; cd '$REPO'; export PATH=/opt/homebrew/bin:/Users/$USER/.local/bin:\$PATH
 sudo nextdns-sidecar networklockdown disarm 2>/dev/null || true
 [ -x /usr/local/bin/demonlock ] && demonlock disarm 2>/dev/null || true
 sudo -u '$USER' rac teardown 2>/dev/null || true

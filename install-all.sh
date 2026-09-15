@@ -16,7 +16,7 @@ cd "$REPO"
 
 ONLY=""; FROM="preflight"; NOSECRETS=0
 while [ $# -gt 0 ]; do case "$1" in
-  --only) ONLY="$2"; shift 2;; --from) FROM="$2"; shift 2;; --no-secrets) NOSECRETS=1; shift;;
+  --only) ONLY="${2:?--only needs a tool}"; shift 2;; --from) FROM="${2:?--from needs a phase}"; shift 2;; --no-secrets) NOSECRETS=1; shift;;
   -h|--help) sed -n 2,12p "$0"; exit 0;; *) echo "unknown arg: $1"; exit 1;; esac; done
 
 ok()   { echo "  ✓ $*"; }
@@ -32,7 +32,9 @@ export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"
 CREDFILE=""; cleanup() { [ -n "$CREDFILE" ] && rm -f "$CREDFILE"; }; trap cleanup EXIT
 SSH_SESSION=0; [ -n "${SSH_CONNECTION:-}" ] && SSH_SESSION=1
 WTALK_PREEXISTED=0; [ -d /Applications/wtalk.app ] && WTALK_PREEXISTED=1
-MOBILECONFIG=""
+# NextDNS profile: newest single match. The real download is named like "NextDNS (abc123).mobileconfig"
+# (space, no dash) — hence the loose glob; two matches would be "unknown argument" to the sidecar.
+MOBILECONFIG="$(ls -t "$HOME"/Downloads/NextDNS*.mobileconfig 2>/dev/null | head -1 || true)"
 
 # ---------------------------------------------------------------- 0 preflight
 phase_preflight() {
@@ -48,13 +50,11 @@ phase_preflight() {
   command -v uv >/dev/null 2>&1 || { missing+=("uv"); fixit+=("curl -LsSf https://astral.sh/uv/install.sh | sh"); }
   [ -d "/Applications/Karabiner-Elements.app" ] || { missing+=("Karabiner-Elements"); fixit+=("brew install --cask karabiner-elements   # then approve its driver extension in System Settings"); }
   [ -d "/Applications/Paseo.app" ] || warn "Paseo.app not installed — the paseo daemon step will be skipped"
-  # NextDNS profile: newest single match (two matches would be 'unknown argument' to the sidecar).
-  MOBILECONFIG="$(ls -t "$HOME"/Downloads/NextDNS-*.mobileconfig 2>/dev/null | head -1 || true)"
   if [ -z "$MOBILECONFIG" ] && [ ! -f "/Library/Managed Preferences/com.apple.dnsSettings.managed.plist" ]; then
     missing+=("NextDNS .mobileconfig"); fixit+=("# log in at https://apple.nextdns.io and download your profile to ~/Downloads (a browser step)")
   fi
   # console session must be this user (gui-domain LaunchAgents load only into an Aqua session)
-  who | grep -q "^$ME .*console" || warn "no console session for $ME — gui LaunchAgents will fail to load (log in locally, or expect verify failures)"
+  who | grep -q "^$ME .*console" || die "no console session for $ME — gui LaunchAgents can't load. Log in locally (or via the GUI session) and re-run."
   [ "$SSH_SESSION" = 1 ] && warn "SSH session: remote-agent-connector is SKIPPED (its reinstall kills this tunnel) — run '--only remote-agent-connector' from a local terminal; consider tmux for the rest"
   # admin: sudo must actually be possible
   if ! dseditgroup -o checkmember -m "$ME" admin >/dev/null 2>&1; then
@@ -78,7 +78,10 @@ phase_preflight() {
 # ---------------------------------------------------------------- 1 secrets
 phase_secrets() {
   echo "▸ phase 1 — secrets (one pass; Enter to skip any you'll add later)"
-  [ "$NOSECRETS" = 1 ] && { ok "--no-secrets: skipping"; return; }
+  if [ "$NOSECRETS" = 1 ]; then
+    tool_wanted wtalk && ! grep -qs '^GEMINI_API_KEY=.\+' "$HOME/.wtalk/.env" && warn "--no-secrets but ~/.wtalk/.env has no Gemini key (wtalk pastes raw transcripts until you add one)"
+    ok "--no-secrets: skipping"; return
+  fi
   if tool_wanted nextdns-sidecar; then
     printf "NextDNS Profile ID (blank = keep existing/skip): "; read -r p
     if [ -n "$p" ]; then
@@ -124,7 +127,6 @@ phase_root_and_user() {
   echo "▸ phase 3/4 — installs (one sudo session; password once)"
   sudo -v || die "sudo failed"
   local wtalk_flag=""; [ "$WTALK_PREEXISTED" = 1 ] && wtalk_flag="--no-prime-perms"
-  local sc_flags=(); [ -n "$MOBILECONFIG" ] && sc_flags+=(--profile-src "$MOBILECONFIG"); [ -n "$CREDFILE" ] && sc_flags+=(--credentials-file "$CREDFILE")
   local skip_rac="$SSH_SESSION"
   # Everything below runs inside ONE root shell: the sudo timestamp can't expire during wtalk's long
   # PyInstaller build, and a release-valve revoke mid-run can't strand later steps. SUDO_USER is inherited
@@ -136,7 +138,8 @@ phase_root_and_user() {
 set -uo pipefail
 cd "$REPO"; export PATH="/opt/homebrew/bin:/Users/$SUDO_USER/.local/bin:$PATH"
 tool_wanted() { [ -z "$ONLY" ] || [ "$ONLY" = "$1" ]; }
-run() { echo; echo "━━ $1"; shift; "$@" || { echo "✗ $1 failed — stopping (fix, then: ./install-all.sh --only <tool> or --from root)"; exit 1; }; }
+run() { local label="$1"; shift; echo; echo "━━ $label"; "$@" || { echo "✗ $label failed — stopping (fix, then: ./install-all.sh --only <tool> or --from root)"; exit 1; }; }
+sc_flags=(); [ -n "${PROFILE_SRC:-}" ] && sc_flags+=(--profile-src "$PROFILE_SRC"); [ -n "${CREDFILE:-}" ] && sc_flags+=(--credentials-file "$CREDFILE")
 if [ "$FROM_I" -le 3 ]; then
   tool_wanted demonlock         && run "demonlock"         ./demonlock/install.sh
   tool_wanted blockrem          && run "blockrem"          ./blockrem/install.sh
@@ -146,8 +149,7 @@ if [ "$FROM_I" -le 3 ]; then
     run "wtalk setup (as $SUDO_USER)" sudo -u "$SUDO_USER" env PATH="$PATH" ./wtalk/setup.sh
     run "wtalk" ./wtalk/install.sh $WTALK_FLAG
   fi
-  # shellcheck disable=SC2086
-  tool_wanted nextdns-sidecar   && run "nextdns-sidecar"   ./nextdns-sidecar/install.sh $SC_FLAGS
+  tool_wanted nextdns-sidecar   && run "nextdns-sidecar"   ./nextdns-sidecar/install.sh "${sc_flags[@]+"${sc_flags[@]}"}"
   if tool_wanted remote-agent-connector; then
     if [ "$SKIP_RAC" = 1 ]; then echo "  · remote-agent-connector skipped over SSH"; else run "remote-agent-connector" ./remote-agent-connector/install.sh; fi
   fi
@@ -165,7 +167,7 @@ if [ "$FROM_I" -le 4 ]; then
 fi
 ROOT
   sudo env CODESIGN_IDENTITY="$CODESIGN_IDENTITY" REPO="$REPO" ONLY="$ONLY" FROM_I="$FROM_I" \
-       WTALK_FLAG="$wtalk_flag" SKIP_RAC="$skip_rac" SC_FLAGS="${sc_flags[*]+"${sc_flags[*]}"}" \
+       WTALK_FLAG="$wtalk_flag" SKIP_RAC="$skip_rac" PROFILE_SRC="$MOBILECONFIG" CREDFILE="$CREDFILE" \
        bash "$rootsh"
   local rc=$?; rm -f "$rootsh"
   [ "$rc" = 0 ] || exit "$rc"
@@ -175,7 +177,7 @@ ROOT
 phase_verify() {
   echo "▸ phase 5 — verify"
   local fails=0
-  agent_ok()  { launchctl print "gui/$UID_ME/$1" 2>/dev/null | grep -q "state = running" && ok "$1 running" || { echo "  ✗ $1 not running"; fails=$((fails+1)); }; }
+  agent_ok()  { local o; o="$(launchctl print "gui/$UID_ME/$1" 2>/dev/null)"; printf '%s' "$o" | grep -q "state = running" && printf '%s' "$o" | grep -qE "pid = [0-9]+" && ok "$1 running" || { echo "  ✗ $1 not running"; fails=$((fails+1)); }; }
   daemon_ok() { pgrep -qf "$1" && ok "$2 running" || { echo "  ✗ $2 not running"; fails=$((fails+1)); }; }
   tool_wanted demonlock         && { daemon_ok "Demonlock.app/Contents/MacOS/demonlock enforcerd" demonlock-enforcerd; agent_ok com.minh.demonlock.agent; demonlock status >/dev/null 2>&1 && ok "demonlock status" || { echo "  ✗ demonlock status"; fails=$((fails+1)); }; }
   tool_wanted blockrem          && { daemon_ok "Blockrem.app/Contents/MacOS/blockrem enforcerd" blockrem-enforcerd; agent_ok com.minh.blockrem.agent; }
@@ -192,16 +194,19 @@ phase_verify() {
 # ---------------------------------------------------------------- 6 checklist (human)
 phase_checklist() {
   echo "▸ phase 6 — the human steps (opening the panes for you)"
-  local open_pane; open_pane() { open "x-apple.systempreferences:com.apple.preference.security?$1" 2>/dev/null || true; sleep 1; }
-  open_pane Privacy_LocationServices; open_pane Privacy_Accessibility; open_pane Privacy_ScreenCapture; open_pane Privacy_Microphone; open_pane Privacy_Automation; open_pane Privacy_ListenEvent
+  # One Settings window (every pane URL targets the same window — opening six just shows the last).
+  open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" 2>/dev/null || true
   local nb="$REPO/nextdns-sidecar/profiles/no-browser-doh.mobileconfig" hd="$REPO/nextdns-sidecar/profiles/NextDNS-hardened.mobileconfig"
-  [ -f "$hd" ] && ! [ -f "/Library/Managed Preferences/com.apple.dnsSettings.managed.plist" ] && open "$hd"
-  [ -f "$nb" ] && ! profiles show 2>/dev/null | grep -q com.minh.nextdnslockdown.nobrowserdoh && open "$nb"
+  # The DoH profile is detectable; the no-browser-doh one is system-scoped (invisible to an
+  # unprivileged `profiles show`), so it is only opened on a first install (no DoH profile yet).
+  if [ -f "$hd" ] && ! [ -f "/Library/Managed Preferences/com.apple.dnsSettings.managed.plist" ]; then open "$hd"; [ -f "$nb" ] && open "$nb"; fi
   # Karabiner rule for wtalk — scriptable (Karabiner hot-reloads karabiner.json)
   local kj="$HOME/.config/karabiner/karabiner.json"
-  if [ -f "$kj" ] && command -v jq >/dev/null && ! grep -q "wtalk toggle" "$kj"; then
+  if [ ! -f "$kj" ]; then
+    warn "Karabiner has never been launched (no $kj) — open it once, then re-run --from checklist to get the F5 → wtalk rule"
+  elif command -v jq >/dev/null && ! grep -q "wtalk toggle" "$kj"; then
     local tmp; tmp="$(mktemp)"
-    jq '.profiles[0].complex_modifications.rules += [{"description":"F5 → wtalk toggle","manipulators":[{"type":"basic","from":{"key_code":"f5"},"to":[{"shell_command":"/usr/local/bin/wtalk toggle"}]}]}]' "$kj" > "$tmp" && mv "$tmp" "$kj" && ok "Karabiner: F5 → wtalk toggle written"
+    jq '(.profiles[] | select(.selected == true) | .complex_modifications.rules) += [{"description":"F5 → wtalk toggle","manipulators":[{"type":"basic","from":{"key_code":"f5","modifiers":{"optional":["any"]}},"to":[{"shell_command":"/usr/local/bin/wtalk toggle"}]}]}]' "$kj" > "$tmp" && mv "$tmp" "$kj" && ok "Karabiner: F5 → wtalk toggle written (hot-reloads)"
   fi
   cat <<TXT
 
