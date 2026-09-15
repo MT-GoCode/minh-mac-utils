@@ -1,6 +1,7 @@
 import AppKit
 import CoreLocation
 import Foundation
+import MacUtilsCore
 import MapKit
 
 // One program for viewing + managing zones. Runs as your user (root has no Location).

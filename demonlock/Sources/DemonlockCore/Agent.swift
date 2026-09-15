@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import MacUtilsCore
 import ApplicationServices
 
 /// The logged-in GUI agent: runs the sensor feed (location + BSSID) to the root enforcer and

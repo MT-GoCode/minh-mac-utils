@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 import ApplicationServices   // AXIsProcessTrusted (perm-ask accessibility check)
 
 // MARK: - Gate
@@ -10,10 +11,6 @@ func requireRoot(_ cmd: String) {
         FileHandle.standardError.write(Data("demonlock \(cmd): requires sudo — run `sudo demonlock \(cmd) …`\n".utf8))
         exit(1)
     }
-}
-
-private func fail(_ msg: String) -> Never {
-    FileHandle.standardError.write(Data((msg + "\n").utf8)); exit(1)
 }
 
 // MARK: - shared CLI contract for the no-sudo request commands

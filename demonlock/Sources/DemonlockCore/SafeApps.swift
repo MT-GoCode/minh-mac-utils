@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 
 /// One whitelisted app: a unique `name` handle, its bundle id + team id, and whether it must be
 /// ROOT-OWNED to be spared. rootOwned=true (default) → spared only via Regime A (root-owned bundle +

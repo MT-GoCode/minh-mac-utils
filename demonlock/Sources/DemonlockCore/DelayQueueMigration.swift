@@ -1,10 +1,11 @@
 import Foundation
+import MacUtilsCore
 
 /// Per-surface legacy decoders for `QStateStore.file(_:legacyDecode:)` — each maps a pre-DelayQueue
 /// state file into queue rows exactly once (the first save writes the new shape; an OLD binary
 /// reading the new shape decodes nothing and clobbers on save — accepted, fail-closed: queued
 /// loosenings vanish, nothing lands early). `lastAppliedAt` survives everywhere.
-enum Legacy {
+extension Legacy {
     private struct SingleSlot: Codable {
         struct Pending: Codable { var payload: String; var requestedAt: Double; var applyAt: Double }
         var pending: Pending?
@@ -58,24 +59,4 @@ enum Legacy {
         }
     }
 
-    private struct KeyOnlyMap: Codable {
-        struct Pending: Codable { var requestedAt: Double; var applyAt: Double }
-        var pending: [String: Pending] = [:]
-    }
-
-    /// sidecar delay-add (kept here as the TESTED REFERENCE for the sidecar's vendored copy —
-    /// demonlock itself has no caller): legacy pending has NO payload field — payload := key.
-    /// seq assigned in requestedAt order (ties broken by key for determinism).
-    static func keyOnlyMap() -> (Data) -> (rows: [String: DelayQueue.Item], lastAppliedAt: Double?)? {
-        { data in
-            guard let r = try? JSONDecoder().decode(KeyOnlyMap.self, from: data) else { return nil }
-            var rows: [String: DelayQueue.Item] = [:]
-            var seq: UInt64 = 0
-            for (k, p) in r.pending.sorted(by: { ($0.value.requestedAt, $0.key) < ($1.value.requestedAt, $1.key) }) {
-                rows[k] = DelayQueue.Item(payload: k, requestedAt: p.requestedAt, applyAt: p.applyAt, seq: seq)
-                seq += 1
-            }
-            return (rows, nil)
-        }
-    }
 }

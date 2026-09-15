@@ -2,6 +2,7 @@ import AppKit
 import CoreLocation
 import CoreWLAN
 import Foundation
+import MacUtilsCore
 
 /// Continuously scans nearby Wi-Fi, accumulating a set of (SSID, BSSID) seen across
 /// the whole walk, until Ctrl+C. BSSID (the AP hardware MAC) is the strong identifier;

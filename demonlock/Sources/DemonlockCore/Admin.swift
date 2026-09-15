@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 
 /// Admin (sudo) grant/revoke, internalized from the retired setuid `sudome` binary. The enforcer is
 /// already root, so there's no setuid dance and no shared-secret password: it edits the `admin` group

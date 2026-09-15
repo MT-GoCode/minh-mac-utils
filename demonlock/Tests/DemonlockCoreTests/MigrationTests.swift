@@ -1,4 +1,5 @@
 import XCTest
+import MacUtilsCore
 @testable import DemonlockCore
 
 final class MigrationTests: XCTestCase {
@@ -39,15 +40,6 @@ final class MigrationTests: XCTestCase {
         XCTAssertEqual(app?.bid, "com.raycast.macos")
         XCTAssertEqual(app?.rootOwned, false)             // the flag survives, byte-canonical
         XCTAssertEqual(item?.applyAt, 20)
-    }
-
-    func testKeyOnlyMapMigrates_seqInRequestOrder() {
-        write(#"{"pending":{"b.com":{"requestedAt":2,"applyAt":12},"a.com":{"requestedAt":1,"applyAt":11}}}"#)
-        let st = DelayQueue.QStateStore.file(stateFile, legacyDecode: Legacy.keyOnlyMap()).load()
-        XCTAssertEqual(st.pending["a.com"]?.seq, 0)       // earlier request → lower seq
-        XCTAssertEqual(st.pending["b.com"]?.seq, 1)
-        XCTAssertEqual(st.pending["a.com"]?.payload, "a.com")   // payload := key synthesized
-        XCTAssertEqual(st.nextSeq, 2)
     }
 
     func testNextSeqAboveAllMigrated() {

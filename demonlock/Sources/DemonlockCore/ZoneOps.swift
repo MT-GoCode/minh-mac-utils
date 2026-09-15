@@ -1,5 +1,6 @@
 import CoreLocation
 import Foundation
+import MacUtilsCore
 
 /// One queued zone operation — the delayzones queue payload (ops, not snapshots: a snapshot taken
 /// from disk at click time is why two queued edits silently cancelled each other on 2026-09-07).

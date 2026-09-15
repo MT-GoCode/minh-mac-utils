@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 
 /// Hidden dev self-test for the policy engine: `demonlock _policytest`.
 func runPolicyTest() {

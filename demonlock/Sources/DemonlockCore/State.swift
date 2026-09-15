@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 
 // MARK: - Annotated policy evaluation tree (published for UI/status)
 
@@ -183,16 +184,8 @@ enum ArmStore {
 }
 
 enum SnoozeStore {
-    static func until() -> Date? {
-        guard let s = try? String(contentsOfFile: Paths.snoozeFile, encoding: .utf8) else { return nil }
-        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty, t != "null", let epoch = Double(t), epoch > 0 else { return nil }
-        return Date(timeIntervalSince1970: epoch)
-    }
-    static func set(_ date: Date?, to path: String = Paths.snoozeFile) throws {
-        try (date.map { String($0.timeIntervalSince1970) } ?? "null")
-            .write(toFile: path, atomically: true, encoding: .utf8)
-    }
+    static func until() -> Date? { EpochFile.read(Paths.snoozeFile) }
+    static func set(_ date: Date?, to path: String = Paths.snoozeFile) throws { try EpochFile.write(date, to: path) }
 }
 
 enum PolicyStore {

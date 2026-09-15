@@ -3,6 +3,7 @@ import ApplicationServices   // AXIsProcessTrusted — reported for the AGENT it
 import CoreLocation
 import CoreWLAN
 import Foundation
+import MacUtilsCore
 import Security
 
 /// Agent-side sensor PIPE. The root enforcer is the sole judge and sole state-holder (the

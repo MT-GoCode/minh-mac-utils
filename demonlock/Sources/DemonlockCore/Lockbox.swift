@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 #if canImport(AppKit)
 import AppKit
 #endif

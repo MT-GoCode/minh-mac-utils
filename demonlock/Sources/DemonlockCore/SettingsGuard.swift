@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 import AppKit
 import ApplicationServices
 

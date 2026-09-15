@@ -1,4 +1,5 @@
 import XCTest
+import MacUtilsCore
 @testable import DemonlockCore
 
 final class SafeAppsQueueTests: XCTestCase {

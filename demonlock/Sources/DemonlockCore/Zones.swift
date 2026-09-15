@@ -1,5 +1,6 @@
 import CoreLocation
 import Foundation
+import MacUtilsCore
 
 struct Coord: Codable, Equatable { var lat: Double; var lon: Double }
 

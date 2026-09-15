@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 
 /// BAKED bounds — compiled into the binary, never read from any file. These are the FLOORS/CEILINGS
 /// of the no-sudo commitment delays: they are the whole point of the design, so they must not be
@@ -200,19 +201,8 @@ struct Settings: Codable {
 
     /// The enforced user's LOGIN NAME (resolving a numeric-uid string through getpwuid), for the tools
     /// that need a name not a uid (dseditgroup). nil if unset/unknown. [review — Admin.revoke needs a name]
-    func enforcedUserName() -> String? {
-        guard let uid = enforcedUID(), let pw = getpwuid(uid) else { return nil }
-        return String(cString: pw.pointee.pw_name)
-    }
+    func enforcedUserName() -> String? { enforcedUID().flatMap(userName(for:)) }
 
     /// Resolve enforcedUser (username or numeric uid string) to a uid. nil if unset/unknown.
-    func enforcedUID() -> uid_t? {
-        let v = enforcedUser.trimmingCharacters(in: .whitespacesAndNewlines)
-        if v.isEmpty { return nil }
-        if let n = UInt32(v) { return uid_t(n) }
-        return v.withCString { cstr -> uid_t? in
-            guard let pw = getpwnam(cstr) else { return nil }
-            return pw.pointee.pw_uid
-        }
-    }
+    func enforcedUID() -> uid_t? { resolveUID(enforcedUser) }
 }

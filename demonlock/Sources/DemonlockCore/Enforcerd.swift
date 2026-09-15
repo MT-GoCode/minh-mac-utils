@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 
 /// The root enforcer daemon — sole judge AND sole state-holder. ONE question per tick: is the user
 /// PROVABLY in policy right now? Confident YES → allow; anything else (out of policy, or can't tell)
@@ -92,7 +93,7 @@ final class Enforcer {
         (lockboxStatus, lockboxUnlocksStatus) = Lockbox.tick(now: now.timeIntervalSince1970, enforcedUID: euid)
 
         // STANDBY: only enforce the configured user's live console session.
-        guard let consoleUID = consoleUser() else {
+        guard let consoleUID = MacUtilsCore.consoleUID() else {
             resetSession(nil)
             publish(phase: "standby", verdict: nil, reason: "no user logged in", now: now, armed: armed)
             return poll
@@ -218,7 +219,7 @@ final class Enforcer {
 
         // Release valve: same inputs + the main verdict feeds IN_POLICY; drives the delay-gated grant.
         let rv = ReleaseValve.tick(now: now, mainResult: result, baseInputs: baseInputs,
-                                   username: usernameForUID(target), enforcedUID: euid)
+                                   username: userName(for: target), enforcedUID: euid)
 
         let inside = fix.map { ZoneStore.containing(lat: $0.lat, lon: $0.lon, zones: zones) } ?? []
         let policyStr = policyText ?? ""
@@ -319,21 +320,11 @@ final class Enforcer {
         server.clear()
     }
 
-    private func consoleUser() -> uid_t? {
-        var st = stat()
-        guard lstat("/dev/console", &st) == 0 else { return nil }   // lstat avoids the stat struct/func name clash
-        return st.st_uid == 0 ? nil : st.st_uid
-    }
-
-    private func userName(_ uid: uid_t) -> String? {
-        guard let pw = getpwuid(uid) else { return nil }
-        return String(cString: pw.pointee.pw_name)
-    }
 
     /// "ssh minh@192.168.1.42 · minh@minhs-mac.local" — shown so you can SSH in (sshd/tmux survive a
     /// lockout) and `sudo demonlock disarm`. IP recomputed each tick (cheap); .local name cached.
     private func sshHint(consoleUID: uid_t) -> String? {
-        let user = userName(consoleUID) ?? settings.enforcedUser
+        let user = userName(for: consoleUID) ?? settings.enforcedUser
         var targets: [String] = []
         if let ip = localIPv4s().first { targets.append(ip) }
         if let b = bonjourName { targets.append(b) }
@@ -442,12 +433,6 @@ final class Enforcer {
             snoozePresetAdds: spAddsStatus,
             lockboxUnlocks: lockboxUnlocksStatus,
             lockbox: lockboxStatus))
-    }
-
-    /// Resolve a uid to its login name (for Admin grant/revoke, which need a name not a uid). nil if unknown.
-    private func usernameForUID(_ uid: uid_t) -> String? {
-        guard let pw = getpwuid(uid) else { return nil }
-        return String(cString: pw.pointee.pw_name)
     }
 
     /// Queue factories — one per delayed surface.

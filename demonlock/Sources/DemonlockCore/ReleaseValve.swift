@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 
 /// The ADMIN RELEASE VALVE — a self-serve, delay-gated admin grant. You `request "<duration>"` (no
 /// sudo); the daemon stamps the request time itself, waits out `delaySec`, then — the first tick the

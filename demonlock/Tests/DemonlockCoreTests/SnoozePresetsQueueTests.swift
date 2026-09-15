@@ -1,4 +1,5 @@
 import XCTest
+import MacUtilsCore
 @testable import DemonlockCore
 
 /// All closures test-local over a FIXTURE preset list — never SnoozePresets.find/Settings.load

@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 
 /// The one aligned-column renderer, shared by every `show`/`list`/`status` table (safe-apps,
 /// snooze-presets, zones, pending-request lists). Keeps all of demonlock's tabular output identical.

@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 
 /// A named snooze shortcut: `spec` is a "for <dur>" | "until <[day]HHMM>" TimeSpec, and `invokeDelaySec`
 /// is how long AFTER you invoke it before the snooze actually lands (the commitment device). Replaces the

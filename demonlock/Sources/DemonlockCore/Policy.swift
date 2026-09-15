@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 
 // MARK: - Three-valued (Kleene) logic
 

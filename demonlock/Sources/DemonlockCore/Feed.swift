@@ -1,4 +1,5 @@
 import Foundation
+import MacUtilsCore
 import Security
 
 // MARK: - Peer trust (cdhash pinning)
