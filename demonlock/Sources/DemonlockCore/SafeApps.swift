@@ -115,9 +115,11 @@ enum SafeApps {
     @discardableResult
     static func tick(now: Double, enforcedUID: uid_t?, delaySec: Double) -> DelayQueue.QStatus {
         let q = queue()
-        if let euid = enforcedUID, let name = MarkerIO.consumeLast(Paths.saRemoveMarker, enforcedUID: euid) {
-            applyRemove(name: name)
-            q.rootCancel(keys: [name], now: now, reason: "removed")   // remove kills a same-name pending row
+        if let euid = enforcedUID, let names = MarkerIO.consumeLines(Paths.saRemoveMarker, enforcedUID: euid) {
+            for name in Set(names.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }) where !name.isEmpty {
+                applyRemove(name: name)
+                q.rootCancel(keys: [name], now: now, reason: "removed")   // remove kills a same-name pending row
+            }
         }
         let decode: (String) -> SafeApp? = { try? JSONDecoder().decode(SafeApp.self, from: Data($0.utf8)) }
         let validate: (String) -> Bool = { line in decode(line).map { rejectReason($0, settings: Settings.load()) == nil } ?? false }

@@ -147,9 +147,11 @@ enum SnoozePresets {
         // Immediate remove (tightening): drop the preset now, and kill any same-name pending
         // delayed-add directly in the root-owned queue store (consistent with safe-apps/lockbox;
         // works for old CLIs too).
-        if let euid = enforcedUID, let name = MarkerIO.consumeLast(Paths.spRemoveMarker, enforcedUID: euid) {
-            applyRemove(name: name)
-            rootCancelPendingAdd(name: name)
+        if let euid = enforcedUID, let names = MarkerIO.consumeLines(Paths.spRemoveMarker, enforcedUID: euid) {
+            for name in Set(names.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }) where !name.isEmpty {
+                applyRemove(name: name)
+                rootCancelPendingAdd(name: name)
+            }
         }
 
         let invQ = invokeQueue(), addQ = addsQueue()

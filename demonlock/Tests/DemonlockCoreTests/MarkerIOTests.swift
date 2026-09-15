@@ -137,3 +137,15 @@ final class MarkerIOTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: path()))         // and it's consumed-away
     }
 }
+
+extension MarkerIOTests {
+    /// Two `remove`s appended inside one tick must BOTH be consumed (2026-09-15: the first was dropped
+    /// because the daemon read only the last line).
+    func testBackToBackRemovesBothSurvive() throws {
+        let path = self.path("snoozepreset-remove")
+        XCTAssertTrue(MarkerIO.append(path, lines: ["allnighter"]))
+        XCTAssertTrue(MarkerIO.append(path, lines: ["midnight"]))
+        let lines = MarkerIO.consumeLines(path, enforcedUID: getuid())
+        XCTAssertEqual(Set(lines ?? []), ["allnighter", "midnight"])
+    }
+}
