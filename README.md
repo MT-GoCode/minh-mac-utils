@@ -73,10 +73,10 @@ config-wiring for an external app, not a repo-built tool, so it's a manual scrip
 `scripts/install-lib.sh` (build as you → deploy root-owned → CLI → launchd, **verified running** →
 register the demonlock spare); every `uninstall.sh` is one `dl_uninstall_common` call. The shared Swift
 plumbing (marker I/O, the delay queue, time parsing, JSON/process/user helpers) lives once in
-`MacUtilsCore/` and is linked into demonlock, nextdns-sidecar, and blockrem. **One-shot setup:**
-`./install-all.sh` runs the whole fresh-machine flow (preflight → secrets → one keychain prompt → all
-root installs in one sudo session → user installs → verify → the human checklist). `--only <tool>` and
-`--from <phase>` resume; `./uninstall-all.sh` reverses it.
+`MacUtilsCore/` and is linked into demonlock, nextdns-sidecar, and blockrem. There is deliberately
+**no top-level all-in-one driver**: each tool is its own install (`sudo ./<tool>/install.sh`, or
+`./<tool>/install.sh` for the no-sudo ones), idempotent, and each verifies its own launchd job is
+actually *running* before printing ✓. This README is the index and the order.
 They don't share one rigid runtime interface — most lockers have `arm`/`disarm`, but wtalk and
 browser-blitz don't fit that mold, and that's fine.
 
@@ -88,25 +88,34 @@ paused; no-op if nowplaying-cli isn't installed).
 ## Fresh-machine setup (in order)
 
 ### 1. Base prerequisites (you have admin)
-- **Xcode Command Line Tools:** `xcode-select --install` — needed to build the Swift apps (demonlock, nextdns-sidecar, remote-agent-connector, multistreamviewer, stayup). *(demonlock can skip this: it ships a prebuilt signed `dist/`.)*
+- **Xcode Command Line Tools:** `xcode-select --install` — do this FIRST (on a machine without CLT, `git`/`python3`/`swift` are stubs that pop the installer dialog). Needed to build the Swift apps (demonlock, nextdns-sidecar, blockrem, multistreamviewer, stayup, remote-agent-connector). *(demonlock can skip this: `sudo ./demonlock/install.sh --prebuilt` deploys its committed, signed `dist/`.)*
+- **A console (GUI) login as you** — the gui-domain LaunchAgents can't load over plain SSH, and the installers now fail loudly when a job doesn't come up. Run installs from a local terminal (or `rac exec`), and reinstall `remote-agent-connector` only from a local terminal — its reinstall kills the tunnel an SSH session rides on.
+- **Admin**: you must be in the `admin` group. On a hardened machine that means a live demonlock release-valve grant with enough time left (`demonlock admin-release-valve status`); the grant can be extended while live with `sudo demonlock admin-release-valve i-still-need-sudo "for 1h"`.
 - **Homebrew**, then `brew install ffmpeg` — for wtalk.
 - **uv:** `curl -LsSf https://astral.sh/uv/install.sh | sh` — for wtalk.
 - **Karabiner-Elements** — to bind wtalk's push-to-talk key.
-- **NextDNS Encrypted-DNS profile** (for nextdns-sidecar's `networklockdown`): download your `.mobileconfig` from <https://apple.nextdns.io> — the nextdns-sidecar installer hardens it (`--profile-src`) and prints the `open` lines to install it in System Settings ▸ General ▸ Device Management. *(nextdns-sidecar refuses to `arm` without it — arming would strand all DNS.)*
+- **NextDNS Encrypted-DNS profile** (for nextdns-sidecar's `networklockdown`): log in at <https://apple.nextdns.io> (a browser step) and download your `.mobileconfig` — it lands as `~/Downloads/NextDNS (<id>).mobileconfig` — the nextdns-sidecar installer hardens it (`--profile-src`) and prints the `open` lines to install it in System Settings ▸ General ▸ Device Management. Pass credentials via `--credentials-file <0600 file with PROFILE=… / API_KEY=…>` so the profile ID (a credential) never sits on argv. *(nextdns-sidecar refuses to `arm` without the profile — arming would strand all DNS.)*
 - *(Optional)* **Pluckeye** — an extra layer; the lockers' real teeth is demonlock's admin-release-valve delay.
 
 ### 2. Install (each app is `sudo ./<app>/install.sh`)
 `git clone https://github.com/MT-GoCode/minh-mac-utils.git ~/code/minh-mac-utils && cd ~/code/minh-mac-utils`
-(https — a fresh machine has no SSH key yet; keep it at a stable path, LaunchAgents bake it in), then
-**either `./install-all.sh`** (does everything below in order and prints the human checklist at the end) **or by hand:**
+(https — a fresh machine has no SSH key yet), then, in this order:
 
 1. **demonlock** — `sudo ./demonlock/install.sh` → `demonlock perm-ask` (grant **Location → Always** *and* **Accessibility**, the latter for settings-guard) → `demonlock scan` / `demonlock zones` / `sudo demonlock setpolicy '…'` → `sudo demonlock arm`. Configure the admin release valve (`sudo demonlock admin-release-valve set-gate-policy/set-delay/set-max-request-duration`) so you can get sudo back without holding a password.
 2. **nextdns-sidecar** — `sudo ./nextdns-sidecar/install.sh --profile-src ~/Downloads/NextDNS*.mobileconfig` (enter your Profile ID + API key; it hardens that profile and prints the two `open` lines — approve both in Settings ▸ Device Management) → confirm with `nextdns-sidecar networklockdown status` → `nextdns-sidecar networklockdown arm`. (`nextdns-test <domain>` checks whether a domain is blocked.)
 3. **wtalk** — `cd wtalk && ./setup.sh` (venv+deps+ffmpeg) → `sudo ./install.sh` (PyInstaller-freeze, sign, deploy **root-owned** to `/Applications`, seed `~/.wtalk`) → put your Gemini key in `~/.wtalk/.env` → `wtalk restart` → bind a key in Karabiner to `/usr/local/bin/wtalk toggle` → grant **Microphone + Accessibility**.
 4. **multistreamviewer / stayup** — `sudo ./multistreamviewer/install.sh`, `sudo ./stayup/install.sh` (each builds, signs, deploys root-owned, and registers itself as a demonlock spare).
 6. **remote-agent-connector** *(optional)* — `sudo ./remote-agent-connector/install.sh`, then Dock ▸ Get Permissions and `rac setup`.
-7. **browser-blitz** *(optional, no sudo)* — `./browser-blitz/browser-blitz/install.sh` (installs `agent-browser` if missing), then load the extension once per Chrome profile you want to drive: `chrome://extensions` → Developer mode → **Load unpacked** → `browser-blitz/extension`.
+7. **browser-blitz** *(optional, no sudo)* — `./browser-blitz/browser-blitz/install.sh` deploys the shim + CLI + extension to `~/.local/lib/browser-blitz` (nothing runs from the checkout; `git pull && ./install.sh` redeploys and restarts the shim), then load the extension once per Chrome profile you want to drive: `chrome://extensions` → Developer mode → **Load unpacked** → `~/.local/lib/browser-blitz/extension`.
 8. **paseo daemon + third-party spares** *(optional)* — `./scripts/setup-paseo-daemon.sh`, then `sudo ./demonlock/register-recommended-spares.sh` (spares karabiner/alttab/raycast/etc.).
+
+### 2b. The clicks only a human can do (once per machine)
+System Settings ▸ Privacy & Security: **Location Services** → Demonlock: *Always* · **Accessibility** →
+Demonlock, Blockrem, multistreamviewer, wtalk, RemoteAgentConnector · **Screen Recording** →
+multistreamviewer, RemoteAgentConnector · **Microphone** → wtalk · **Automation** → RemoteAgentConnector ·
+**Input Monitoring** + the driver-extension approval → Karabiner-Elements. Then General ▸ Device
+Management → install the two NextDNS profiles; Karabiner → a rule `F5 → /usr/local/bin/wtalk toggle`;
+Chrome → Load unpacked (above); `rac setup` once MIDDLEMAN is reachable.
 
 ### 3. Only then harden
 Verify each tool's `status`. *Then* drop your daily admin with `demonlock nosudo` (re-login to fully

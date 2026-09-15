@@ -1,6 +1,6 @@
 # MacUtilsCore + one-shot install — commonization design
 
-**Date:** 2026-09-15 · **Status:** v3 (as built 2026-09-15) — two adversarial passes + two confirm passes folded (17 + 40 + 4 + 7 findings) ·
+**Date:** 2026-09-15 · **Status:** v3.1 (as built 2026-09-15; driver reversed 2026-09-16) — two adversarial passes + two confirm passes folded (17 + 40 + 4 + 7 findings) ·
 **Author of the tools:** Minh Trinh
 
 ## Goal
@@ -162,7 +162,14 @@ exception — the README forbids root shells; the *uninstaller* keeps the fallba
 Every installer forwards `CODESIGN_IDENTITY` through its `sudo -u USER … build.sh` (sudo's
 `env_reset` strips it otherwise, and the ladder would re-prompt the keychain per build).
 
-### `install-all.sh` (repo root, run as the user from a **local terminal or tmux**)
+### ~~`install-all.sh`~~ — REVERSED 2026-09-16 (user: "no all-do scripts, that's not the shape")
+
+Built, reviewed, live-tested, then deleted the next day at the user's direction: every tool is its own
+install; the README index carries the prerequisites, order, and human checklist instead. The lib
+hardening below (verified launchd loads, `--credentials-file`, `--prebuilt`, common uninstaller) stays.
+The design is kept here for the record:
+
+#### (historical) `install-all.sh`
 
 ```
 ./install-all.sh [--from <phase>] [--only <tool>] [--no-secrets]

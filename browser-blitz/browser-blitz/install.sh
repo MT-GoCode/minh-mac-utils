@@ -1,12 +1,16 @@
 #!/bin/bash
 # install.sh — browser-blitz.
-#   CLI on PATH (browser-blitz + bb), the shim as a LaunchAgent, and a check that playwright-cli
-#   is present. The shim binds each live session to `playwright-cli -s=<slug>` by itself, so
-#   there is nothing to wire up per session.
+#   DEPLOYS the shim + CLI + extension to ~/.local/lib/browser-blitz (nothing runs from the checkout —
+#   git is the source of truth, the deploy dir is the running copy; `git pull && ./install.sh`
+#   redeploys and restarts the shim), puts browser-blitz + bb on PATH, loads the shim LaunchAgent,
+#   and checks that playwright-cli is present. The shim binds each live session to
+#   `playwright-cli -s=<slug>` by itself, so there is nothing to wire up per session.
 set -euo pipefail
 
-HERE="$(cd "$(dirname "$0")" && pwd)"           # .../browser-blitz/browser-blitz
-EXT="$(cd "$HERE/../extension" 2>/dev/null && pwd || echo "$HERE/../extension")"
+SRC="$(cd "$(dirname "$0")" && pwd)"            # .../browser-blitz/browser-blitz (the checkout)
+SRC_EXT="$(cd "$SRC/../extension" 2>/dev/null && pwd || echo "$SRC/../extension")"
+HERE="$HOME/.local/lib/browser-blitz"           # the deployed, running copy
+EXT="$HERE/extension"
 LABEL="com.minh.browser-blitz"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 STATE="$HOME/.local/state/browser-blitz"
@@ -26,11 +30,19 @@ bad()  { printf '  \033[31m✗\033[0m %s\n' "$*"; exit 1; }
 
 echo "browser-blitz install"; echo
 
-[ -f "$HERE/browser-blitz" ] || bad "browser-blitz missing"
-[ -f "$HERE/shim.js" ]       || bad "shim.js missing"
-[ -d "$EXT" ]                || bad "extension/ missing (expected at $EXT)"
-[ -n "$NODE" ]               || bad "node not found — brew install node"
+[ -f "$SRC/browser-blitz" ] || bad "browser-blitz missing"
+[ -f "$SRC/shim.js" ]       || bad "shim.js missing"
+[ -d "$SRC_EXT" ]           || bad "extension/ missing (expected at $SRC_EXT)"
+[ -n "$NODE" ]              || bad "node not found — brew install node"
 ok "node $($NODE --version)"
+
+# ------------------------------------------------------------------ deploy (checkout → ~/.local/lib)
+# Only the runtime files. node_modules is (re)built in place below, never copied from the checkout.
+mkdir -p "$HERE"
+for f in browser-blitz shim.js package.json package-lock.json; do cp "$SRC/$f" "$HERE/$f"; done
+rm -rf "$EXT"; cp -R "$SRC_EXT" "$EXT"
+chmod +x "$HERE/browser-blitz"
+ok "deployed to $HERE"
 case "$NODE" in
   *"/.nvm/"*|*"/.asdf/"*|*"/.volta/"*|*"/fnm/"*)
     warn "node lives under a version manager ($NODE) — the LaunchAgent bakes this exact path in,"
@@ -51,12 +63,13 @@ fi
 # Two symlinks, and nothing touches your shell config. `bb` used to be a zsh alias, which meant
 # editing ~/.zshrc — and the uninstaller's line arithmetic was off by one, so it deleted whatever
 # followed. A symlink works in a new shell immediately, in non-interactive shells and in scripts.
-chmod +x "$HERE/browser-blitz"
 mkdir -p "$BINDIR" "$STATE"
 for n in browser-blitz bb; do
   # Never clobber silently: `bb` is also a real Homebrew formula, and ln -sf would replace it with
   # no warning and no way for uninstall to put it back.
-  if [ -e "$BINDIR/$n" ] && [ "$(readlink "$BINDIR/$n" 2>/dev/null)" != "$HERE/browser-blitz" ]; then
+  # Our own earlier symlink (deployed path OR the old checkout path) is simply replaced.
+  cur="$(readlink "$BINDIR/$n" 2>/dev/null || true)"
+  if [ -e "$BINDIR/$n" ] && [ "$cur" != "$HERE/browser-blitz" ] && [ "$cur" != "$SRC/browser-blitz" ]; then
     warn "$BINDIR/$n already exists and is not ours — backing it up to $n.before-browser-blitz"
     mv "$BINDIR/$n" "$BINDIR/$n.before-browser-blitz"
   fi
@@ -68,7 +81,7 @@ case ":$PATH:" in *":$BINDIR:"*) ;; *) warn "$BINDIR is not on your PATH";; esac
 
 # ------------------------------------------------------------------ dependency
 if [ ! -d "$HERE/node_modules/ws" ]; then
-  ( cd "$HERE" && npm install --silent ws >/dev/null 2>&1 )
+  ( cd "$HERE" && npm ci --silent >/dev/null 2>&1 || npm install --silent ws >/dev/null 2>&1 )
 fi
 [ -d "$HERE/node_modules/ws" ] && ok "dependency: ws" || bad "npm install ws failed"
 
@@ -97,6 +110,7 @@ PLIST_EOF
 ok "LaunchAgent: $PLIST"
 
 pkill -f "$HERE/shim.js" 2>/dev/null || true
+pkill -f "$SRC/shim.js" 2>/dev/null || true      # a shim from the run-from-checkout era
 sleep 1
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
