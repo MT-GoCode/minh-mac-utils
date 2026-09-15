@@ -98,12 +98,16 @@ codesign -d --entitlements - "$HERE/$APP/Contents/MacOS/wtalk" 2>/dev/null \
     exit 1; }
 echo "  entitlements on main binary:"; codesign -d --entitlements - "$HERE/$APP/Contents/MacOS/wtalk" 2>/dev/null | grep -oE "allow-[a-z-]*|device\.audio-input" | sed 's/^/    /'
 
-# --- keep a prebuilt copy in dist/ ---
-mkdir -p "$HERE/dist"; rm -rf "$HERE/dist/$APP"; cp -R "$HERE/$APP" "$HERE/dist/$APP"
+# --- refresh the prebuilt dist/ ONLY on --refresh-dist (an auto-written dist would be re-deployed as
+# stale code by a later --prebuilt) ---
+if [ "${1:-}" = "--refresh-dist" ]; then
+    mkdir -p "$HERE/dist"; rm -rf "$HERE/dist/$APP"; cp -R "$HERE/$APP" "$HERE/dist/$APP"
+    echo "✓ refreshed prebuilt dist/$APP"
+fi
 rm -rf "$HERE/_pyi_build" "$HERE/_pyi_dist"
 
 echo
-echo "✓ built $HERE/$APP  (signed: $ID; copied to dist/)"
+echo "✓ built $HERE/$APP  (signed: $ID)"
 echo "  exe: $(ls "$HERE/$APP/Contents/MacOS/" 2>/dev/null | tr '\n' ' ')"
 echo "  install ROOT-OWNED with:  sudo ./install.sh"
 #

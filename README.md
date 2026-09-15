@@ -69,11 +69,14 @@ adds a nightly refresh that restarts it only after an app auto-update and only w
 `scripts/unset-paseo-daemon.sh` reverses it. Both are no-sudo, run as you, and need `jq`. This is
 config-wiring for an external app, not a repo-built tool, so it's a manual script rather than an installer.
 
-**Installers are commonized.** There is **no top-level `--all` driver** — install an app with
-`sudo ./<app>/install.sh` (or `./<app>/install.sh` for the no-sudo ones). Most GUI/CLI apps' own
-`install.sh` just declares a small inline manifest and sources the shared `scripts/install-lib.sh`
-(build → deploy root-owned → CLI shim → launchd → register the demonlock spare); the more involved
-apps (demonlock, wtalk, nextdns-sidecar, remote-agent-connector) keep a bespoke `install.sh`.
+**Installers are commonized.** Every `install.sh` is a short manifest over the shared
+`scripts/install-lib.sh` (build as you → deploy root-owned → CLI → launchd, **verified running** →
+register the demonlock spare); every `uninstall.sh` is one `dl_uninstall_common` call. The shared Swift
+plumbing (marker I/O, the delay queue, time parsing, JSON/process/user helpers) lives once in
+`MacUtilsCore/` and is linked into demonlock, nextdns-sidecar, and blockrem. **One-shot setup:**
+`./install-all.sh` runs the whole fresh-machine flow (preflight → secrets → one keychain prompt → all
+root installs in one sudo session → user installs → verify → the human checklist). `--only <tool>` and
+`--from <phase>` resume; `./uninstall-all.sh` reverses it.
 They don't share one rigid runtime interface — most lockers have `arm`/`disarm`, but wtalk and
 browser-blitz don't fit that mold, and that's fine.
 
@@ -93,7 +96,9 @@ paused; no-op if nowplaying-cli isn't installed).
 - *(Optional)* **Pluckeye** — an extra layer; the lockers' real teeth is demonlock's admin-release-valve delay.
 
 ### 2. Install (each app is `sudo ./<app>/install.sh`)
-`git clone git@github.com:MT-GoCode/minh-mac-utils.git && cd minh-mac-utils`, then:
+`git clone https://github.com/MT-GoCode/minh-mac-utils.git ~/code/minh-mac-utils && cd ~/code/minh-mac-utils`
+(https — a fresh machine has no SSH key yet; keep it at a stable path, LaunchAgents bake it in), then
+**either `./install-all.sh`** (does everything below in order and prints the human checklist at the end) **or by hand:**
 
 1. **demonlock** — `sudo ./demonlock/install.sh` → `demonlock perm-ask` (grant **Location → Always** *and* **Accessibility**, the latter for settings-guard) → `demonlock scan` / `demonlock zones` / `sudo demonlock setpolicy '…'` → `sudo demonlock arm`. Configure the admin release valve (`sudo demonlock admin-release-valve set-gate-policy/set-delay/set-max-request-duration`) so you can get sudo back without holding a password.
 2. **nextdns-sidecar** — `sudo ./nextdns-sidecar/install.sh --profile-src ~/Downloads/NextDNS-*.mobileconfig` (enter your Profile ID + API key; it hardens that profile and prints the two `open` lines — approve both in Settings ▸ Device Management) → confirm with `nextdns-sidecar networklockdown status` → `nextdns-sidecar networklockdown arm`. (`nextdns-test <domain>` checks whether a domain is blocked.)
@@ -146,20 +151,22 @@ While you still have the cert, publish the dev-signed bundles as a release (need
 
 ```bash
 # with your Developer ID cert present, after the repo is pushed:
-sudo ./demonlock/install.sh                  # produces demonlock/dist/Demonlock.app  (Dev-ID-signed)
+./demonlock/install/build.sh --refresh-dist  # produces demonlock/dist/Demonlock.app  (Dev-ID-signed)
 ditto -c -k --keepParent demonlock/dist/Demonlock.app /tmp/Demonlock.app.zip
 gh release create devsigned-$(date +%Y%m) /tmp/Demonlock.app.zip \
     --title "Developer-ID-signed bundles" \
     --notes "Prebuilt, Developer-ID-signed + timestamped — install to keep Apple-rooted trust after the cert lapses."
 ```
 
-**Using them later** on a Mac with no Developer ID — it's just "copy back + install" (no Xcode, no
-Apple account; the installer auto-deploys `dist/` instead of rebuilding when you have no cert):
+**Using them later** on a Mac with no Developer ID — "copy back + install" with the explicit
+`--prebuilt` flag (a toolchain otherwise always wins and builds the current source; the old automatic
+"no cert → use dist" rule silently installed stale bundles, so it's gone):
 ```bash
 gh release download devsigned-YYYYMM --dir /tmp/dl
 ditto -x -k /tmp/dl/Demonlock.app.zip demonlock/dist/      # → demonlock/dist/Demonlock.app
-sudo ./demonlock/install.sh                                # deploys the dev-signed dist/, no rebuild
+sudo ./demonlock/install.sh --prebuilt                     # deploys the dev-signed dist/, no rebuild, no keychain
 ```
+Refresh a committed `dist/` deliberately with `./demonlock/install/build.sh --refresh-dist`.
 (demonlock is the only app that commits a prebuilt `dist/` bundle, so it's the one that installs on a
 toolchain-less Mac by copy. wtalk is PyInstaller-frozen + Developer-ID-signed by `sudo ./wtalk/install.sh`
 on the machine; the other Swift apps build + sign from source at install time.)

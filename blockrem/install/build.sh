@@ -29,12 +29,16 @@ SIGN=(--force --options runtime --sign "$ID")
 codesign "${SIGN[@]}" "$APP"
 codesign --verify --strict --verbose=2 "$APP"
 
-# Keep a prebuilt, signed copy so this folder can be installed on a Mac with NO Swift toolchain.
-# Developer ID + secure timestamp ⇒ it runs on any Mac and stays valid after the cert expires.
-mkdir -p "$HERE/dist"
-rm -rf "$HERE/dist/$APP"
-cp -R "$APP" "$HERE/dist/$APP"
+# Refresh a prebuilt dist/ ONLY when explicitly asked with --refresh-dist (same rule as demonlock):
+# install.sh deploys $HERE/Blockrem.app directly, and an automatically-written dist/ would be
+# re-deployed as stale code by a later --prebuilt.
+if [ "${1:-}" = "--refresh-dist" ]; then
+    mkdir -p "$HERE/dist"
+    rm -rf "$HERE/dist/$APP"
+    cp -R "$APP" "$HERE/dist/$APP"
+    echo "✓ refreshed prebuilt dist/$APP"
+fi
 
 echo
-echo "✓ built $HERE/$APP  (signed: $ID; copied to dist/)"
+echo "✓ built $HERE/$APP  (signed: $ID)"
 echo "  install with:  sudo ./install/install.sh"

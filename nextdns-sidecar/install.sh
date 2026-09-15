@@ -13,9 +13,9 @@
 #
 set -euo pipefail
 
-[ "$(id -u)" = 0 ] || { echo "run as root:  sudo ./install.sh" >&2; exit 1; }
-
 SRC="$(cd "$(dirname "$0")" && pwd)"
+source "$SRC/../scripts/install-lib.sh"
+dl_require_root          # sudo from your normal user — never a root shell (the uninstaller keeps the console fallback)
 ETC="/usr/local/etc/nextdns-sidecar"
 APP="/Library/Application Support/NextDNSSidecar"
 BIN="/usr/local/bin"
@@ -24,10 +24,13 @@ PLIST="/Library/LaunchDaemons/${LABEL}.plist"
 CRED="$ETC/credentials"
 CONFIG="$ETC/config.json"
 
-RECONFIG=0; KEYFILE=""; PROFILE_ARG=""; PROFILE_SRC=""
+RECONFIG=0; KEYFILE=""; PROFILE_ARG=""; PROFILE_SRC=""; CREDFILE=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --reconfigure) RECONFIG=1 ;;
+        # --credentials-file: a 0600 two-line file (PROFILE=…\nAPI_KEY=…) — the profile ID is a credential
+        # and must never sit on argv (visible in `ps`). install-all passes this.
+        --credentials-file) CREDFILE="${2:-}"; [ -f "$CREDFILE" ] || { echo "error: --credentials-file needs a readable path" >&2; exit 1; }; RECONFIG=1; shift ;;
         --key-file) KEYFILE="${2:-}"; [ -n "$KEYFILE" ] || { echo "error: --key-file needs a path" >&2; exit 1; }; RECONFIG=1; shift ;;
         --profile)  PROFILE_ARG="${2:-}"; [ -n "$PROFILE_ARG" ] || { echo "error: --profile needs a value" >&2; exit 1; }; RECONFIG=1; shift ;;
         --profile-src) PROFILE_SRC="${2:-}"; [ -n "$PROFILE_SRC" ] || { echo "error: --profile-src needs a path" >&2; exit 1; }; shift ;;
@@ -36,14 +39,10 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-# The user who should own the marker inbox and be pinned as the enforced uid.
-TARGET_USER="${SUDO_USER:-}"
-if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = root ]; then
-    TARGET_USER="$(stat -f '%Su' /dev/console 2>/dev/null || true)"
-fi
-[ -n "$TARGET_USER" ] && [ "$TARGET_USER" != root ] || { echo "error: cannot determine the non-root user (set SUDO_USER)"; exit 1; }
-TARGET_UID="$(id -u "$TARGET_USER")"
-TARGET_HOME="$(eval echo "~$TARGET_USER")"
+# The user who owns the marker inbox and is pinned as the enforced uid.
+TARGET_USER="$(dl_user)"
+TARGET_UID="$(dl_user_uid)"
+TARGET_HOME="$(dl_user_home)"
 echo ">> enforced user: $TARGET_USER (uid $TARGET_UID)"
 
 # --- build ---------------------------------------------------------------
@@ -75,9 +74,11 @@ fi
 # --- credentials (root-only 0600) ----------------------------------------
 if [ ! -f "$CRED" ] || [ "$RECONFIG" -eq 1 ]; then
     echo ">> NextDNS credentials -> $CRED (mode 600, root)."
-    if [ -n "$PROFILE_ARG" ]; then PROFILE="$PROFILE_ARG"; else
+    if [ -n "$CREDFILE" ]; then
+        PROFILE="$(sed -n 's/^PROFILE=//p' "$CREDFILE" | head -1)"; APIKEY="$(sed -n 's/^API_KEY=//p' "$CREDFILE" | head -1)"
+    elif [ -n "$PROFILE_ARG" ]; then PROFILE="$PROFILE_ARG"; else
         printf "NextDNS Profile ID (e.g. abc123): " > /dev/tty; read -r PROFILE < /dev/tty; fi
-    if [ -n "$KEYFILE" ]; then
+    if [ -n "$CREDFILE" ]; then :; elif [ -n "$KEYFILE" ]; then
         [ -f "$KEYFILE" ] || { echo "error: key file not found: $KEYFILE" >&2; exit 1; }
         APIKEY="$(tr -d '\r\n' < "$KEYFILE")"
     else
@@ -117,9 +118,7 @@ echo "   ruleset OK"
 
 # --- launchd daemon (does pf enforcement + delayed applies + markers) ----
 echo ">> launchd daemon"
-install -o root -g wheel -m 644 "$SRC/launchd/${LABEL}.plist" "$PLIST"
-launchctl bootout system/"$LABEL" 2>/dev/null || true; sleep 1
-launchctl bootstrap system "$PLIST" 2>/dev/null || launchctl kickstart -k system/"$LABEL" 2>/dev/null || true
+dl_install_launchd "$SRC/launchd/${LABEL}.plist" daemon || exit 1     # bootout → bootstrap → verify running
 
 # --- profiles: build the hardened resolver + provide no-browser-doh ------------
 # macOS can't install a hand-authored profile silently — you approve them in System Settings, and

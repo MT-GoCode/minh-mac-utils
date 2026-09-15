@@ -1,6 +1,6 @@
 # MacUtilsCore + one-shot install — commonization design
 
-**Date:** 2026-09-15 · **Status:** v3 — two adversarial passes + two confirm passes folded (17 + 40 + 4 + 7 findings) ·
+**Date:** 2026-09-15 · **Status:** v3 (as built 2026-09-15) — two adversarial passes + two confirm passes folded (17 + 40 + 4 + 7 findings) ·
 **Author of the tools:** Minh Trinh
 
 ## Goal
@@ -142,7 +142,7 @@ static; `codesign` on the bundle is unchanged. demonlock's committed prebuilt `d
 | `dl_install_cli_wrapper <name> <exe>` | the heredoc wrapper (demonlock, blockrem, wtalk). Kept as a wrapper for parity with today; **not** because sudoers needs it — demonlock's sudoers grant references the bundle binary (deliberately, review H4), and `Agent.swift`'s `do shell script` would work with a symlink too. |
 | `dl_seed_support_dir` | **not shared** — demonlock *merges* `settings.json` (user state lives there), blockrem *overwrites* (code defaults must win; nothing else writes it). Each stays in its `post_install`. demonlock's `chown -R root:wheel $SUPPORT` is fixed to exclude `rv/` (a pending user marker was re-owned to root and rejected by the owner check). |
 | `dl_uninstall_common <app> <bundle> <cli…> <label…> [--purge]` + `dl_unregister_spare <bid>` | replaces 7 uninstallers. Keeps the **console-user fallback when `SUDO_USER` is empty** (uninstall from a root/Recovery shell is the lock-out escape). **No `tccutil reset`** in the common path (opt-in flag; only MSV uses it today). `--purge` = remove the support dir; MSV/stayup/rac keep their current "always"/"never" prefs behavior, documented. |
-| `dl_user_launchd <label> <plist-body>` | no-root LaunchAgent writer + bootstrap + verify (browser-blitz, paseo). |
+| `dl_user_launchd <label> <plist-body>` | no-root LaunchAgent writer + bootstrap + verify. **Added to the lib but NOT adopted** by browser-blitz/paseo in this pass: both already verify their own daemon (socket poll / `paseo daemon status`) and are node/jq scripts maintained separately — rewiring them buys nothing and risks the bb shim. |
 
 Not added: `dl_codesign` — making `--options runtime --timestamp` universal is a behavior change
 for MSV/stayup/rac (rac sends Apple events; `--timestamp` makes builds network-dependent). Each
