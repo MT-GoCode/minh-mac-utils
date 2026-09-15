@@ -18,6 +18,7 @@ for t in nextdns-sidecar wtalk multistreamviewer stayup blockrem remote-agent-co
 done
 sudo -u '$USER' ./scripts/unset-paseo-daemon.sh 2>/dev/null || true
 sudo -u '$USER' ./browser-blitz/browser-blitz/install.sh --uninstall 2>/dev/null || true
+sleep 3   # spare-removal markers apply on the daemon's next tick — let them land before it goes
 echo; echo '━━ demonlock (last — everything else de-registered its spare first)'
 ./demonlock/uninstall.sh $P || true
 "

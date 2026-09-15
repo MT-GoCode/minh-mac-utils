@@ -206,7 +206,7 @@ phase_checklist() {
     warn "Karabiner has never been launched (no $kj) — open it once, then re-run --from checklist to get the F5 → wtalk rule"
   elif command -v jq >/dev/null && ! grep -q "wtalk toggle" "$kj"; then
     local tmp; tmp="$(mktemp)"
-    jq '(.profiles[] | select(.selected == true) | .complex_modifications.rules) += [{"description":"F5 → wtalk toggle","manipulators":[{"type":"basic","from":{"key_code":"f5","modifiers":{"optional":["any"]}},"to":[{"shell_command":"/usr/local/bin/wtalk toggle"}]}]}]' "$kj" > "$tmp" && mv "$tmp" "$kj" && ok "Karabiner: F5 → wtalk toggle written (hot-reloads)"
+    jq '(.profiles[] | select(.selected == true) | .complex_modifications.rules) += [{"description":"F5 → wtalk toggle","manipulators":[{"type":"basic","from":{"key_code":"f5","modifiers":{"optional":["any"]}},"to":[{"shell_command":"/usr/local/bin/wtalk toggle"}]}]}]' "$kj" > "$tmp" && mv "$tmp" "$kj" && { grep -q "wtalk toggle" "$kj" && ok "Karabiner: F5 → wtalk toggle written (hot-reloads)" || warn "Karabiner: no selected profile — add the F5 → 'wtalk toggle' rule by hand"; }
   fi
   cat <<TXT
 
