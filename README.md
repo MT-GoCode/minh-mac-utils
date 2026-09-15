@@ -27,7 +27,6 @@ sudo ./wtalk/uninstall.sh
 sudo ./multistreamviewer/uninstall.sh
 sudo ./stayup/uninstall.sh
 sudo ./blockrem/uninstall.sh
-sudo ./forcecalls/uninstall.sh
 sudo ./remote-agent-connector/uninstall.sh
 ./scripts/unset-paseo-daemon.sh
 ./browser-blitz/browser-blitz/install.sh --uninstall
@@ -42,7 +41,6 @@ sudo ./demonlock/install.sh
 sudo ./multistreamviewer/install.sh
 sudo ./stayup/install.sh
 sudo ./blockrem/install.sh
-sudo ./forcecalls/install.sh
 sudo ./remote-agent-connector/install.sh
 ./wtalk/setup.sh
 sudo ./wtalk/install.sh
@@ -63,7 +61,6 @@ sudo ./demonlock/register-recommended-spares.sh
 | **multistreamviewer** | desktop groups that scope ⌘⇥ + a hold-⌘⌥ overview; never moves windows; `multistreamviewer` CLI | `sudo ./multistreamviewer/install.sh` | yes |
 | **stayup** | menu-bar toggle for staying awake with the lid closed (`pmset disablesleep`); `stayup` CLI | `sudo ./stayup/install.sh` | yes |
 | **blockrem** | scheduled **un-quittable screen blocks** for forced breaks — a root daemon revives a grey full-screen cover + input freeze at each alarm; **fail-open** (a bug always lifts it); managing alarms is no-sudo | `sudo ./blockrem/install.sh` | yes |
-| **forcecalls** | scheduled phone calls you must **wait out** to cancel — a root daemon dials the other person via SignalWire, then bridges to a local baresip endpoint that auto-answers; `add` is instant, `remove` is delay-gated (12h), managing calls is no-sudo | `sudo ./forcecalls/install.sh` | yes |
 | **browser-blitz** | drive your **real, logged-in Chrome** with `agent-browser`: a shim impersonates a Chrome CDP endpoint over an MV3 extension, and each agent session is fenced to its own tab group; `browser-blitz` CLI | `./browser-blitz/browser-blitz/install.sh` | no |
 
 **Paseo daemon (`scripts/`).** `scripts/setup-paseo-daemon.sh` hands the third-party Paseo daemon to
@@ -102,7 +99,6 @@ paused; no-op if nowplaying-cli isn't installed).
 2. **nextdns-sidecar** — `sudo ./nextdns-sidecar/install.sh --profile-src ~/Downloads/NextDNS-*.mobileconfig` (enter your Profile ID + API key; it hardens that profile and prints the two `open` lines — approve both in Settings ▸ Device Management) → confirm with `nextdns-sidecar networklockdown status` → `nextdns-sidecar networklockdown arm`. (`nextdns-test <domain>` checks whether a domain is blocked.)
 3. **wtalk** — `cd wtalk && ./setup.sh` (venv+deps+ffmpeg) → `sudo ./install.sh` (PyInstaller-freeze, sign, deploy **root-owned** to `/Applications`, seed `~/.wtalk`) → put your Gemini key in `~/.wtalk/.env` → `wtalk restart` → bind a key in Karabiner to `/usr/local/bin/wtalk toggle` → grant **Microphone + Accessibility**.
 4. **multistreamviewer / stayup** — `sudo ./multistreamviewer/install.sh`, `sudo ./stayup/install.sh` (each builds, signs, deploys root-owned, and registers itself as a demonlock spare).
-5. **forcecalls** *(optional)* — first create a **SIP credential** and a **verified caller ID** in your SignalWire space (see `forcecalls/README.md`; the verified number means you never rent a number) → `sudo ./forcecalls/install.sh`, which prompts for space / project ID / API token / caller ID / SIP endpoint, or takes them as `SW_*` env vars for a non-interactive install (the same script installs the baresip endpoint — **do this while you still have sudo**) → `forcecalls testcall +1…` to rehearse it, then `forcecalls add --name mom --destination +1… --schedule *2045`.
 6. **remote-agent-connector** *(optional)* — `sudo ./remote-agent-connector/install.sh`, then Dock ▸ Get Permissions and `rac setup`.
 7. **browser-blitz** *(optional, no sudo)* — `./browser-blitz/browser-blitz/install.sh` (installs `agent-browser` if missing), then load the extension once per Chrome profile you want to drive: `chrome://extensions` → Developer mode → **Load unpacked** → `browser-blitz/extension`.
 8. **paseo daemon + third-party spares** *(optional)* — `./scripts/setup-paseo-daemon.sh`, then `sudo ./demonlock/register-recommended-spares.sh` (spares karabiner/alttab/raycast/etc.).
@@ -119,7 +115,6 @@ Installers scaffold these on the target Mac; you fill them in:
 |---|---|---|
 | `/usr/local/etc/nextdns-sidecar/credentials` | nextdns-sidecar install | enter Profile ID + API key at the prompt |
 | `~/.wtalk/.env` | wtalk `sudo ./install.sh` (template, user-owned `600`) | paste Gemini/Groq/HF keys |
-| `/Library/Application Support/Forcecalls/creds.json` | forcecalls install (root-owned `600`) | enter SignalWire space / project / token / caller ID / SIP endpoint at the prompt — deliberately unreadable afterwards |
 
 (demonlock no longer holds a password anywhere — admin is granted only by the delay-gated release
 valve, which edits the `admin` group directly.)
@@ -129,7 +124,6 @@ valve, which edits the `admin` group directly.)
 wtalk. macOS won't let a script grant these; you click them once per machine (`demonlock perm-ask`
 opens both demonlock panes).
 
-## Code signing (demonlock, wtalk, multistreamviewer, stayup, remote-agent-connector, forcecalls)
 Only the tools that build macOS `.app`s sign anything (nextdns-sidecar ships a plain CLI binary — no
 signing; the bash tools don't sign). They all call the **same** ladder, `signing-ladder.sh`, which
 chooses best-first and prints the choice at install:
