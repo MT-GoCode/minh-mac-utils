@@ -151,27 +151,21 @@ enum ReleaseValve {
                         delaySec: cfg.effectiveDelay, maxRequestDurationSec: cfg.effectiveMaxDuration)
     }
 
-    /// On a fresh admin GRANT, cancel every no-sudo self-serve QUEUE plus any open lockbox window: the
-    /// delayed policy / zones / release-valve-gate-policy changes, pending safe-app registrations, pending
-    /// snooze-preset adds, and the lockbox (pending unlocks AND currently-unlocked secrets). Those are the
-    /// commitment-device paths you use WITHOUT admin; once you hold admin you make changes deliberately
-    /// with sudo, so nothing queued should silently land later. Already-applied config and registered
-    /// spares are untouched, and an in-flight snooze (active suppression) is left alone — it's not a queue.
     /// On a GRANT, every queued self-serve change is EXPEDITED — landed on the next tick(s) through the
     /// normal validators, in the normal zones → policy → gate-policy → safe-apps → presets → lockbox
     /// order — not discarded. With admin held you could make each change with sudo anyway; the wait was
     /// the only thing the grant makes pointless. Open lockbox windows stay open (an already-landed
-    /// loosening the user asked for). Discarding stays the behavior of arm/nosudo (hardReset).
+    /// loosening the user asked for). arm/nosudo (hardReset) never touched the queues and still don't.
+    /// The grant fires AFTER the queue ticks in Enforcerd.tick, so "next tick" is exact.
     private static func expediteSelfServeQueues() {
-        let now = nowEpoch()
-        var n = 0
-        for q in [Enforcer.policyQueue(), Enforcer.zonesQueue(), Enforcer.gatePolicyQueue(),
-                  SafeApps.queue(), SnoozePresets.invokeQueue(), SnoozePresets.addsQueue(),
-                  Lockbox.unlocksQueue()] {
-            n += q.status().rows.count
-            q.expediteAll(now: now, reason: "admin grant")
-        }
+        let n = expedite([Enforcer.policyQueue(), Enforcer.zonesQueue(), Enforcer.gatePolicyQueue(),
+                          SafeApps.queue(), SnoozePresets.invokeQueue(), SnoozePresets.addsQueue(),
+                          Lockbox.unlocksQueue()], now: nowEpoch())
         logStderr("release-valve: grant expedited \(n) queued row(s) — they land on the next tick")
+    }
+    /// Testable core of the grant path: expedite every given queue, return the total row count.
+    static func expedite(_ queues: [DelayQueue], now: Double) -> Int {
+        queues.reduce(0) { $0 + $1.expediteAll(now: now, reason: "admin grant") }
     }
 
     /// Revoke any live grant and clear all state. Called by `arm` and `nosudo` (both root). Idempotent.

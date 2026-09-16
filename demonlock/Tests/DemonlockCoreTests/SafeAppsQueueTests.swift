@@ -73,35 +73,34 @@ final class SafeAppsQueueTests: XCTestCase {
         XCTAssertEqual(queue.status().recent.first?.reason, "invalid at landing")
     }
 
-    func testFlushAllAcrossManyQueues() {
-        // The grant-flush shape: every queue flushes independently, one event each, empties no-op.
+    /// The grant path: ReleaseValve.expedite over several queues (some empty) → every pending row is
+    /// due now, one `expedited` event per non-empty queue, none for empty ones, and the next tick's
+    /// applyDue lands them all.
+    func testGrantExpeditesAcrossManyQueues() {
         var queues: [DelayQueue] = []
         for i in 0..<7 {
             let dq = DelayQueue(kind: "q\(i)", store: .file(dir + "/q\(i).json"),
                                 requestMarker: dir + "/r\(i)", abortMarker: dir + "/a\(i)",
                                 onFailure: .drop, payloadIsJSON: false, auditLog: dir + "/audit.log")
-            if i % 2 == 0 {   // some queues pending, some empty (flushAll must no-op cleanly)
+            if i % 2 == 0 {
                 _ = MarkerIO.append(dir + "/r\(i)", line: "x\(i)")
                 _ = dq.consumeMarkers(now: 1, enforcedUID: uid, delaySec: { _ in 100 },
                                       key: { $0 }, validate: { _ in true })
             }
             queues.append(dq)
         }
-        for dq in queues { dq.flushAll(now: 2, reason: "admin grant") }
+        XCTAssertEqual(ReleaseValve.expedite(queues, now: 2), 4)
         for (i, dq) in queues.enumerated() {
-            XCTAssertTrue(dq.status().rows.isEmpty)
-            if i % 2 == 0 { XCTAssertEqual(dq.status().recent.first?.what, "flushed") }
-            else { XCTAssertTrue(dq.status().recent.isEmpty) }   // empty queue: no spurious event
+            if i % 2 == 0 {
+                XCTAssertEqual(dq.status().rows.first?.applyAt, 2)
+                XCTAssertEqual(dq.status().recent.first?.what, "expedited")
+                let st = dq.applyDue(now: 3, validate: { _ in true }) { due in
+                    Dictionary(uniqueKeysWithValues: due.map { ($0.key, (ok: true, reason: nil)) }) }
+                XCTAssertTrue(st.rows.isEmpty)                    // landed on the next tick
+                XCTAssertEqual(st.recent.first?.what, "applied")
+            } else {
+                XCTAssertTrue(dq.status().recent.isEmpty)         // empty queue: no spurious event
+            }
         }
-    }
-
-    func testFlushEmptiesQueueAsOneEvent() {
-        let queue = q()
-        _ = MarkerIO.append(dir + "/reg", lines: [appJSON("a", bid: "com.a.a"), appJSON("b", bid: "com.b.b")])
-        consume(queue, now: 1000)
-        queue.flushAll(now: 1001, reason: "admin grant")
-        XCTAssertTrue(queue.status().rows.isEmpty)
-        XCTAssertEqual(queue.status().recent.first?.what, "flushed")
-        XCTAssertTrue(queue.status().recent.first!.key.contains("a"))
     }
 }

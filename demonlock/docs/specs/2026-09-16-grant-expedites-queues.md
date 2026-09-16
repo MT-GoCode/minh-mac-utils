@@ -1,6 +1,6 @@
 # Admin grant expedites the self-serve queues (was: discards)
 
-**Date:** 2026-09-16 · **Status:** v1 · corrects a misread of the user's intent in the DelayQueue spec
+**Date:** 2026-09-16 · **Status:** v1.1 (review folded: dead flushAll/relockAll deleted, hardReset claim corrected) · corrects a misread of the user's intent in the DelayQueue spec
 
 ## Change
 
@@ -9,8 +9,8 @@ the very next tick through the normal path — instead of discarded. Rationale: 
 you could make every one of those changes immediately with sudo anyway; making you redo them by
 hand was pure friction, not protection. The user's word for it from day one was "admit all".
 
-Unchanged: `arm` and `nosudo` (hardReset) still discard everything — those are *tightening* resets,
-not grants. Aborts, replace-with-clock-reset, idempotent re-request, ordered landing, audit trail:
+Unchanged: `arm` and `nosudo` (hardReset) never touched the queues (contrary to what the DelayQueue
+spec's flush section implied) and still don't — a queued loosening keeps waiting through an arm. Aborts, replace-with-clock-reset, idempotent re-request, ordered landing, audit trail:
 all unchanged.
 
 ## Mechanics
@@ -24,17 +24,15 @@ never bypasses validation, only the wait.
 
 `ReleaseValve.flushSelfServeQueues()` → renamed `expediteSelfServeQueues()`: calls `expediteAll` on
 the same seven queues. **`Lockbox.relockAll()` is removed from the grant path** — an open unlock
-window is an already-landed loosening the user requested; with admin held it's theirs to have. (It
-stays in hardReset.) Log line: `release-valve: grant expedited N queued rows`.
-
-`flushAll` stays (hardReset uses it).
+window is an already-landed loosening the user requested; with admin held it's theirs to have.
+`Lockbox.relockAll` and `DelayQueue.flushAll` had no other production caller → **deleted** (with
+their tests). Log line: `release-valve: grant expedited N queued rows`.
 
 ### Same-tick ordering the expedite relies on
-The grant fires inside the release-valve step of the enforcer tick. Queue ticks in the same enforcer
-tick run *before* or *after* the valve? — **after must hold** for "lands next tick" to be true either
-way; if the valve step runs after the queue steps, the rows land one tick later (≤1s). Either is
-fine; the spec only promises "next tick or the one after". Verified in the plan by reading
-`Enforcerd.tick` order.
+Verified in `Enforcerd.tick`: the queue steps (zones → policy → gate-policy at `runDelayedChanges`,
+then safe-apps → presets → lockbox) run first; `ReleaseValve.tick` — where the grant fires — runs
+after them. So expedited rows land on exactly the next tick. The policy validator reloads
+`zones.json` at landing, so a policy referencing a zone expedited in the same set lands.
 
 ### Edge cases
 - **Nothing pending** → no-op, no outcome recorded.
@@ -55,8 +53,9 @@ The sidecar has no grant concept — untouched, but it links the new core (rebui
 ## Tests
 - `MacUtilsCoreTests`: `expediteAll` sets every `applyAt` to now, records one `expedited` outcome,
   no-ops on empty; a subsequent `applyDue(now:)` lands all rows in seq order.
-- `DemonlockCoreTests`: grant path — two queues with pending rows → after `expediteSelfServeQueues`
-  + one tick, both landed; lockbox window stays open across a grant; hardReset still discards.
+- `DemonlockCoreTests`: `ReleaseValve.expedite` (the testable core of the grant path) over seven
+  temp queues, four pending → all four due now, one `expedited` event each, empties silent, and
+  the next `applyDue` lands them.
 - Gate: `demonlock help` / `admin-release-valve help` text diff; `_policytest` 49/49.
 
 ## Grant-time runbook (Thu 2026-09-17, 10:00–14:00 CEST — grant lands 10:00:01)

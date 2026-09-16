@@ -161,7 +161,7 @@ Semantics, identical everywhere:
 - **No enforced user resolved** (fresh install): markers are skipped, but
   due items still apply — a queue must not strand because the uid cache is
   cold (today's behavior, kept).
-- **Flush = discard.** `flushAll()` empties `pending` (logged, listing keys). Used by `arm`/`nosudo`.
+- **Flush = discard.** `flushAll()` empties `pending` (logged, listing keys). DELETED 2026-09-16 — no production caller (`hardReset` never called it).
   **Superseded for the admin GRANT on 2026-09-16:** a grant now *expedites* (`expediteAll()`: every
   row's `applyAt := now`, one `expedited` event, lands on the next tick via the normal path) — see
   `2026-09-16-grant-expedites-queues.md`. The v1 "grant discards" reading was a misread of the user's

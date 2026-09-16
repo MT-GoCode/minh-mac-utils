@@ -406,7 +406,9 @@ sudo demonlock admin-release-valve i-still-need-sudo "for 45m"   # ≤ 1h per ca
 > registrations, `snooze-preset` adds/invocations, lockbox unlocks — is landed on the next tick,
 > through the same validators and in the same order it would have landed at hour 36. You hold sudo
 > now; you could have made each change immediately anyway, so the wait is the only thing the grant
-> removes. `arm` and `nosudo` still *discard* the queues (those are tightening resets).
+> removes. (One queue changes *size*, not just timing: an expedited snooze-preset invocation
+> stands down from now until its frozen target instead of from its original landing time — the
+> same thing `sudo demonlock snooze` would let you do.) `arm`/`nosudo` don't touch the queues.
 
 Status while granted:
 ```

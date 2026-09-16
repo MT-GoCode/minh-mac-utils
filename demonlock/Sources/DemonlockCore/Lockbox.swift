@@ -58,12 +58,6 @@ enum Lockbox {
                    onFailure: .drop, payloadIsJSON: false, auditLog: Paths.queueAuditLog)
     }
 
-    /// Relock every open window (admin grant).
-    static func relockAll() {
-        var f = LBFile.load()
-        guard !f.unlockedUntil.isEmpty else { return }
-        f.unlockedUntil.removeAll(); f.save()
-    }
 
     struct Status: Codable { var entries: [EntryView] = [] }
     struct EntryView: Codable { var name: String; var delaySec: Double; var unlocked: Bool; var unlockAtEpoch: Double? }

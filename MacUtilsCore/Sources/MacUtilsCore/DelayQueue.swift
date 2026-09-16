@@ -27,8 +27,8 @@ public struct DelayQueue {
         }
     }
     public struct Outcome: Codable, Equatable {
-        public var key: String                   // batch/flush events: the affected keys joined ", "
-        public var what: String                  // queued|replaced|aborted|applying|applied|rejected|failed|unconfirmed|flushed
+        public var key: String                   // batch/expedite events: the affected keys joined ", "
+        public var what: String                  // queued|replaced|aborted|applying|applied|rejected|failed|unconfirmed|expedited
         public var reason: String?
         public var at: Double
         public init(key: String, what: String, reason: String?, at: Double) {
@@ -372,30 +372,21 @@ public struct DelayQueue {
                             Dictionary(uniqueKeysWithValues: due.map { ($0.key, (apply($0.payload), String?.none)) }) })
     }
 
-    // MARK: - flush / status
+    // MARK: - expedite / status
 
-    /// Discard ALL pending (admin-grant flush): with admin in hand you change things deliberately
-    /// via sudo, so nothing queued should silently land later. One `flushed` event listing the keys.
     /// Land EVERY pending row on the next tick: applyAt := now, one `expedited` event. The rows then go
     /// through applyDue with the real validators in seq order — expediting skips the wait, never the
     /// validation. Used on an admin GRANT (with admin held you could make each change with sudo anyway;
-    /// making you redo them by hand was friction, not protection). Discarding is `flushAll` (arm/nosudo).
-    public func expediteAll(now: Double, reason: String) {
+    /// making you redo them by hand was friction, not protection). Returns the number of rows expedited.
+    @discardableResult
+    public func expediteAll(now: Double, reason: String) -> Int {
         var st = store.load()
-        guard !st.pending.isEmpty else { return }
+        guard !st.pending.isEmpty else { return 0 }
         for k in st.pending.keys { st.pending[k]?.applyAt = now }
         let keys = st.pending.keys.sorted().joined(separator: ", ")
         record(&st, Outcome(key: keys, what: "expedited", reason: reason, at: now))
         store.save(st)
-    }
-
-    public func flushAll(now: Double, reason: String) {
-        var st = store.load()
-        guard !st.pending.isEmpty else { return }
-        let keys = st.pending.keys.sorted().joined(separator: ", ")
-        st.pending.removeAll()
-        record(&st, Outcome(key: keys, what: "flushed", reason: reason, at: now))
-        store.save(st)
+        return st.pending.count
     }
 
     public func status() -> QStatus { status(store.load()) }
