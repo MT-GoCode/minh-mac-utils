@@ -130,7 +130,7 @@ enum ReleaseValve {
             if nowSec >= (st.eligibleAt ?? .infinity), windowTri == .t, let u = username,
                !ReleaseValveState.load().isIdle {
                 _ = Admin.grant(u)
-                flushSelfServeQueues()
+                expediteSelfServeQueues()
                 st.grantedAt = nowSec
                 st.grantExpiresAt = nowSec + (st.requestedDurationSec ?? 0)
                 ReleaseValveState.write(st)
@@ -157,18 +157,21 @@ enum ReleaseValve {
     /// commitment-device paths you use WITHOUT admin; once you hold admin you make changes deliberately
     /// with sudo, so nothing queued should silently land later. Already-applied config and registered
     /// spares are untouched, and an in-flight snooze (active suppression) is left alone — it's not a queue.
-    private static func flushSelfServeQueues() {
-        // Uniform: every no-admin queue is discarded (flushAll no-ops on empty and writes its own
-        // audit event), and the lockbox's open windows relock. With admin in hand you change things
-        // deliberately via sudo; nothing queued should silently land later.
+    /// On a GRANT, every queued self-serve change is EXPEDITED — landed on the next tick(s) through the
+    /// normal validators, in the normal zones → policy → gate-policy → safe-apps → presets → lockbox
+    /// order — not discarded. With admin held you could make each change with sudo anyway; the wait was
+    /// the only thing the grant makes pointless. Open lockbox windows stay open (an already-landed
+    /// loosening the user asked for). Discarding stays the behavior of arm/nosudo (hardReset).
+    private static func expediteSelfServeQueues() {
         let now = nowEpoch()
+        var n = 0
         for q in [Enforcer.policyQueue(), Enforcer.zonesQueue(), Enforcer.gatePolicyQueue(),
                   SafeApps.queue(), SnoozePresets.invokeQueue(), SnoozePresets.addsQueue(),
                   Lockbox.unlocksQueue()] {
-            q.flushAll(now: now, reason: "admin grant")
+            n += q.status().rows.count
+            q.expediteAll(now: now, reason: "admin grant")
         }
-        Lockbox.relockAll()
-        logStderr("release-valve: grant flushed all self-serve queues + relocked the lockbox")
+        logStderr("release-valve: grant expedited \(n) queued row(s) — they land on the next tick")
     }
 
     /// Revoke any live grant and clear all state. Called by `arm` and `nosudo` (both root). Idempotent.

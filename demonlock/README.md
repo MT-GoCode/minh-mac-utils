@@ -401,11 +401,12 @@ re-fence a session you're already in:
 sudo demonlock admin-release-valve i-still-need-sudo "for 45m"   # ≤ 1h per call (needs a live grant)
 ```
 
-> **A grant flushes your no‑sudo queues.** The instant admin is granted, every pending self‑serve
-> loosening is cancelled: `delay-set-policy`, `delayzones`, `delay-set-gate-policy`, `safe-apps`
-> delayed registrations, `snooze-preset` adds, and the lockbox (pending unlocks **and** any secret
-> still in its copy window). You hold sudo now — make the changes you actually want deliberately.
-> Already‑applied config and registered spares stay; an *active* snooze stays (it isn't a queue).
+> **A grant expedites your no‑sudo queues.** The instant admin is granted, every pending self‑serve
+> change — `delay-set-policy`, `delayzones`, `delay-set-gate-policy`, `safe-apps` delayed
+> registrations, `snooze-preset` adds/invocations, lockbox unlocks — is landed on the next tick,
+> through the same validators and in the same order it would have landed at hour 36. You hold sudo
+> now; you could have made each change immediately anyway, so the wait is the only thing the grant
+> removes. `arm` and `nosudo` still *discard* the queues (those are tightening resets).
 
 Status while granted:
 ```

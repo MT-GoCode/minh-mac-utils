@@ -457,3 +457,31 @@ extension DelayQueueTests {
         XCTAssertTrue(q.status().rows.isEmpty)
     }
 }
+
+extension DelayQueueTests {
+    /// Grant path: expediteAll makes every row due NOW (one event); the next applyDue lands them all,
+    /// in seq order, through the normal validate/apply — never bypassing validation.
+    func testExpediteAllLandsEverythingNextTick() {
+        let q = queue()
+        _ = MarkerIO.append(reqM, lines: ["aaaa", "bbbb", "cccc"])
+        consume(q, now: 1000)                       // applyAt = 1000 + delay (far future)
+        q.expediteAll(now: 1001, reason: "admin grant")
+        let st = q.status()
+        XCTAssertEqual(st.rows.count, 3)
+        XCTAssertTrue(st.rows.allSatisfy { $0.applyAt == 1001 })
+        XCTAssertEqual(st.recent.first?.what, "expedited")
+        XCTAssertEqual(st.recent.first?.key, "k:aaaa, k:bbbb, k:cccc")
+        var landed: [String] = []
+        _ = q.applyDue(now: 1002, validate: { $0 != "bbbb" }) { due in   // bbbb fails validation at landing
+            landed = due.map(\.key)
+            return Dictionary(uniqueKeysWithValues: due.map { ($0.key, (ok: true, reason: nil)) })
+        }
+        XCTAssertEqual(landed, ["k:aaaa", "k:cccc"])   // seq order, validator still honored
+        XCTAssertTrue(q.status().rows.isEmpty)
+    }
+    func testExpediteAllNoOpOnEmpty() {
+        let q = queue()
+        q.expediteAll(now: 5, reason: "admin grant")
+        XCTAssertTrue(q.status().recent.isEmpty)
+    }
+}

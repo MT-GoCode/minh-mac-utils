@@ -376,6 +376,19 @@ public struct DelayQueue {
 
     /// Discard ALL pending (admin-grant flush): with admin in hand you change things deliberately
     /// via sudo, so nothing queued should silently land later. One `flushed` event listing the keys.
+    /// Land EVERY pending row on the next tick: applyAt := now, one `expedited` event. The rows then go
+    /// through applyDue with the real validators in seq order — expediting skips the wait, never the
+    /// validation. Used on an admin GRANT (with admin held you could make each change with sudo anyway;
+    /// making you redo them by hand was friction, not protection). Discarding is `flushAll` (arm/nosudo).
+    public func expediteAll(now: Double, reason: String) {
+        var st = store.load()
+        guard !st.pending.isEmpty else { return }
+        for k in st.pending.keys { st.pending[k]?.applyAt = now }
+        let keys = st.pending.keys.sorted().joined(separator: ", ")
+        record(&st, Outcome(key: keys, what: "expedited", reason: reason, at: now))
+        store.save(st)
+    }
+
     public func flushAll(now: Double, reason: String) {
         var st = store.load()
         guard !st.pending.isEmpty else { return }
