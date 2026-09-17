@@ -94,6 +94,11 @@ paused; no-op if nowplaying-cli isn't installed).
 - **Homebrew**, then `brew install ffmpeg` — for wtalk.
 - **uv:** `curl -LsSf https://astral.sh/uv/install.sh | sh` — for wtalk.
 - **Karabiner-Elements** — to bind wtalk's push-to-talk key.
+- **Node** — `brew install node` — for browser-blitz (its installer also pulls `@playwright/cli` via npm).
+- **Paseo.app** *(optional, for step 8)* — install and launch it once so `~/.local/bin/paseo` and
+  `~/Library/Application Support/Paseo/desktop-settings.json` exist; `setup-paseo-daemon.sh` refuses without them.
+- **Third-party menubar apps you use** *(optional, for step 8)* — Raycast, AltTab, Shottr, Amphetamine,
+  BetterDisplay, Scroll Reverser: `register-recommended-spares.sh` can only spare what's installed (it prints ✗ per missing app).
 - **NextDNS Encrypted-DNS profile** (for nextdns-sidecar's `networklockdown`): log in at <https://apple.nextdns.io> (a browser step) and download your `.mobileconfig` — it lands as `~/Downloads/NextDNS (<id>).mobileconfig` — the nextdns-sidecar installer hardens it (`--profile-src`) and prints the `open` lines to install it in System Settings ▸ General ▸ Device Management. Pass credentials via `--credentials-file <0600 file with PROFILE=… / API_KEY=…>` so the profile ID (a credential) never sits on argv. *(nextdns-sidecar refuses to `arm` without the profile — arming would strand all DNS.)*
 - *(Optional)* **Pluckeye** — an extra layer; the lockers' real teeth is demonlock's admin-release-valve delay.
 
