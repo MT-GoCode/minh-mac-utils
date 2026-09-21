@@ -1068,7 +1068,12 @@ class Daemon:
             _log(f"startup failed: {e}")
             self.last_error = f"startup: {e}"
             self.write_state(status="loading")
-            raise SystemExit(1)                      # launchd respawns until it works
+            # Respawn until it works — but SLOWLY. ThrottleInterval is 2s, so exiting straight away
+            # turns a persistent failure (no Parakeet weights cached yet + DNS blocking Hugging Face,
+            # i.e. every fresh machine) into 30 restarts a minute hammering the network forever.
+            # Sleeping here makes launchd see a long-lived process, so the retry rate is ~2/min.
+            time.sleep(30)
+            raise SystemExit(1)
         self.cleaner = Cleaner(notify=_notify)
         try:
             self.cleaner.warm()                      # best-effort (network may be down)
