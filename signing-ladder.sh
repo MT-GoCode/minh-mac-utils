@@ -69,14 +69,18 @@ if [ -z "$HASH" ]; then
             -addext "basicConstraints=critical,CA:FALSE" \
             -addext "keyUsage=critical,digitalSignature" \
             -addext "extendedKeyUsage=critical,codeSigning" 2>"$tmp/openssl.err" \
-       && openssl pkcs12 -export $LEGACY -inkey "$tmp/key.pem" -in "$tmp/cert.pem" \
-            -out "$tmp/id.p12" -passout pass:macutils -name "$SELF_NAME" 2>>"$tmp/openssl.err" \
-       && security import "$tmp/id.p12" -k "$KC" -P macutils -T /usr/bin/codesign >/dev/null 2>>"$tmp/openssl.err" \
-       && security add-trusted-cert -r trustRoot -p codeSign -k "$KC" "$tmp/cert.pem" >/dev/null 2>&1 \
-       && security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KC" >/dev/null 2>&1; then
+       && { echo "== step: pkcs12 export" >>"$tmp/openssl.err"; \
+            openssl pkcs12 -export $LEGACY -inkey "$tmp/key.pem" -in "$tmp/cert.pem" \
+              -out "$tmp/id.p12" -passout pass:macutils -name "$SELF_NAME" 2>>"$tmp/openssl.err"; } \
+       && { echo "== step: security import" >>"$tmp/openssl.err"; \
+            security import "$tmp/id.p12" -k "$KC" -P macutils -T /usr/bin/codesign >/dev/null 2>>"$tmp/openssl.err"; } \
+       && { echo "== step: add-trusted-cert (needs an unlocked login keychain + GUI auth)" >>"$tmp/openssl.err"; \
+            security add-trusted-cert -r trustRoot -p codeSign -k "$KC" "$tmp/cert.pem" >/dev/null 2>>"$tmp/openssl.err"; } \
+       && { echo "== step: set-key-partition-list" >>"$tmp/openssl.err"; \
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KC" >/dev/null 2>>"$tmp/openssl.err"; }; then
         HASH="$(pick_hash)"
     else
-        echo "!! self-signed identity setup failed:" >&2
+        echo "!! self-signed identity setup failed at: $(awk '/^== step:/{l=$0} END{print (l?l:"== step: openssl req")}' "$tmp/openssl.err" | sed 's/^== step: //')" >&2
         sed 's/^/   /' "$tmp/openssl.err" >&2 2>/dev/null || true
     fi
     rm -rf "$tmp"
