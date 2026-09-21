@@ -250,6 +250,17 @@ func runArm() {
         if snap?.policyString.isEmpty ?? true {
             blockers.append("no policy is set — you'd be BLOCKED the moment you arm. Fix: `sudo demonlock setpolicy '…'`")
         }
+        // Same reasoning as "no policy", one step further: a policy that is SET but currently
+        // evaluating BLOCK (out of policy, or unknown → fail-closed) locks you out the instant you
+        // arm. And if the release-valve gate-policy contains IN_POLICY — the shape the README
+        // recommends — the valve can never open either, because opening it requires the very policy
+        // that is false. Stale zones or an unpinned BSSID on a NEW machine land here by default.
+        if snap?.verdict == "block" {
+            blockers.append("the policy currently evaluates BLOCK (\(snap?.reason ?? "no reason")) — you'd be "
+                            + "locked out the moment you arm, and a gate-policy using IN_POLICY could never "
+                            + "open. Fix: get into policy, or `sudo demonlock setpolicy '…'` — confirm "
+                            + "`demonlock status` shows verdict ALLOW first")
+        }
         if !blockers.isEmpty {
             fail("""
             ✗ refusing to arm — fix these first (arm revokes your admin, so afterwards you couldn't):

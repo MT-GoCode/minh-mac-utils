@@ -205,12 +205,24 @@ cmd_setup() {
   [ -f "$CA" ]         || { ssh-keygen -t ed25519 -N '' -q -f "$CA" -C remote-agent-connector-ca; say "  created CA"; }
   [ -f "$TUNNEL_KEY" ] || ssh-keygen -t ed25519 -N '' -q -f "$TUNNEL_KEY" -C remote-agent-connector-tunnel
   trust_on_mac
-  local capub tunpub; capub="$(cat "$CA.pub")"; tunpub="$(cat "$TUNNEL_KEY.pub")"
+  local capub tunpub tunb64; capub="$(cat "$CA.pub")"; tunpub="$(cat "$TUNNEL_KEY.pub")"
+  tunb64="$(awk '{print $2}' "$TUNNEL_KEY.pub")"
 
   say "▸ middleman: $MIDDLEMAN  ($MIDDLEMAN_USER@$MIDDLEMAN_HOST, tunnel :$TUNNEL_PORT)"
   ssh $MIDDLEMAN "bash -s" <<REMOTE || die "middleman provisioning failed"
 set -e
 mkdir -p ~/.ssh && chmod 700 ~/.ssh; touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
+# MACHINE_NAME collision guard. The tunnel port is a hash of MACHINE_NAME, so two Macs that reuse a
+# name (or collide, ~1/700) both ask for the same -R port. Without this the loser's ssh dies on
+# ExitOnForwardFailure while setup's "is the port listening?" check sees the WINNER's tunnel and
+# reports success — you'd think the new Mac was reachable when it never connected. If a tunnel line
+# for this port already exists under a DIFFERENT key, that port belongs to another machine.
+if grep -q 'permitlisten="127.0.0.1:$TUNNEL_PORT"' ~/.ssh/authorized_keys 2>/dev/null \
+   && ! grep -qF '$tunb64' ~/.ssh/authorized_keys; then
+  echo "✗ tunnel port $TUNNEL_PORT on this middleman already belongs to another machine." >&2
+  echo "  MACHINE_NAME '$MACHINE_NAME' collides — pick a different name in ~/.remote-agent-connector/config." >&2
+  exit 9
+fi
 grep -v 'permitopen="127.0.0.1:$TUNNEL_PORT"\|permitlisten="127.0.0.1:$TUNNEL_PORT"' ~/.ssh/authorized_keys > ~/.ssh/ak.rac || true
 printf '%s\n' 'cert-authority,restrict,port-forwarding,permitopen="127.0.0.1:$TUNNEL_PORT" $capub remote-agent-connector-jump:$MACHINE_NAME' >> ~/.ssh/ak.rac
 printf '%s\n' 'restrict,port-forwarding,permitlisten="127.0.0.1:$TUNNEL_PORT" $tunpub remote-agent-connector-tunnel:$MACHINE_NAME' >> ~/.ssh/ak.rac
