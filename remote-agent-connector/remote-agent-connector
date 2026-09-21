@@ -75,7 +75,11 @@ rollback() {
 }
 
 # ---- middleman authorized_keys cleanup snippet (used by rollback + teardown) ----
-middleman_strip() { ssh $1 "grep -v 'remote-agent-connector-jump\|remote-agent-connector-tunnel' ~/.ssh/authorized_keys > ~/.ssh/ak.rac 2>/dev/null && mv ~/.ssh/ak.rac ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" 2>/dev/null || true; }
+# $1=middleman  $2=THIS machine's tunnel port. Scoped by port, never by the bare
+# 'remote-agent-connector-*' comment: that comment is identical on every Mac, so a bare match
+# would strip EVERY other machine's jump/tunnel keys off a shared middleman. The port is derived
+# from MACHINE_NAME, so it is this machine's identity. Empty port matches nothing (fail-safe).
+middleman_strip() { [ -n "${2:-}" ] || return 0; ssh $1 "grep -v 'permitopen=\"127.0.0.1:$2\"\|permitlisten=\"127.0.0.1:$2\"' ~/.ssh/authorized_keys > ~/.ssh/ak.rac 2>/dev/null && mv ~/.ssh/ak.rac ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" 2>/dev/null || true; }
 box_strip()       { ssh $1 "awk '/^# >>> rac:$2 >>>/{s=1} s!=1{print} /^# <<< rac:$2 <<</{s=0}' ~/.ssh/config > ~/.ssh/config.rac 2>/dev/null && mv ~/.ssh/config.rac ~/.ssh/config; rm -f ~/.ssh/rac_$2 ~/.ssh/rac_$2.pub ~/.ssh/rac_$2-cert.pub ~/.ssh/cm-rac-$2*" 2>/dev/null || true; }
 
 # ---- middleman sshd keepalive: make the server reap a dead reverse-tunnel client fast ----
@@ -207,12 +211,12 @@ cmd_setup() {
   ssh $MIDDLEMAN "bash -s" <<REMOTE || die "middleman provisioning failed"
 set -e
 mkdir -p ~/.ssh && chmod 700 ~/.ssh; touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
-grep -v 'remote-agent-connector-jump\|remote-agent-connector-tunnel' ~/.ssh/authorized_keys > ~/.ssh/ak.rac || true
-printf '%s\n' 'cert-authority,restrict,port-forwarding,permitopen="127.0.0.1:$TUNNEL_PORT" $capub remote-agent-connector-jump' >> ~/.ssh/ak.rac
-printf '%s\n' 'restrict,port-forwarding,permitlisten="127.0.0.1:$TUNNEL_PORT" $tunpub remote-agent-connector-tunnel' >> ~/.ssh/ak.rac
+grep -v 'permitopen="127.0.0.1:$TUNNEL_PORT"\|permitlisten="127.0.0.1:$TUNNEL_PORT"' ~/.ssh/authorized_keys > ~/.ssh/ak.rac || true
+printf '%s\n' 'cert-authority,restrict,port-forwarding,permitopen="127.0.0.1:$TUNNEL_PORT" $capub remote-agent-connector-jump:$MACHINE_NAME' >> ~/.ssh/ak.rac
+printf '%s\n' 'restrict,port-forwarding,permitlisten="127.0.0.1:$TUNNEL_PORT" $tunpub remote-agent-connector-tunnel:$MACHINE_NAME' >> ~/.ssh/ak.rac
 mv ~/.ssh/ak.rac ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
 REMOTE
-  undo_push "middleman_strip $MIDDLEMAN"
+  undo_push "middleman_strip $MIDDLEMAN $TUNNEL_PORT"
   middleman_keepalive
 
   say "▸ (re)starting the app so it tunnels to the middleman"
@@ -261,7 +265,7 @@ cmd_teardown() {
   osascript -e 'quit app "RemoteAgentConnector"' >/dev/null 2>&1 || true
   pkill -x RemoteAgentConnector 2>/dev/null || true
   pkill -f "ssh -N .*-R 127.0.0.1:${TUNNEL_PORT:-0}:" 2>/dev/null || true
-  [ -n "${MIDDLEMAN:-}" ] && { say "  middleman $MIDDLEMAN"; middleman_strip "$MIDDLEMAN"; }
+  [ -n "${MIDDLEMAN:-}" ] && { say "  middleman $MIDDLEMAN"; middleman_strip "$MIDDLEMAN" "${TUNNEL_PORT:-}"; }
   local b; for b in ${BOXES:-${MIDDLEMAN:-}}; do say "  box $b"; box_strip "$b" "${MACHINE_NAME:-x}"; done
   # local Mac trust + keys
   [ -f "$HOME/.ssh/authorized_keys" ] && { grep -v 'remote-agent-connector-ca' "$HOME/.ssh/authorized_keys" > "$HOME/.ssh/ak.rac" 2>/dev/null && mv "$HOME/.ssh/ak.rac" "$HOME/.ssh/authorized_keys" && chmod 600 "$HOME/.ssh/authorized_keys"; }

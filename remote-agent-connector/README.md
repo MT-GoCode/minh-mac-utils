@@ -61,6 +61,12 @@ config block (with connection multiplexing, so commands are fast and the status 
 meaningful), then prints the agent briefing below. The alias is inherited from step b (pass a
 name as a second argument only if you want to change it).
 
+> **A second Mac on the same middleman:** give it a DIFFERENT `<machine-name>` (e.g. `mac-m3`).
+> The middleman-side tunnel port is a hash of the name, and the ssh-config block on every box is
+> keyed by it — reuse the name and the two Macs fight over the same port while `ssh <name>` on your
+> boxes silently repoints to whichever ran setup last. Distinct names coexist fine: setup and
+> teardown only touch the `authorized_keys` lines pinned to their own port.
+
 **d. Tell the agent:** hand it the briefing that command printed (the same text is in section 4).
 The one line it needs is: `Access my personal computer with ssh <machine-name>`.
 
