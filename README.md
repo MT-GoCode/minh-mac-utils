@@ -31,6 +31,7 @@ sudo ./remote-agent-connector/uninstall.sh
 ./scripts/unset-paseo-daemon.sh
 ./browser-blitz/browser-blitz/install.sh --uninstall
 sudo ./demonlock/uninstall.sh
+./gitas/uninstall.sh
 ```
 
 **Reinstall everything:**
@@ -48,6 +49,7 @@ sudo ./nextdns-sidecar/install.sh --profile-src ~/Downloads/NextDNS*.mobileconfi
 ./browser-blitz/browser-blitz/install.sh
 ./scripts/setup-paseo-daemon.sh
 sudo ./demonlock/register-recommended-spares.sh
+./gitas/install.sh ~/my-accounts.ini
 ```
 
 ## The tools
@@ -62,6 +64,7 @@ sudo ./demonlock/register-recommended-spares.sh
 | **stayup** | menu-bar toggle for staying awake with the lid closed (`pmset disablesleep`); `stayup` CLI | `sudo ./stayup/install.sh` | yes |
 | **blockrem** | scheduled **un-quittable screen blocks** for forced breaks — a root daemon revives a grey full-screen cover + input freeze at each alarm; **fail-open** (a bug always lifts it); managing alarms is no-sudo | `sudo ./blockrem/install.sh` | yes |
 | **browser-blitz** | drive your **real, logged-in Chrome** with `agent-browser`: a shim impersonates a Chrome CDP endpoint over an MV3 extension, and each agent session is fenced to its own tab group; `browser-blitz` CLI | `./browser-blitz/browser-blitz/install.sh` | no |
+| **gitas** | one git identity manager: per-account name/email/PAT in one 0600 file, routed automatically by remote URL (authorship *and* auth from the same trigger). All GitHub over HTTPS+PAT — no keys, no `gh auth`. **Also runs on Linux.** | `./gitas/install.sh <accounts.ini>` | no |
 
 **Paseo daemon (`scripts/`).** `scripts/setup-paseo-daemon.sh` hands the third-party Paseo daemon to
 launchd (so it survives the desktop app dying — e.g. when demonlock closes the GUI on a lockout) and
@@ -91,6 +94,9 @@ paused; no-op if nowplaying-cli isn't installed).
 - **Xcode Command Line Tools:** `xcode-select --install` — do this FIRST (on a machine without CLT, `git`/`python3`/`swift` are stubs that pop the installer dialog). Needed to build the Swift apps (demonlock, nextdns-sidecar, blockrem, multistreamviewer, stayup, remote-agent-connector). *(demonlock can skip this: `sudo ./demonlock/install.sh --prebuilt` deploys its committed, signed `dist/`.)*
 - **A console (GUI) login as you** — the gui-domain LaunchAgents can't load over plain SSH, and the installers now fail loudly when a job doesn't come up. Run installs from a local terminal (or `rac exec`), and reinstall `remote-agent-connector` only from a local terminal — its reinstall kills the tunnel an SSH session rides on.
 - **Admin**: you must be in the `admin` group. On a hardened machine that means a live demonlock release-valve grant with enough time left (`demonlock admin-release-valve status`); the grant can be extended while live with `sudo demonlock admin-release-valve i-still-need-sudo "for 1h"`.
+- **git identity (gitas)** — `./gitas/install.sh ~/my-accounts.ini` (no sudo). Do this before any git work:
+  it purges every other credential store and is what makes `git push` and `gh` authenticate as the right
+  account. Copy your filled-in `accounts.ini` onto the machine by hand — PATs are never committed.
 - **Homebrew**, then `brew install ffmpeg` — for wtalk.
 - **uv:** `curl -LsSf https://astral.sh/uv/install.sh | sh` — for wtalk.
 - **Karabiner-Elements** — to bind wtalk's push-to-talk key.
@@ -161,8 +167,9 @@ Override with `CODESIGN_IDENTITY="…"`.
 ## Preserving Developer-ID builds (GitHub releases)
 The Developer ID gives the cleanest (Apple-rooted) trust, but lapses if you drop the Apple Developer
 account. The signed bundles carry a **secure timestamp**, so a build made *now* stays valid forever.
-While you still have the cert, publish the dev-signed bundles as a release (needs `gh` —
-`brew install gh && gh auth login`):
+While you still have the cert, publish the dev-signed bundles as a release. `gh` needs no stored
+login — gitas hands it a PAT (`brew install gh`, then prefix the command with
+`gitas exec personal --`):
 
 ```bash
 # with your Developer ID cert present, after the repo is pushed:

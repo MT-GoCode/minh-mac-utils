@@ -66,3 +66,9 @@ blockrem/.build/
 blockrem/dist/
 blockrem/Blockrem.app/
 /MacUtilsCore/.build/
+
+# ---------- gitas ----------
+# accounts live in ~/.config/gitas, never the repo; block a stray local copy anyway
+gitas/accounts.ini
+gitas/*accounts*.ini
+!gitas/accounts.example.ini
