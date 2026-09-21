@@ -91,7 +91,23 @@ paused; no-op if nowplaying-cli isn't installed).
 ## Fresh-machine setup (in order)
 
 ### 1. Base prerequisites (you have admin)
-- **Xcode Command Line Tools:** `xcode-select --install` — do this FIRST (on a machine without CLT, `git`/`python3`/`swift` are stubs that pop the installer dialog). Needed to build the Swift apps (demonlock, nextdns-sidecar, blockrem, multistreamviewer, stayup, remote-agent-connector). *(demonlock can skip this: `sudo ./demonlock/install.sh --prebuilt` deploys its committed, signed `dist/`.)*
+- **Full Xcode, not just the Command Line Tools** — do this FIRST. Install Xcode from the App Store, then:
+  ```bash
+  xcode-select --install
+  sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+  sudo xcodebuild -license accept
+  sudo xcodebuild -runFirstLaunch
+  ```
+  CLT alone is **not enough**. `libSwiftUIMacros.dylib` ships only inside Xcode
+  (`Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib/swift/host/plugins/`);
+  there is no copy anywhere under `/Library/Developer/CommandLineTools`. SwiftUI implements `@State`
+  as an attached macro, so with CLT active every `@State` fails with *"external macro implementation
+  type 'SwiftUIMacros.StateMacro' could not be found"*, followed by a cascade of `cannot find
+  '$foo' in scope` and `cannot assign to property: 'self' is immutable` — all downstream of that one
+  missing plugin. Verify with `xcode-select -p` (must print the Xcode path, not CommandLineTools) and
+  `xcrun --show-sdk-path`. Needed to build the Swift apps (demonlock, nextdns-sidecar, blockrem,
+  multistreamviewer, stayup, remote-agent-connector). *(demonlock can skip the whole toolchain:
+  `sudo ./demonlock/install.sh --prebuilt` deploys its committed, signed `dist/`.)*
 - **A console (GUI) login as you** — the gui-domain LaunchAgents can't load over plain SSH, and the installers now fail loudly when a job doesn't come up. Run installs from a local terminal (or `rac exec`), and reinstall `remote-agent-connector` only from a local terminal — its reinstall kills the tunnel an SSH session rides on.
 - **Admin**: you must be in the `admin` group. On a hardened machine that means a live demonlock release-valve grant with enough time left (`demonlock admin-release-valve status`); the grant can be extended while live with `sudo demonlock admin-release-valve i-still-need-sudo "for 1h"`.
 - **git identity (gitas)** — `./gitas/install.sh ~/my-accounts.ini` (no sudo). Do this before any git work:
