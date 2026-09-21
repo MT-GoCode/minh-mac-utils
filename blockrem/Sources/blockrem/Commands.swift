@@ -85,7 +85,7 @@ func runSet(_ args: [String]) {
     let kind: Alarm.Kind
     if hasWeekly {
         guard let parsed = TimeSpec.parseWeekly(f["weekly"] ?? "") else {
-            fail("✗ --weekly must be <DAYS|*><HHMM>, e.g. R0800, *0800, MWF0730 (days M T W R F S U, R=Thu U=Sun).")
+            fail("✗ --weekly must be <DAYS|*><HHMM> — QUOTE it, zsh globs a bare *. e.g. R0800, \"*0800\", MWF0730 (days M T W R F S U, R=Thu U=Sun).")
         }
         kind = .weekly(days: parsed.days, hhmm: parsed.hhmm)
     } else if hasFirstOn {
@@ -191,7 +191,7 @@ func printHelp() {
       list                 All alarms, the active block, and any snooze
       set --weekly <DAYS|*><HHMM> --label "…" --duration <5-3600>
                            Recurring block. Days: M T W R F S U (R=Thu, U=Sun) or * = every day.
-                           e.g.  blockrem set --weekly *0800 --label "water break" --duration 30
+                           e.g.  blockrem set --weekly "*0800" --label "water break" --duration 30
                                  blockrem set --weekly MWF1230 --label "lunch, walk" --duration 300
       set --onetime "<for…|at…>" --label "…" --duration <5-3600>
                            One-shot block; the spec is WHEN it STARTS (still needs --duration):

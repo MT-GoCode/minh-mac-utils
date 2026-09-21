@@ -51,7 +51,7 @@ A single token `<DAYS><HHMM>`: days are `M T W R F S U` (R=Thu, U=Sun) or `*` fo
 4-digit local time.
 
 ```sh
-blockrem set --weekly *0800   --label "water break" --duration 30   # every day  8:00, 30 sec
+blockrem set --weekly "*0800" --label "water break" --duration 30   # every day  8:00, 30 sec
 blockrem set --weekly MWF1230 --label "lunch — walk" --duration 300 # Mon/Wed/Fri 12:30, 5 min
 blockrem set --weekly R1600   --label "stretch"     --duration 60   # Thursdays  16:00, 60 sec
 ```
