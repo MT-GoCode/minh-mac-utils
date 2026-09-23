@@ -215,20 +215,30 @@ cmd_purge() {
     git config --global --remove-section "$sec" 2>/dev/null || true
   done
   ok "cleared global git user + credential config"
-  if command -v gh >/dev/null 2>&1; then
+  if [ -d "$HOME/.config/gh" ]; then
     rm -rf "$HOME/.config/gh"; ok "removed ~/.config/gh (gh binary kept; drive it with: gitas exec <slug> -- gh ...)"
+  else
+    ok "no stored gh auth to remove"
   fi
   if command -v security >/dev/null 2>&1; then
-    while security delete-internet-password -s github.com >/dev/null 2>&1; do :; done
-    ok "cleared github.com entries from the macOS keychain"
+    n=0; while security delete-internet-password -s github.com >/dev/null 2>&1; do n=$((n+1)); done
+    [ "$n" -gt 0 ] && ok "cleared $n github.com entry(ies) from the macOS keychain" \
+                   || ok "no github.com keychain entries to clear"
   fi
   local sc="$HOME/.ssh/config"
   if [ -f "$sc" ]; then
+    local before after
+    before=$(grep -c "^[[:space:]]*Host[[:space:]]" "$sc" 2>/dev/null || echo 0)
     awk '
       /^[[:space:]]*Host[[:space:]]/ { drop = ($0 ~ /(^|[[:space:]])(github\.com|github-pers|github-imbue)([[:space:]]|$)/) }
       !drop
     ' "$sc" > "$sc.gitas.tmp" && mv "$sc.gitas.tmp" "$sc"
-    ok "removed GitHub Host blocks from ~/.ssh/config (all other hosts and every key left untouched)"
+    after=$(grep -c "^[[:space:]]*Host[[:space:]]" "$sc" 2>/dev/null || echo 0)
+    if [ "$before" -gt "$after" ]; then
+      ok "removed $((before-after)) GitHub Host block(s) from ~/.ssh/config (all other hosts and every key left untouched)"
+    else
+      ok "no GitHub Host blocks in ~/.ssh/config"
+    fi
   fi
 }
 

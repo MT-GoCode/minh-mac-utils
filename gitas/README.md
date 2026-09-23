@@ -18,6 +18,30 @@ remote URL — so they cannot drift apart.**
 
 ## Install
 
+### Fresh machine (reproducible)
+
+Copy your filled-in `accounts.ini` onto the machine by hand — it holds PATs and is never committed —
+then copy `bootstrap.sh` across and run it:
+
+```bash
+./bootstrap.sh ~/my-accounts.ini            # optional 2nd arg: repo dir, default ~/code/minh-mac-utils
+```
+
+`bootstrap.sh` is idempotent and does the whole machine: checks `git >= 2.36` (below that,
+`includeIf hasconfig:` silently no-ops and email routing would appear to work while doing nothing),
+clones or fast-forwards the repo, runs `install.sh` (which purges first), puts `~/.local/bin` on PATH
+in the right shell rc, rewrites any SSH GitHub remotes under `$HOME` to HTTPS, and verifies with a
+real authenticated fetch.
+
+The clone is the one chicken-and-egg: it needs credentials, but gitas *is* the credential helper. So
+the clone passes the token inline for that one command and immediately rewrites the remote to a clean
+URL — the script then asserts the token did not land in `.git/config`.
+
+Verified on macOS 26 (arm64) and Ubuntu 24.04 (x86_64).
+
+### Manual
+
+
 ```bash
 cp accounts.example.ini ~/my-accounts.ini    # fill in emails, usernames, PATs
 ./install.sh ~/my-accounts.ini
