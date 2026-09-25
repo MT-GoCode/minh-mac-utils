@@ -18,6 +18,7 @@ import ServiceManagement
 import Network
 import ApplicationServices
 import CoreGraphics
+import IOKit.hid
 import Security
 
 let PROBE_PORT = 18700          // local end of the health-probe forward
@@ -474,32 +475,230 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - permissions + guide
 
+    // One button, Android-style: heal whatever is stale, fire every prompt macOS
+    // offers, and say plainly what is left that only a human can click.
     @objc private func requestPermissions() {
-        let screenOK = CGRequestScreenCaptureAccess()
-        let axOK = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary)
-        // Warm the Automation consent so `rac exec osascript`/AppleScript works later.
-        DispatchQueue.global(qos: .utility).async {
-            _ = run("/usr/bin/osascript", ["-e", "tell application \"System Events\" to get name of first process"])
-        }
-        let alert = NSAlert()
-        alert.messageText = "Remote Agent Connector — Permissions"
-        alert.informativeText = """
-        Screen Recording: \(screenOK ? "granted ✓" : "prompted — click Allow, then relaunch")
-        Accessibility: \(axOK ? "granted ✓" : "prompted — click Allow, then relaunch")
-        Automation: a “control System Events” prompt may appear — click Allow.
-
-        These let remote agents' `rac` commands take screenshots, click/type, run
-        AppleScript, and sign with your keychain AS THIS APP — the one identity in the
-        ssh path macOS will grant. Bare ssh can never be granted these.
-        """
-        alert.addButton(withTitle: "OK")
-        alert.addButton(withTitle: "Open System Settings")
         NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertSecondButtonReturn {
-            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+        let log = healAndRequest()
+
+        let unresolved = log.filter { $0.hasPrefix("✗") || $0.hasPrefix("!") }
+        let alert = NSAlert()
+        alert.messageText = unresolved.isEmpty
+            ? "Remote Agent Connector — all permissions in place"
+            : "Remote Agent Connector — \(unresolved.count) need a click"
+        alert.informativeText = log.joined(separator: "\n") + (unresolved.isEmpty ? "" : """
+
+
+        The ✗ lines are the ones macOS gives no API for — no app can grant them, so
+        the panes are already open. Anything that said "cleared a STALE grant" was a
+        checkbox that looked ticked but was dead: TCC pins each grant to the app's
+        code signature, so re-signing silently invalidates it while Settings keeps
+        showing it as on. Pressing + there does nothing; it had to be removed first.
+        """)
+        alert.addButton(withTitle: "Done")
+        if !unresolved.isEmpty { alert.addButton(withTitle: "Re-check") }
+        if alert.runModal() == .alertSecondButtonReturn { requestPermissions() }
+    }
+
+}
+
+
+// MARK: - permission report
+//
+// macOS has no API to GRANT anything — only to prompt (Accessibility, Screen
+// Recording, Automation) or to deep-link the pane (Full Disk Access, which has
+// no prompt at all). And /usr/libexec/sshd-keygen-wrapper can never be added
+// programmatically by anyone: it is Apple's binary, it is what launchd execs for
+// every ssh connection, and TCC blames it for whatever a bare `ssh mac <cmd>`
+// tries to touch. So the honest job here is: report precisely what is missing and
+// say which pane fixes it.
+//
+// WHY THERE IS NO requestFullDiskAccess(), since this keeps coming up:
+//
+// Every promptable permission is tied to one action at one moment — you open the
+// camera, macOS asks about the camera. FDA is not a resource, it is a blanket
+// exemption from TCC for the whole filesystem, including other apps' private data
+// (Mail, Messages, Safari history, the TCC dbs themselves). There is no single
+// action that would justify it, and "allow access to everything, forever" is
+// precisely the dialog malware would want to spam. Apple made it deliberately
+// high-friction instead: the user must open System Settings and flip it by hand.
+// A prompt can be social-engineered; a trip to a Settings pane cannot.
+//
+// The enforcement differs too, which is why no prompt appears even by accident:
+//   • protected FOLDERS (Desktop/Documents/Downloads) — TCC suspends the syscall
+//     and prompts, so those CAN be triggered by just touching the folder.
+//   • FDA-class paths (~/Library/Mail, TCC.db, Safari data) — TCC denies outright
+//     with EPERM. Nothing is suspended, so there is nothing to prompt about.
+// That denial is exactly what hasFullDisk() below relies on as its probe.
+//
+// Apple did split the ladder on purpose: kTCCServiceSystemPolicyAppData ("access
+// data from other apps") IS promptable; kTCCServiceSystemPolicyAllFiles is not.
+//
+// ponytail: the only way left to set FDA programmatically is to drive System
+// Settings' own UI via our Accessibility grant — a robot clicking the same
+// checkbox a human would. Not built: it breaks whenever Apple reshuffles that
+// pane. Add it if hand-granting FDA on each new Mac becomes the real friction.
+
+// tccutil's name for a service is the kTCCService prefix stripped off.
+struct Perm {
+    let label: String
+    let service: String          // kTCCService…
+    let live: () -> Bool         // the authoritative check: does it work RIGHT NOW
+    let request: (() -> Void)?   // nil = macOS offers no request API at all
+    let pane: String             // deep link for the manual cases
+}
+
+private let userTCC = NSHomeDirectory() + "/Library/Application Support/com.apple.TCC/TCC.db"
+private let systemTCC = "/Library/Application Support/com.apple.TCC/TCC.db"
+private let wrapperPath = "/usr/libexec/sshd-keygen-wrapper"
+
+// The user TCC db is itself FDA-protected, so reading it IS the FDA probe. See the
+// note above: FDA-class paths are denied outright with EPERM rather than prompted.
+func hasFullDisk() -> Bool {
+    (try? Data(contentsOf: URL(fileURLWithPath: userTCC), options: .mappedIfSafe)) != nil
+}
+
+// Raw auth_value, or nil when there is no row / we cannot read the dbs.
+// Automation lives in the USER db while the rest live in the system one, so both
+// are consulted — checking only one silently reports Automation missing forever.
+func tccAuth(client: String, service: String) -> Int? {
+    guard hasFullDisk() else { return nil }
+    for db in [systemTCC, userTCC] {
+        let q = "select auth_value from access where client='\(client)' and service='\(service)' limit 1;"
+        let r = run("/usr/bin/sqlite3", [db, q])
+        if r.status == 0, let v = Int(r.out.trimmingCharacters(in: .whitespacesAndNewlines)) { return v }
+    }
+    return nil
+}
+
+func appPerms() -> [Perm] {
+    [
+        Perm(label: "Screen Recording", service: "kTCCServiceScreenCapture",
+             live: { CGPreflightScreenCaptureAccess() },
+             request: { _ = CGRequestScreenCaptureAccess() },
+             pane: "Privacy_ScreenCapture"),
+        Perm(label: "Accessibility", service: "kTCCServiceAccessibility",
+             live: { AXIsProcessTrusted() },
+             // Per the header: prompting is asynchronous and does NOT affect the return
+             // value. It only informs the user; it never grants.
+             request: { _ = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary) },
+             pane: "Privacy_Accessibility"),
+        Perm(label: "Input Monitoring", service: "kTCCServiceListenEvent",
+             live: { IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted },
+             request: { _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent) },
+             pane: "Privacy_ListenEvent"),
+        Perm(label: "Automation (System Events)", service: "kTCCServiceAppleEvents",
+             live: { run("/usr/bin/osascript", ["-e", "tell application \"System Events\" to get name of first process"]).status == 0 },
+             request: { _ = run("/usr/bin/osascript", ["-e", "tell application \"System Events\" to get name of first process"]) },
+             pane: "Privacy_Automation"),
+        // No request API exists for this one, for anyone. Report only.
+        Perm(label: "Full Disk Access", service: "kTCCServiceSystemPolicyAllFiles",
+             live: { hasFullDisk() }, request: nil, pane: "Privacy_AllFiles"),
+    ]
+}
+
+func openPane(_ pane: String) {
+    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!)
+}
+
+// THE core of "just press the button".
+//
+// Apple's header for CGRequestScreenCaptureAccess is explicit: "A previously denied
+// process is not re-prompted; the user must enable access in System Settings."
+// The same is true across TCC — once a decision exists, request APIs silently no-op.
+// That is also what happens when a grant goes STALE: TCC stores a code requirement
+// alongside each row, so re-signing the app with a different identity (self-signed →
+// Developer ID) leaves a row that still says "allowed" and a checkbox that still
+// looks ticked, while every actual call is denied. Pressing + in Settings does not
+// help, because the entry is already there.
+//
+// So: whenever a permission does not work but a row exists, clear the row with
+// tccutil first. That returns the service to "undetermined", which is the one state
+// in which the request API will actually prompt again.
+func healAndRequest() -> [String] {
+    var log: [String] = []
+    let bundleID = Bundle.main.bundleIdentifier ?? "com.minh.remote-agent-connector"
+
+    for p in appPerms() {
+        if p.live() { log.append("✓ \(p.label)"); continue }
+        let row = tccAuth(client: bundleID, service: p.service)
+        // A row that claims "allowed" while the live check fails is a stale grant.
+        let stale = (row ?? 0) >= 2
+        if row != nil, p.request != nil {
+            let name = p.service.replacingOccurrences(of: "kTCCService", with: "")
+            let r = run("/usr/bin/tccutil", ["reset", name, bundleID])
+            log.append(r.status == 0
+                ? "↻ \(p.label): cleared \(stale ? "a STALE grant (re-signed app)" : "a previous denial") so macOS will ask again"
+                : "!  \(p.label): could not reset (\(name)) — remove it by hand in Settings, then press this again")
+        }
+        if let request = p.request {
+            request()
+            log.append(p.live() ? "✓ \(p.label) (just granted)" : "…\(p.label): prompted — click Allow" )
+        } else {
+            log.append("✗ \(p.label): macOS has no request API — opening the pane, add this app by hand")
+            openPane(p.pane)
         }
     }
 
+    // The ssh identity. Prompt-on-use services can be driven for it over the
+    // loopback cert; the rest have to be clicked, same as ours.
+    log.append(contentsOf: wrapperStatus())
+    return log
+}
+
+
+// Fire the prompts AS sshd-keygen-wrapper.
+//
+// TCC blames whatever launchd exec'd for a session, so for an ssh command that is
+// always /usr/libexec/sshd-keygen-wrapper — never this app, and never a program we
+// can run directly. The only way to make the wrapper the responsible process is to
+// genuinely come in over ssh. We can: rac's own agent CA is already installed in
+// authorized_keys as cert-authority with from="127.0.0.1,::1", so minting a
+// short-lived cert for ourselves and connecting to localhost is the same trust path
+// an agent uses, just loopback-only. Prompts then land on the wrapper's row.
+//
+// Only prompt-on-use services can be driven this way. Full Disk Access has no prompt
+// at all and Accessibility only deep-links, so both stay manual for the wrapper.
+func triggerWrapperPermissions() -> String {
+    let ca = racDir.appendingPathComponent("agent_ca").path
+    guard FileManager.default.fileExists(atPath: ca) else { return "no agent CA yet — run `rac setup` first" }
+    let user = NSUserName()
+    let tmp = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("rac-perm-\(UUID().uuidString)")
+    try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    defer { try? FileManager.default.removeItem(at: tmp) }
+    let key = tmp.appendingPathComponent("k").path
+
+    guard run("/usr/bin/ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key, "-C", "rac-perm-trigger"]).status == 0,
+          run("/usr/bin/ssh-keygen", ["-q", "-s", ca, "-I", "rac-perm-trigger", "-n", user, "-V", "+5m", key + ".pub"]).status == 0
+    else { return "could not mint a loopback cert" }
+
+    let script = "/usr/bin/osascript -e 'tell application \"System Events\" to get name of every process' >/dev/null 2>&1"
+    let r = run("/usr/bin/ssh", ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
+                                 "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=8",
+                                 "-i", key, "\(user)@localhost", script])
+    return r.status == 0 ? "triggered over loopback cert ✓" : "ssh to localhost failed: \(r.out.trimmingCharacters(in: .whitespacesAndNewlines))"
+}
+
+func wrapperStatus() -> [String] {
+    var log: [String] = []
+    guard hasFullDisk() else {
+        log.append("?  sshd-keygen-wrapper: needs Full Disk Access above before its state can be read")
+        return log
+    }
+    let trigger = triggerWrapperPermissions()
+    for (svc, label, pane) in [("kTCCServiceAppleEvents", "Automation", "Privacy_Automation"),
+                               ("kTCCServiceSystemPolicyAllFiles", "Full Disk Access", "Privacy_AllFiles"),
+                               ("kTCCServiceAccessibility", "Accessibility", "Privacy_Accessibility")] {
+        let ok = (tccAuth(client: wrapperPath, service: svc) ?? 0) >= 2
+        if ok { log.append("✓ ssh (sshd-keygen-wrapper) → \(label)"); continue }
+        if svc == "kTCCServiceAppleEvents" {
+            log.append("…ssh → \(label): \(trigger)")
+        } else {
+            log.append("✗ ssh → \(label): no request API — add \(wrapperPath) by hand (+ ▸ ⇧⌘G)")
+            openPane(pane)
+        }
+    }
+    return log
 }
 
 let app = NSApplication.shared
