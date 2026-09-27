@@ -18,7 +18,6 @@ import ServiceManagement
 import Network
 import ApplicationServices
 import CoreGraphics
-import IOKit.hid
 import Security
 
 let PROBE_PORT = 18700          // local end of the health-probe forward
@@ -583,10 +582,6 @@ func appPerms() -> [Perm] {
              // value. It only informs the user; it never grants.
              request: { _ = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary) },
              pane: "Privacy_Accessibility"),
-        Perm(label: "Input Monitoring", service: "kTCCServiceListenEvent",
-             live: { IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted },
-             request: { _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent) },
-             pane: "Privacy_ListenEvent"),
         Perm(label: "Automation (System Events)", service: "kTCCServiceAppleEvents",
              live: { run("/usr/bin/osascript", ["-e", "tell application \"System Events\" to get name of first process"]).status == 0 },
              request: { _ = run("/usr/bin/osascript", ["-e", "tell application \"System Events\" to get name of first process"]) },
