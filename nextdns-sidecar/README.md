@@ -161,12 +161,24 @@ depend on DNS). Note that AWS *private-hosted-zone* records often ARE published 
 
 Honest list. All of these predate the overlay work and none are closed by it:
 
+Privilege matters when reading this list. The intended operating posture is a **non-admin account
+with no sudo**; several vectors that look open to an admin are closed to that user.
+
 - **The current network's own resolver.** `<local_dns>` allows plaintext 53 to RFC1918 + the learned
-  gateway, because captive portals require it. A hostile or merely unfiltered LAN resolver is
-  therefore usable without sudo. This is the largest standing hole and it is a deliberate trade.
+  gateway, because captive portals require it. So `dig @<gateway> blocked.example` answers, and this
+  needs **no privilege of any kind** — not root, not admin. It is the largest standing hole, the only
+  one fully open to a non-admin, and it is a deliberate trade for captive-portal access.
 - **A local DoH forwarder.** `set skip on lo0` exempts loopback entirely and `<doh_resolvers>` only
-  lists *known* public resolvers, so an unprivileged `cloudflared`/`dnscrypt-proxy` on `127.0.0.1:53`
-  forwarding to an unlisted DoH endpoint is a complete bypass.
+  lists *known* public resolvers, so a `cloudflared`/`dnscrypt-proxy` on `127.0.0.1:53` forwarding to
+  an unlisted DoH endpoint is a complete bypass — but binding a port below 1024 is **root-only**
+  (verified: `EACCES` even as an admin user), so this costs sudo and is not a no-privilege vector.
+  What *is* free is resolving a name by hand against an unlisted DoH endpoint over 443 and browsing
+  by IP; in practice that breaks on any vhosted/CDN site, so it is a nuisance rather than a bypass.
+- **Sabotaging the reclaim.** `/Applications` is `root:admin` and mode `rwxrwxr-x`, so an **admin**
+  can move `Tailscale.app` aside, flip `--accept-dns=true` and leave the overlay owning DNS. Tested
+  end-to-end: the result is a **total DNS outage**, not unfiltered access — the overlay resolvers are
+  outside `<local_dns>`, so every fresh query is dropped and the daemon logs an ALERT. Self-punishing,
+  and closed outright to a non-admin, who cannot write `/Applications`.
 - **A VPN deliberately run over TCP/443.** Indistinguishable from HTTPS; not blockable here.
 - **Tor pluggable transports.** Ride CDNs on 443; the `<tor_dirauth>` table is a speed bump only.
 
