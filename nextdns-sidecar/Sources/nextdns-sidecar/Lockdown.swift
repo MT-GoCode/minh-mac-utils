@@ -118,7 +118,7 @@ enum Lockdown {
         }
         // Never learn an overlay/VPN resolver into the captive door. `local-dns.txt` used to ship
         // 100.64.0.0/10 (which contains Tailscale's 100.100.100.100) AND this loop re-added it from
-        // scutil on every tick — so the wall granted its own bypass and re-granted it every 5s.
+        // scutil on every tick — so the wall granted its own bypass and re-granted it on every tick.
         // Dropped from the static list; this skip stops the dynamic half from putting it back.
         let overlay = Set(VPNGuard.overlayResolvers())
         var seen = Set<String>(); var out: [String] = []

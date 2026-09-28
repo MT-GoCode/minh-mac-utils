@@ -12,7 +12,7 @@ import MacUtilsCore
 /// Worse, the captive-portal door used to *grant* the bypass: `local-dns.txt` shipped `100.64.0.0/10`
 /// (which contains Tailscale's 100.100.100.100) and `fc00::/7` (which contains its ULA), and
 /// `learnHosts()` scraped every nameserver out of `scutil --dns` — including the overlay's — into
-/// <local_dns> on every tick. The wall learned its own bypass and re-punched the hole every 5 seconds.
+/// <local_dns> on every tick. The wall learned its own bypass and re-punched the hole on every tick.
 ///
 /// This guard identifies overlay resolvers so they can be kept OUT of <local_dns> (the captive-portal
 /// door). Once they are out, the ruleset's catch-all `block ... to any port 53` covers them like any

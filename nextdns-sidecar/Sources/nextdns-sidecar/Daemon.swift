@@ -16,11 +16,16 @@ func delayAddQueue() -> DelayQueue {
 ///   • each tick asserts the pf ruleset + captive door + fail-closed profile check (from nextdns-lockdownd)
 ///   • processes user markers and applies due delayed allows (from the nextdns-delay-allow applier)
 /// No timers — all state on disk, driven by the tick. Single-threaded (dropped the route-monitor watcher;
-/// the 5s poll maintains the captive door, and the watcher was explicitly "pure bonus" in the original).
+/// the 1s poll maintains the captive door, and the watcher was explicitly "pure bonus" in the original).
 final class Daemon {
     private var pstate = ""                              // last profile state, to log transitions only
     private var hijack = ""                              // last overlay-hijack state, likewise
-    static let interval = 5.0
+    /// Tick period. 1s rather than 5s because this bounds the window in which an overlay can own
+    /// system DNS before `reclaimDNS` takes it back — the one gap where queries actually leave
+    /// unfiltered. An idle tick makes no NextDNS API call and writes no log line (both are
+    /// state-change driven), so the only cost is a handful of short-lived subprocesses: measured
+    /// ~19ms CPU per tick, i.e. ~2% of one core sustained.
+    static let interval = 1.0
 
     func run() {
         if geteuid() != 0 { logLine("WARNING: not running as root — enforcement and API calls will fail") }

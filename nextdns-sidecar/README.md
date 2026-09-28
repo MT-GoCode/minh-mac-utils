@@ -133,7 +133,7 @@ Three things close it:
 - **`<local_dns>` no longer grants the overlay.** `local-dns.txt` used to ship `100.64.0.0/10` (which
   contains Tailscale's `100.100.100.100`) and `fc00::/7` (which contains its ULA), and `learnHosts()`
   scraped every nameserver out of `scutil --dns` — including the overlay's — back into the table on
-  every tick. The wall granted its own bypass and re-granted it every 5s. Both halves are fixed; the
+  every tick. The wall granted its own bypass and re-granted it on every tick. Both halves are fixed; the
   v6 half via a `!fd7a:115c:a1e0::/48` exclusion inside `fc00::/7`.
   Dropping `100.64.0.0/10` does **not** break CGNAT networks (Starlink, T-Mobile 5G Home, most hotel
   and airline Wi-Fi all hand out `100.64.x.x`): the static list is only a baseline, and `learnHosts()`
@@ -145,11 +145,15 @@ Three things close it:
   failure of the table negation can't pass unnoticed.
 - **`enforcerd` reclaims it.** Detection alone would leave you with a *total DNS outage* (the overlay
   resolver is outside `<local_dns>`, so its queries are dropped and nothing resolves). Instead the
-  daemon turns the overlay's DNS back off within one tick. Recovery is automatic and takes ~5s.
+  daemon turns the overlay's DNS back off. It ticks every **1s**, which bounds how long an overlay
+  can hold system DNS before it is taken back; recovery is automatic and measured end-to-end at ~3s.
 
 **Tailnet names.** With the overlay no longer resolving, `*.ts.net` MagicDNS names stop resolving —
 they are not in public DNS, so NextDNS returns NXDOMAIN. Pin them with `sudo ./refresh-tailnet-hosts.sh`
-(re-run when tailnet nodes come or go); tailnet IPs are stable per node. Peer connectivity, subnet routes and exit nodes are unaffected (they do not
+(re-run when tailnet nodes come or go); tailnet IPs are stable per node. The script is **idempotent**:
+it deletes the whole `# BEGIN nextdns-sidecar pins` … `# END nextdns-sidecar pins` block and rewrites
+it from a fresh `tailscale status --json`, so nodes that went away are dropped and re-runs never
+accumulate duplicates. Lines outside that block are untouched, and it backs `/etc/hosts` up first. Peer connectivity, subnet routes and exit nodes are unaffected (they do not
 depend on DNS). Note that AWS *private-hosted-zone* records often ARE published publicly — check with
 `dig` before assuming a private-looking name needs a pin.
 
