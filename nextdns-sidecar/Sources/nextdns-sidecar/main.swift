@@ -193,6 +193,25 @@ func cmdArm() {
           Device Management), confirm with `nextdns-sidecar networklockdown status`, then re-run arm.
         """)
     }
+    // An overlay resolver makes arming a lie: pf would enforce a wall around a DNS path nothing
+    // uses, and `status` would report ARMED while every query left over the tunnel unfiltered.
+    // Refuse, and name the exact command that fixes it.
+    if let d = VPNGuard.hijackDetail() {
+        fail("""
+        ✗ refusing to arm: an overlay/VPN resolver owns this machine's DNS (\(d)).
+          Every query would leave over the tunnel, NextDNS would filter nothing, and the wall would
+          report ARMED while blocking nothing at all. Hand DNS back first:
+              tailscale set --accept-dns=false
+          then re-check with `nextdns-sidecar networklockdown status` and re-run arm.
+        """)
+    }
+    if case .unconfigured = Lockdown.nextDNSActive() {
+        fail("""
+        ✗ refusing to arm: test.nextdns.io reports this machine as UNCONFIGURED — queries are not
+          reaching NextDNS, so arming would enforce a wall around a DNS path nothing uses.
+          Check `nextdns-sidecar networklockdown status` for an overlay resolver, fix it, re-run arm.
+        """)
+    }
     if !Lockdown.resolvesSystem() {
         fail("""
         ✗ refusing to arm: DNS isn't resolving right now (mid captive-portal login?).

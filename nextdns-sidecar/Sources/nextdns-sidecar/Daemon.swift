@@ -19,6 +19,7 @@ func delayAddQueue() -> DelayQueue {
 /// the 5s poll maintains the captive door, and the watcher was explicitly "pure bonus" in the original).
 final class Daemon {
     private var pstate = ""                              // last profile state, to log transitions only
+    private var hijack = ""                              // last overlay-hijack state, likewise
     static let interval = 5.0
 
     func run() {
@@ -48,6 +49,22 @@ final class Daemon {
         if armed {
             Lockdown.assertPF()
             pstate = Lockdown.assertProfile(prev: pstate)
+            // Fail-closed already handles the security side (the overlay resolver is outside
+            // <local_dns>, so its queries are dropped). This only names the cause, so a sudden
+            // total DNS outage is diagnosable from the log instead of guessed at.
+            let h = VPNGuard.hijackDetail() ?? ""
+            if !h.isEmpty {
+                // Reclaim rather than merely report: see VPNGuard.reclaimDNS for why an outage is
+                // not an acceptable resting state here.
+                let ok = VPNGuard.reclaimDNS(uid: euid)
+                if h != hijack {
+                    logLine(ok ? "overlay resolver took system DNS (\(h)) — reclaiming for NextDNS"
+                               : "ALERT: overlay resolver owns system DNS (\(h)) and the reclaim could not run — DNS stays blocked until it is turned off")
+                }
+            } else if !hijack.isEmpty {
+                logLine("overlay DNS hijack cleared — NextDNS owns the default path")
+            }
+            hijack = h
         } else {
             Lockdown.restorePF()
         }

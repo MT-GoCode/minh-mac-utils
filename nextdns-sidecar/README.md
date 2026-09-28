@@ -113,6 +113,47 @@ hand-authored profile silently). The installer prints `open "<path>"` for each m
 
 Then confirm with `nextdns-sidecar networklockdown status` and `... arm`.
 
+## VPNs / overlay networks (Tailscale)
+
+A VPN that installs itself as the **system resolver** defeats everything else here, and costs no sudo
+to turn on — on macOS `tailscale set --accept-dns` is a menu-bar click. When that happens every query
+leaves over the tunnel: pf never sees a port-53 packet, the DoH profile stays installed and "healthy",
+and NextDNS filters nothing while `status` still reads ARMED.
+
+Three things close it:
+
+- **`<local_dns>` no longer grants the overlay.** `local-dns.txt` used to ship `100.64.0.0/10` (which
+  contains Tailscale's `100.100.100.100`) and `fc00::/7` (which contains its ULA), and `learnHosts()`
+  scraped every nameserver out of `scutil --dns` — including the overlay's — back into the table on
+  every tick. The wall granted its own bypass and re-granted it every 5s. Both halves are fixed; the
+  v6 half via a `!fd7a:115c:a1e0::/48` exclusion inside `fc00::/7`.
+- **`arm` refuses** while an overlay owns the default resolver, and `selftest` leads with two checks
+  that judge the real property: is an overlay holding the default path, and does `test.nextdns.io`
+  say NextDNS is actually answering. It also probes the overlay addresses directly, so a silent
+  failure of the table negation can't pass unnoticed.
+- **`enforcerd` reclaims it.** Detection alone would leave you with a *total DNS outage* (the overlay
+  resolver is outside `<local_dns>`, so its queries are dropped and nothing resolves). Instead the
+  daemon turns the overlay's DNS back off within one tick. Recovery is automatic and takes ~5s.
+
+**Tailnet names.** With the overlay no longer resolving, `*.ts.net` MagicDNS names stop resolving —
+they are not in public DNS, so NextDNS returns NXDOMAIN. Pin the ones you use in `/etc/hosts`; tailnet
+IPs are stable per node. Peer connectivity, subnet routes and exit nodes are unaffected (they do not
+depend on DNS). Note that AWS *private-hosted-zone* records often ARE published publicly — check with
+`dig` before assuming a private-looking name needs a pin.
+
+## Residual bypasses (not closed)
+
+Honest list. All of these predate the overlay work and none are closed by it:
+
+- **The current network's own resolver.** `<local_dns>` allows plaintext 53 to RFC1918 + the learned
+  gateway, because captive portals require it. A hostile or merely unfiltered LAN resolver is
+  therefore usable without sudo. This is the largest standing hole and it is a deliberate trade.
+- **A local DoH forwarder.** `set skip on lo0` exempts loopback entirely and `<doh_resolvers>` only
+  lists *known* public resolvers, so an unprivileged `cloudflared`/`dnscrypt-proxy` on `127.0.0.1:53`
+  forwarding to an unlisted DoH endpoint is a complete bypass.
+- **A VPN deliberately run over TCP/443.** Indistinguishable from HTTPS; not blockable here.
+- **Tor pluggable transports.** Ride CDNs on 443; the `<tor_dirauth>` table is a speed bump only.
+
 ## Uninstall
 
 `sudo ./uninstall.sh` (disarms, boots out the daemon, removes the binary + `nextdns-test` shim + pf

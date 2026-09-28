@@ -116,11 +116,21 @@ enum Lockdown {
                 raw.append(parts[i + 2])
             }
         }
+        // Never learn an overlay/VPN resolver into the captive door. `local-dns.txt` used to ship
+        // 100.64.0.0/10 (which contains Tailscale's 100.100.100.100) AND this loop re-added it from
+        // scutil on every tick — so the wall granted its own bypass and re-granted it every 5s.
+        // Dropped from the static list; this skip stops the dynamic half from putting it back.
+        let overlay = Set(VPNGuard.overlayResolvers())
         var seen = Set<String>(); var out: [String] = []
         for h0 in raw {
             var h = h0
             if let r = h.range(of: "%") { h = String(h[..<r.lowerBound]) }
             if h.isEmpty || h.hasPrefix("127.") || h == "0.0.0.0" || h == "::1" || h == "0:0:0:0:0:0:0:1" { continue }
+            if overlay.contains(h) || VPNGuard.isOverlayAddress(h) { continue }
+            // `route -n get default` prints `gateway: link#14` for on-link/point-to-point defaults.
+            // That is not an address; pfctl rejects it AND discards the whole replace, so one bad
+            // entry would freeze <local_dns> at its previous contents. Drop non-literals here.
+            guard isIPLiteral(h) else { continue }
             if seen.insert(h).inserted { out.append(h) }
         }
         return out.sorted()
@@ -167,6 +177,12 @@ enum Lockdown {
         print("  browser DoH:  " + (browserProfilePresent() ? "locked (no-browser-doh installed)"
                                      : "\(red)OPEN — no-browser-doh NOT installed\(rst)  (arm is refused)"))
         print("  resolution:   " + (resolvesSystem() ? "working" : "NOT resolving"))
+        if let d = VPNGuard.hijackDetail() {
+            print("  system DNS:   \(red)HIJACKED by an overlay — \(d)\(rst)")
+            print("                \(dim)NextDNS is NOT filtering. Fix: tailscale set --accept-dns=false\(rst)")
+        } else {
+            print("  system DNS:   no overlay resolver owns the default path")
+        }
         let daemon = !Proc.capture("/bin/launchctl", ["print", "system/\(Paths.label)"]).isEmpty
         print("  daemon:       " + (daemon ? "loaded" : "NOT loaded"))
     }
@@ -248,6 +264,28 @@ enum Lockdown {
         return inet_pton(AF_INET, s, &v4) == 1 || inet_pton(AF_INET6, s, &v6) == 1
     }
 
+    /// END-TO-END proof that NextDNS is the resolver actually answering for this machine.
+    ///
+    /// Every other probe in `selfTest` is negative ("this bypass is closed") or structural ("the
+    /// profile file exists"). None of them can tell you the one thing that matters: whether queries
+    /// reach NextDNS. A VPN that hijacks the resolver leaves all of them green while filtering nothing
+    /// — that is exactly how this shipped for weeks. test.nextdns.io reports which profile served the
+    /// lookup, so it is the only check that observes the property we actually care about.
+    enum NextDNSVerdict { case active(String), unconfigured, unreachable }
+
+    static func nextDNSActive() -> NextDNSVerdict {
+        let (out, rc) = Proc.captureStatus("/usr/bin/curl",
+                  ["-sL", "--max-time", "8", "https://test.nextdns.io"])
+        guard rc == 0, !out.isEmpty else { return .unreachable }
+        guard let d = out.data(using: .utf8),
+              let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+              let status = j["status"] as? String else { return .unreachable }
+        if status == "unconfigured" { return .unconfigured }
+        // "ok" ships the profile id; anything else non-unconfigured still means NextDNS answered.
+        let id = (j["profile"] as? String) ?? (j["clientName"] as? String) ?? status
+        return .active(id)
+    }
+
     // ---- reload (root) + selftest (no sudo) ----
 
     /// Re-validate + reload the pf ruleset, picking up on-disk table edits without a disarm/arm cycle.
@@ -269,6 +307,34 @@ enum Lockdown {
         note(armed ? "state ARMED  -> bypass vectors should be CLOSED"
                    : "state DISARMED -> bypass vectors will be OPEN (expected when off)")
         print("")
+
+        // Lead with the two checks that judge the actual security property. Historically selftest
+        // opened with bypass probes, all of which passed on a machine whose DNS was entirely
+        // handled by Tailscale — six PASS lines above a completely unfiltered resolver.
+        if let d = VPNGuard.hijackDetail() {
+            bad("system DNS HIJACKED by an overlay (\(d)) — NextDNS is filtering NOTHING")
+            note("  fix: tailscale set --accept-dns=false   (then re-run selftest)")
+        } else {
+            ok("no overlay resolver owns the default DNS path")
+        }
+        switch nextDNSActive() {
+        case .active(let id):   ok("NextDNS is answering end-to-end (profile \(id))")
+        case .unconfigured:     bad("test.nextdns.io reports UNCONFIGURED — queries are NOT reaching NextDNS")
+        case .unreachable:      note("end-to-end NextDNS check INCONCLUSIVE — test.nextdns.io unreachable")
+        }
+
+        // The overlay resolver itself — the address this whole change exists to block. Without
+        // this probe, a silent failure of the `!fd7a:…/48` table negation yields a full row of
+        // PASS lines over an open v6 bypass: the same failure mode, one layer down.
+        for server in VPNGuard.overlayResolvers() {
+            switch digAnswer(server) {
+            case .answered(let ans):
+                if armed { bad("overlay resolver \(server) LEAKS -> \(ans)") }
+                else { note("overlay resolver \(server) reachable (\(ans))") }
+            case .blocked:        ok("overlay resolver \(server) is blocked")
+            case .broken(let rc): note("overlay resolver \(server) INCONCLUSIVE — dig failed (rc=\(rc))")
+            }
+        }
 
         for server in ["8.8.8.8", "1.1.1.1"] {
             switch digAnswer(server) {
