@@ -80,6 +80,14 @@ browser's Secure-DNS policy and reports PASS/FAIL against the armed state.
 sudo nextdns-sidecar set-delay "12h"     # the delay-add landing delay (clamped 8h–168h)
 ```
 
+**tailnet names:**
+
+```bash
+sudo ./refresh-tailnet-hosts.sh          # re-pin *.ts.net names into /etc/hosts (sudo)
+```
+
+See [VPNs / overlay networks](#vpns--overlay-networks-tailscale) for why this is needed.
+
 ## Install
 
 `sudo ./install.sh` (installs **disarmed** — nothing is blocked until you arm):
@@ -127,6 +135,10 @@ Three things close it:
   scraped every nameserver out of `scutil --dns` — including the overlay's — back into the table on
   every tick. The wall granted its own bypass and re-granted it every 5s. Both halves are fixed; the
   v6 half via a `!fd7a:115c:a1e0::/48` exclusion inside `fc00::/7`.
+  Dropping `100.64.0.0/10` does **not** break CGNAT networks (Starlink, T-Mobile 5G Home, most hotel
+  and airline Wi-Fi all hand out `100.64.x.x`): the static list is only a baseline, and `learnHosts()`
+  still adds *this* network's actual gateway and DHCP-advertised resolvers to the door each tick.
+  Only the two literal Tailscale addresses are refused, so a CGNAT portal login resolves normally.
 - **`arm` refuses** while an overlay owns the default resolver, and `selftest` leads with two checks
   that judge the real property: is an overlay holding the default path, and does `test.nextdns.io`
   say NextDNS is actually answering. It also probes the overlay addresses directly, so a silent
