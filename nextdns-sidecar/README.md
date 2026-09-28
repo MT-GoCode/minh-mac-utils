@@ -136,8 +136,8 @@ Three things close it:
   daemon turns the overlay's DNS back off within one tick. Recovery is automatic and takes ~5s.
 
 **Tailnet names.** With the overlay no longer resolving, `*.ts.net` MagicDNS names stop resolving —
-they are not in public DNS, so NextDNS returns NXDOMAIN. Pin the ones you use in `/etc/hosts`; tailnet
-IPs are stable per node. Peer connectivity, subnet routes and exit nodes are unaffected (they do not
+they are not in public DNS, so NextDNS returns NXDOMAIN. Pin them with `sudo ./refresh-tailnet-hosts.sh`
+(re-run when tailnet nodes come or go); tailnet IPs are stable per node. Peer connectivity, subnet routes and exit nodes are unaffected (they do not
 depend on DNS). Note that AWS *private-hosted-zone* records often ARE published publicly — check with
 `dig` before assuming a private-looking name needs a pin.
 
