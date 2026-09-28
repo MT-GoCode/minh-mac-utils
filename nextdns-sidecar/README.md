@@ -166,8 +166,18 @@ with no sudo**; several vectors that look open to an admin are closed to that us
 
 - **The current network's own resolver.** `<local_dns>` allows plaintext 53 to RFC1918 + the learned
   gateway, because captive portals require it. So `dig @<gateway> blocked.example` answers, and this
-  needs **no privilege of any kind** — not root, not admin. It is the largest standing hole, the only
-  one fully open to a non-admin, and it is a deliberate trade for captive-portal access.
+  needs **no privilege of any kind** — not root, not admin. It is the only residual fully open to a
+  non-admin, and it is a deliberate trade for captive-portal access.
+
+  **It is not, however, a way to actually use a blocked site.** `dig` hands back one A record; it does
+  not change what the *browser* resolves with. Every subsequent lookup a real page makes — CDN shards,
+  image and video hosts, fonts, analytics, XHR/API endpoints, each redirect hop — still goes through
+  the system resolver to NextDNS and still gets `0.0.0.0`. A modern page issues dozens of these, so
+  what you get is a broken fragment, not the site. Pasting the raw IP into the address bar is worse:
+  it breaks TLS SNI and name-based vhost routing, so shared-IP and CDN-fronted hosts (which is nearly
+  all of them) return the wrong site or a certificate error. Treat this as a leak of individual DNS
+  answers, not as a usable browsing bypass — closing it would buy less than its cost to captive
+  portals, which is why it stays open.
 - **A local DoH forwarder.** `set skip on lo0` exempts loopback entirely and `<doh_resolvers>` only
   lists *known* public resolvers, so a `cloudflared`/`dnscrypt-proxy` on `127.0.0.1:53` forwarding to
   an unlisted DoH endpoint is a complete bypass — but binding a port below 1024 is **root-only**
