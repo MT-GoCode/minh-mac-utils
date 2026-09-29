@@ -223,7 +223,7 @@ enum Lockdown {
     }
 
     /// BLOCKED iff the system resolver returns nothing or only 0.0.0.0 (NextDNS's block reply). IPv4 (A)
-    /// only, matching the old nextdns-test; an allowed IPv6-only domain would read BLOCKED (rare).
+    /// only; an allowed IPv6-only domain would read BLOCKED (rare).
     static func isBlocked(_ d: String) -> Bool {
         let out = Proc.capture("/usr/bin/dscacheutil", ["-q", "host", "-a", "name", d])
         let real = out.split(separator: "\n").compactMap { line -> String? in

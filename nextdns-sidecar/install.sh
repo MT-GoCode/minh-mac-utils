@@ -94,15 +94,9 @@ else
     chown root:wheel "$CRED"; chmod 600 "$CRED"
 fi
 
-# --- binary + nextdns-test shim ------------------------------------------
+# --- binary ---------------------------------------------------------------
 echo ">> binary  ($BIN/nextdns-sidecar)"
 install -o root -g wheel -m 0755 "$BINARY" "$BIN/nextdns-sidecar"
-# nextdns-test shim — your CLAUDE.md calls `nextdns-test <domain>`; keep it as a thin alias.
-cat > "$BIN/nextdns-test" <<'EOF'
-#!/bin/bash
-exec /usr/local/bin/nextdns-sidecar domains test "$@"
-EOF
-chmod 0755 "$BIN/nextdns-test"; chown root:wheel "$BIN/nextdns-test"
 
 # --- runtime state dir + USER-owned marker inbox -------------------------
 echo ">> state dir  ($APP)"
@@ -184,7 +178,7 @@ cat <<EOF
   sudo nextdns-sidecar domains add instagram.com           # allow now (sudo)
   nextdns-sidecar domains delay-add instagram.com          # allow in 12h (no sudo)
   nextdns-sidecar domains future                           # what's queued
-  nextdns-test instagram.com                               # is it blocked?
+  nextdns-sidecar domains test instagram.com               # is it blocked?
   nextdns-sidecar networklockdown status                   # wall state
   nextdns-sidecar networklockdown arm                      # enforce (no sudo; needs the DoH profile)
   sudo nextdns-sidecar networklockdown disarm              # emergency off

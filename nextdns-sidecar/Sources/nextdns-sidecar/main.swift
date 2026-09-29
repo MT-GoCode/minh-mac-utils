@@ -130,7 +130,7 @@ func cmdFuture() {
 }
 
 /// test — no sudo, read-only. Resolve each domain through the SYSTEM resolver and report BLOCKED vs
-/// ALLOWED. Restores nextdns-test with the profile-mode fix (system resolver, not `dig @127.0.0.1`).
+/// ALLOWED. Uses the profile-mode fix (system resolver, not `dig @127.0.0.1`).
 func cmdTest(_ ds: [String]) {
     var filter = "all", raw: [String] = [], i = 0
     while i < ds.count {

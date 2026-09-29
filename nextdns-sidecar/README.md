@@ -52,7 +52,7 @@ nextdns-sidecar domains test <domain>...         # is it blocked? (also -f FILE,
 
 All of `block` / `add` / `delay-add` / `test` also accept `-f FILE` (one domain per line, `#` comments).
 `test` resolves each domain through the **system resolver** (→ DoH → NextDNS) and reports BLOCKED
-(`0.0.0.0`/empty) vs ALLOWED; a `/usr/local/bin/nextdns-test` shim aliases it.
+(`0.0.0.0`/empty) vs ALLOWED.
 
 `delay-add` lands after the root-configured, baked-clamped delay (default **12h**, range **8h–168h**);
 the tag/target is committed at request time and the daemon applies it — no sudo needed then either.
@@ -194,7 +194,7 @@ with no sudo**; several vectors that look open to an admin are closed to that us
 
 ## Uninstall
 
-`sudo ./uninstall.sh` (disarms, boots out the daemon, removes the binary + `nextdns-test` shim + pf
+`sudo ./uninstall.sh` (disarms, boots out the daemon, removes the binary + pf
 ruleset + state; keeps credentials/config unless `--purge`). Remove the two profiles yourself in Device
 Management.
 

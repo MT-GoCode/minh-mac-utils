@@ -1,6 +1,6 @@
 #!/bin/bash
 # uninstall.sh — remove nextdns-sidecar (root). Disarms + tears down pf, boots out the daemon, removes
-# the binary, the nextdns-test shim, the launchd job, the pf ruleset, and runtime state. Credentials +
+# the binary, the launchd job, the pf ruleset, and runtime state. Credentials +
 # config.json are KEPT unless you pass --purge.  Run:  sudo ./uninstall.sh [--purge]
 set -uo pipefail
 [ "$(id -u)" = 0 ] || { echo "run as root:  sudo ./uninstall.sh" >&2; exit 1; }
@@ -22,8 +22,8 @@ echo ">> booting out the daemon"
 launchctl bootout system/"$LABEL" 2>/dev/null || true
 rm -f "$PLIST"
 
-echo ">> removing binary + nextdns-test shim"
-rm -f "$BIN/nextdns-sidecar" "$BIN/nextdns-test"
+echo ">> removing binary"
+rm -f "$BIN/nextdns-sidecar"
 
 echo ">> removing runtime state ($APP)"
 rm -rf "$APP"
