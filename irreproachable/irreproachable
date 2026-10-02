@@ -1,0 +1,408 @@
+#!/usr/bin/env python3
+"""irreproachable — keep a Paseo agent working toward a goal until it says the goal is met.
+
+    irreproachable new "<goal>" [--idle-after 6m] [--agent ID]
+    irreproachable clear [--agent ID]
+    irreproachable --selftest
+
+Run `new` inside a Paseo agent and it governs that agent ($PASEO_AGENT_ID). A detached watcher
+re-sends the goal whenever nothing has woken the agent for --idle-after. The agent runs
+`irreproachable clear` when the goal is met.
+
+It checks the agent with `paseo inspect` (1.45 s CPU each, measured) rather than holding
+`paseo wait`, because a blocked `paseo wait` holds 150 MB (measured) and this runs on a 4 GB box.
+Between checks it sleeps until the earliest moment a send could become due, so an idle or busy
+agent costs one check per --idle-after, not one every few seconds. The watcher is double-forked and reparented to init
+because the agent harness kills process trees when a tool call ends.
+
+State lives in ~/.irreproachable/<agent-id>/. `meta.json` is written once, by the watcher.
+`log` holds `<epoch> <event>` lines; an `END <reason>` line records how a goal ended.
+"""
+import argparse, datetime, filecmp, json, os, re, shutil, signal, subprocess, sys, tempfile, time, uuid
+
+HOME          = os.path.expanduser("~/.irreproachable")
+IDLE_AFTER    = 360   # pacemaker EVERY_MAX 300s (Minh's) + 60s for ping delivery
+START_TIMEOUT = 5     # ~300x the measured 16 ms watcher startup
+SLACK         = 5     # inspect + send wall time, 1.1 s each measured, x2 headroom
+BUSY          = ("running", "initializing")   # Paseo BUSY_STATUSES (agent-manager.js:173)
+C_LOCALE      = {**os.environ, "LC_ALL": "C"}
+
+GOAL_PROMPT = """[Automated Goal Reminder -- do not ignore]
+Nothing has woken you for {quiet}. Keep working toward the goal below.
+If you are waiting on something, do truly orthogonal work on the side while you wait -- work that cannot
+conflict with what you are waiting on. When the goal is met irreproachably, run `irreproachable clear`
+and say so. Do not clear it to escape the work.
+
+[Goal]
+{goal}"""
+
+
+def dur(s):
+    m = re.fullmatch(r"([1-9]\d*)([smh])", s)
+    if not m:
+        raise argparse.ArgumentTypeError("a duration like 30s, 6m or 2h")
+    return int(m[1]) * {"s": 1, "m": 60, "h": 3600}[m[2]]
+
+
+def fmt(sec):
+    sec = int(sec)
+    h, m, s = sec // 3600, (sec % 3600) // 60, sec % 60
+    return f"{h}h{m:02d}m{s:02d}s" if h else (f"{m}m{s:02d}s" if m else f"{s}s")
+
+
+class PaseoError(Exception):
+    @property
+    def not_found(self):
+        return "Agent not found" in str(self)
+
+
+def paseo(*args):
+    p = subprocess.run(["paseo", *args, "--json"], capture_output=True, text=True)
+    if p.returncode == 0:
+        return json.loads(p.stdout)
+    raw = (p.stdout + p.stderr).strip()    # paseo puts its error JSON on stderr
+    try:
+        msg = json.loads(raw)["error"]["message"]
+    except (ValueError, KeyError, TypeError):
+        msg = raw
+    raise PaseoError(msg)
+
+
+def gdir(aid):      return os.path.join(HOME, aid)
+def meta_path(aid): return os.path.join(gdir(aid), "meta.json")
+def log_path(aid):  return os.path.join(gdir(aid), "log")
+
+
+def read_meta(aid):
+    try:
+        with open(meta_path(aid)) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
+
+
+def write_meta(aid, m):
+    os.makedirs(gdir(aid), exist_ok=True)
+    tmp = f"{meta_path(aid)}.tmp.{os.getpid()}"
+    with open(tmp, "w") as f:
+        json.dump(m, f)
+    os.replace(tmp, meta_path(aid))
+
+
+def log(aid, event):
+    with open(log_path(aid), "a") as f:
+        f.write(f"{time.time():.3f} {event}\n")
+
+
+def log_lines(aid):
+    try:
+        with open(log_path(aid)) as f:
+            return [(float(t), e) for t, e in (l.rstrip("\n").split(" ", 1) for l in f if l.strip())]
+    except FileNotFoundError:
+        return []
+
+
+def lstart(pid):
+    p = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, env=C_LOCALE)
+    out = p.stdout.strip()
+    return out if p.returncode == 0 and out else None
+
+
+def ended(aid, token):
+    """Why the goal with this token ended, or None. The log outlives goals, so lines carry the token."""
+    for _, e in reversed(log_lines(aid)):
+        if e.startswith(f"END {token} "):
+            return e.split(" ", 2)[2]
+    return None
+
+
+def alive(aid):
+    m = read_meta(aid)
+    return m is not None and ended(aid, m["token"]) is None and lstart(m["pid"]) == m["lstart"]
+
+
+def die(code, msg):
+    print(f"irreproachable: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def resolve_agent(arg):
+    aid = arg or os.environ.get("PASEO_AGENT_ID", "").strip()
+    if not aid:
+        die(2, "no agent — pass --agent ID or run inside a Paseo agent")
+    return aid
+
+
+def find_goal(arg):
+    """The goal directory for an id or id prefix. Works after the agent itself is gone."""
+    aid = resolve_agent(arg)
+    hits = [n for n in (os.listdir(HOME) if os.path.isdir(HOME) else []) if n.startswith(aid)]
+    if not hits:
+        die(1, f"no goal for {aid[:8]}")
+    if len(hits) > 1:
+        die(2, f"{aid} is ambiguous")
+    return hits[0]
+
+
+def updated_at(info):
+    return datetime.datetime.fromisoformat(info["UpdatedAt"].replace("Z", "+00:00")).timestamp()
+
+
+# ---------------------------------------------------------------------------------------------- watcher
+
+def spawn(cfg):
+    """Double fork: the middle process exits so the watcher is reparented to init before the tool
+    call that launched it ends. setsid makes the watcher's pid its process group, so `clear`'s
+    killpg also takes down a `paseo send` that is in flight."""
+    mid = os.fork()
+    if mid:
+        os.waitpid(mid, 0)
+        return
+    try:
+        if os.fork() == 0:
+            try:
+                os.setsid()
+                os.chdir("/")                     # do not pin the invoking agent's directory
+                fd = os.open(os.devnull, os.O_RDWR)
+                for n in (0, 1, 2):
+                    os.dup2(fd, n)
+                watch(cfg)
+            except BaseException as e:
+                try:
+                    log(cfg["aid"], f"END {cfg['token']} crashed: {type(e).__name__}: {e}")
+                except BaseException:
+                    pass    # the goal directory may already be gone; there is nobody left to tell
+            finally:
+                os._exit(0)
+    finally:
+        os._exit(0)
+
+
+def watch(cfg):
+    me, aid, tok = os.getpid(), cfg["aid"], cfg["token"]
+    started = lstart(me)
+    assert started, "ps -o lstart= failed"     # a null lstart would make a dead watcher look alive
+    write_meta(aid, {"pid": me, "lstart": started, "token": tok, "goal": cfg["goal"],
+                     "idle_after": cfg["idle_after"], "started": time.time()})
+    log(aid, f"START {tok}")
+    last_sent = 0.0
+
+    def mine():
+        m = read_meta(aid)
+        return m is not None and m["pid"] == me
+
+    def finish(e):
+        log(aid, f"END {tok} " + ("agent gone" if e.not_found else f"paseo: {e}"))
+
+    while mine():
+        try:
+            info = paseo("inspect", aid)
+        except PaseoError as e:
+            return finish(e)
+        if info.get("Archived"):
+            return log(aid, f"END {tok} agent gone")
+        now = time.time()
+        quiet = now - max(updated_at(info), last_sent)
+        idle = not info.get("PendingPermissions") and info["Status"] not in BUSY
+        # A busy (or permission-blocked) agent has not ended its turn, so its quiet clock restarts no
+        # earlier than now: the earliest a goal prompt can be due is a full idle_after from now.
+        due = now - quiet + cfg["idle_after"] if idle else now + cfg["idle_after"]
+        if idle and now >= due:
+            if not mine():
+                return
+            last_sent = now
+            log(aid, f"SEND {tok} goal quiet={int(quiet)}")   # logged before the call: an END after it = not delivered
+            try:
+                paseo("send", "--no-wait", aid, "--prompt", GOAL_PROMPT.format(quiet=fmt(quiet), goal=cfg["goal"]))
+            except PaseoError as e:
+                return finish(e)
+            due = now + cfg["idle_after"]
+        # Agent activity only ever moves `due` later, so nothing can become due before it.
+        time.sleep(max(1, due - time.time()))
+
+
+# --------------------------------------------------------------------------------------------- commands
+
+def cmd_new(a):
+    aid = resolve_agent(a.agent)
+    try:
+        info = paseo("inspect", aid)
+    except PaseoError as e:
+        die(2, str(e))
+    if info.get("Archived"):
+        die(2, f"agent {aid[:8]} is archived")
+    aid = info["Id"]
+    token = uuid.uuid4().hex
+    spawn({"aid": aid, "token": token, "goal": a.goal, "idle_after": a.idle_after})
+    deadline = time.time() + START_TIMEOUT
+    while time.time() < deadline:
+        m = read_meta(aid)
+        if m and m["token"] == token:
+            print(f"watching {aid[:8]} — goal prompt after {fmt(a.idle_after)} idle")
+            return
+        time.sleep(0.05)
+    die(1, f"watcher did not start (see {log_path(aid)})")
+
+
+def cmd_clear(a):
+    aid = find_goal(a.agent)
+    m, was = read_meta(aid), alive(aid)
+    if m is None:
+        print(f"no goal on {aid[:8]}")          # already cleared: clearing twice is not an error
+        return
+    try:
+        os.remove(meta_path(aid))
+    except FileNotFoundError:
+        print(f"no goal on {aid[:8]}")
+        return
+    if was:
+        log(aid, f"CLEARED {m['token']}")
+        try:
+            os.killpg(m["pid"], signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    print(f"cleared goal on {aid[:8]}" if was else f"removed ended goal on {aid[:8]}")
+
+
+# --------------------------------------------------------------------------------------------- selftest
+
+def selftest():
+    os.environ.pop("PASEO_AGENT_ID", None)     # the suite runs inside Minh's agent; never govern it
+    SELF = os.path.abspath(__file__)
+    inst = shutil.which("irreproachable")
+    if not (inst and filecmp.cmp(inst, SELF, shallow=False)):
+        die(1, "run ./install.sh first — the agents under test call irreproachable from PATH")
+    results, CREATED = [], []
+
+    def check(name, ok, detail=""):
+        results.append(ok)
+        print(f"  {'✓' if ok else '✗'} {name}" + ("" if ok or not detail else f"\n      {detail}"), flush=True)
+
+    def run(*args):
+        return subprocess.run([SELF, *args], capture_output=True, text=True)
+
+    def spawn_agent(title, prompt):
+        aid = paseo("run", "--background", "--title", f"irr-selftest-{title}",
+                    "--provider", "claude/claude-haiku-4-5-20251001", "--mode", "bypassPermissions",
+                    prompt)["agentId"]
+        CREATED.append(aid)
+        return aid
+
+    def wait_for(pred, timeout, step):
+        end = time.time() + timeout
+        while time.time() < end:
+            if pred():
+                return True
+            time.sleep(step)
+        return pred()
+
+    def cleanup():
+        for aid in CREATED:
+            m = read_meta(aid)
+            if m and alive(aid):
+                try:
+                    os.killpg(m["pid"], signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            subprocess.run(["paseo", "delete", aid], capture_output=True)
+            shutil.rmtree(gdir(aid), ignore_errors=True)
+
+    try:
+        print("### arguments", flush=True)
+        r = run("new", "x")
+        check("new with no agent exits 2", r.returncode == 2 and "no agent" in r.stderr, r.stderr)
+        r = run("new", "x", "--agent", "00000000-dead-beef-0000-000000000000")
+        check("new on a missing agent exits 2", r.returncode == 2 and "Agent not found" in r.stderr, r.stderr)
+        for bad in ("0s", "5"):
+            r = run("new", "x", "--idle-after", bad, "--agent", "x")
+            check(f"--idle-after {bad} is refused", r.returncode == 2 and "duration" in r.stderr, r.stderr)
+
+        print("### goal loop", flush=True)
+        tmp = tempfile.mkdtemp(prefix="irr-")
+        n, IDLE = os.path.join(tmp, "n.txt"), 45     # longer than a Haiku turn: a send keyed to the wrong clock lands visibly early
+        GOAL = (f"Make {n} have exactly 3 lines. Each time you are prompted, append exactly ONE line to it: "
+                f"the next integer, a space, and the current Unix time in seconds (run date +%s). Never append "
+                f"more than one line in a turn. When the file has 3 lines, run: irreproachable clear")
+        # The foreground sleep keeps turn 1 busy past IDLE: a watcher that ignored "busy" would prompt mid-turn,
+        # before line 1 exists.
+        aid = spawn_agent("goal", f'This is an automated test of a tool; follow it literally. First run exactly this '
+                                  f'with Bash: `irreproachable new "{GOAL}" --idle-after {IDLE}s` Then, as a deliberate '
+                                  f'part of the test, run `sleep 60` with Bash in the FOREGROUND (run_in_background '
+                                  f'false, timeout 120000) -- do not background it. Then append the first line to {n} '
+                                  f'as the goal describes, and end your turn.')
+        seen = {}
+
+        def cleared():
+            m = read_meta(aid)
+            if m:
+                seen.setdefault("meta", m)
+            return "meta" in seen and m is None
+        # ~20s spawn + ~80s turn 1 + 2 x (45s idle + SLACK + ~20s turn) + ~20s clear ~= 260s
+        check("the agent cleared its goal", wait_for(cleared, 420, 5))
+        meta = seen.get("meta", {})
+        check("the watcher exits", bool(meta) and wait_for(lambda: lstart(meta["pid"]) != meta["lstart"], SLACK, 1))   # clear killpg's it
+        lines = log_lines(aid)                       # read after the watcher is gone, so a late send would show
+        events = [e for _, e in lines]
+        check("the goal arrived unmangled", meta.get("goal") == GOAL, repr(meta.get("goal")))
+        check("new ran exactly once", sum(e.startswith("START ") for e in events) == 1, events)
+        tok = meta.get("token")
+        try:
+            rows = [l.split() for l in open(n).read().splitlines()]
+        except FileNotFoundError:
+            rows = []
+        ok_rows = len(rows) == 3 and [r[0] for r in rows] == ["1", "2", "3"] and all(len(r) == 2 for r in rows)
+        check("n.txt has lines 1, 2, 3", ok_rows, rows)
+        sends = [t for t, e in lines if e.startswith(f"SEND {tok} goal")]
+        check("exactly two goal prompts", len(sends) == 2, sends)
+        if ok_rows and len(sends) == 2:
+            t1, t2, t3 = (int(r[1]) for r in rows)
+            causal = t1 <= sends[0] < t2 + 1 and t2 <= sends[1] < t3 + 1
+            # quiet counts from the end of the turn that wrote the line, which is after its `date`
+            # the turn ends a few seconds after its `date`; the watcher sends right at the due time
+            gated = all(t + IDLE - 1 <= s <= t + IDLE + SLACK + 30 for t, s in ((t1, sends[0]), (t2, sends[1])))
+        else:
+            causal = gated = False
+        check("each line followed the goal prompt that caused it", causal, f"lines={rows} sends={sends}")
+        check("each prompt came idle-after after the previous line, not sooner", gated, f"lines={rows} sends={sends}")
+        cl = [t for t, e in lines if e == f"CLEARED {tok}"]
+        check("no send after the clear", bool(cl) and all(t < cl[0] for t, e in lines if e.startswith("SEND")), lines)
+        tl = subprocess.run(["paseo", "logs", aid], capture_output=True, text=True).stdout
+        tll = tl.splitlines()
+        after = [tll[i + 1] for i, l in enumerate(tll[:-1]) if l.strip() == "[Goal]"]   # paseo logs cuts long lines
+        check("the prompts carried the header and the goal",
+              tl.count("[Automated Goal Reminder") == 2 and len(after) == 2
+              and all(x.startswith(GOAL[:60]) for x in after), tl[-1500:])
+        shutil.rmtree(tmp, ignore_errors=True)
+    finally:
+        cleanup()
+    listed = {a.get("id") for a in paseo("ls")}
+    check("no selftest agent remains", not (listed & set(CREATED)))
+    failed = results.count(False)
+    print(f"{len(results)}/{len(results)} passed" if not failed else f"{failed} FAILED", flush=True)
+    sys.exit(1 if failed else 0)
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="irreproachable", description=__doc__.split("\n")[0])
+    ap.add_argument("--selftest", action="store_true", help="run the behavioural checks against real Paseo agents")
+    sub = ap.add_subparsers(dest="cmd")
+    p = sub.add_parser("new", help="give an agent a goal")
+    p.add_argument("goal")
+    p.add_argument("--idle-after", type=dur, default=IDLE_AFTER, help="quiet time before the goal prompt (default 6m)")
+    p.add_argument("--agent", help="agent id (default: $PASEO_AGENT_ID)")
+    p = sub.add_parser("clear", help="end an agent's goal")
+    p.add_argument("--agent", help="agent id or prefix (default: $PASEO_AGENT_ID)")
+    a = ap.parse_args()
+    if a.selftest:
+        selftest()
+    elif a.cmd == "new":
+        cmd_new(a)
+    elif a.cmd == "clear":
+        cmd_clear(a)
+    else:
+        ap.print_help()
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()
