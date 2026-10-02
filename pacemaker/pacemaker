@@ -943,10 +943,16 @@ def selftest():
     check(len(set(mine)) == len(mine),
           "concurrent starts on one slug never report another run's output",
           f"{len(mine)} reports, {len(set(mine))} distinct; {refused} refused")
-    for d in [os.path.join(HOME, S + "race")] + glob.glob(os.path.join(HOME, S + "race-*")):
-        if os.path.isdir(d):
-            check(os.path.isfile(os.path.join(d, "meta")),
-                  f"every directory left by the race has a meta ({os.path.basename(d)})")
+    # ONE assertion, not one per directory: the race leaves a varying number of them, so
+    # a per-directory check made the suite's own total vary run to run -- and a varying
+    # total means "fewer checks ran" is indistinguishable from "fewer directories existed".
+    dirs = [d for d in [os.path.join(HOME, S + "race")] +
+                       glob.glob(os.path.join(HOME, S + "race-*")) if os.path.isdir(d)]
+    nometa = [os.path.basename(d) for d in dirs
+              if not os.path.isfile(os.path.join(d, "meta"))]
+    check(dirs and not nometa,
+          "every directory the race leaves behind has a meta, so --list can see it",
+          f"{len(dirs)} dirs, no meta in: {nometa}")
     clean(S + "race")
 
     # ---------------------------------------------------------------- reminder
