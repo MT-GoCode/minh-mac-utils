@@ -21,4 +21,4 @@ case ":$PATH:" in
   *) printf '  \033[33m!\033[0m %s is not on PATH — add it to your shell rc\n' "$BINDIR" ;;
 esac
 "$BINDIR/monitor-heartbeat" --help >/dev/null || bad "installed copy will not run"
-ok "runs"
+ok "runs — now run ./test.sh to verify it measures time correctly on this machine"

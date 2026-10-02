@@ -34,13 +34,19 @@ done
 case "$EVERY$QUIET_AFTER" in *[!0-9]*) echo "monitor-heartbeat: --every and --quiet-after take whole seconds" >&2; exit 2 ;; esac
 [ "$EVERY" -gt 0 ] || { echo "monitor-heartbeat: --every must be > 0" >&2; exit 2; }
 
-# The only platform-dependent thing here. `ps -o etime=` would avoid it but returns garbage
-# inside LXC (the container's /proc boot time disagrees with the host's), and `ps -o etimes=`
-# does not exist on macOS at all.
-case "$(uname -s)" in
-  Darwin) stat_birth() { stat -f %B "$1"; }; stat_mtime() { stat -f %m "$1"; } ;;
-  *)      stat_birth() { stat -c %W "$1"; }; stat_mtime() { stat -c %Y "$1"; } ;;
-esac
+# Pick stat's dialect by CAPABILITY, never by `uname`. A Mac with coreutils on PATH gives
+# GNU stat in a login shell and BSD stat over plain ssh -- the same machine, two dialects,
+# and `-f` means "format" to one and "filesystem" to the other. Detecting by OS reads a
+# filesystem report as a timestamp and silently reports quiet=0 forever.
+# (`ps -o etime=` would avoid stat entirely but returns garbage inside LXC, where the
+# container's /proc boot time disagrees with the host's; `ps -o etimes=` is GNU-only.)
+if stat -c %Y / >/dev/null 2>&1; then
+  stat_birth() { stat -c %W "$1"; }   # 0 on filesystems without birth times
+  stat_mtime() { stat -c %Y "$1"; }
+else
+  stat_birth() { stat -f %B "$1"; }
+  stat_mtime() { stat -f %m "$1"; }
+fi
 
 fmt() {  # seconds -> 43s | 6m12s | 1h07m27s
   _h=$(( $1 / 3600 )); _m=$(( ($1 % 3600) / 60 )); _s=$(( $1 % 60 ))
@@ -62,8 +68,12 @@ while :; do
     if [ "$birth" -gt 0 ]; then START="$birth"; fi
     [ -n "$START" ] || START="$now"
 
-    mtime=$(stat_mtime "$LOG" 2>/dev/null || echo "$now")
-    case "$mtime" in ''|*[!0-9]*) mtime="$now" ;; esac
+    # No fallback here on purpose. Substituting "now" for an unreadable mtime is what made
+    # the stat-dialect bug invisible: quiet pinned to 0 looks exactly like a healthy job.
+    mtime=$(stat_mtime "$LOG" 2>/dev/null) || mtime=''
+    case "$mtime" in
+      ''|*[!0-9]*) printf 'monitor-heartbeat: cannot read mtime of %s (stat said: %s)\n' "$LOG" "${mtime:-nothing}" >&2; exit 1 ;;
+    esac
 
     elapsed=$(( now - START )); [ "$elapsed" -ge 0 ] || elapsed=0
     quiet=$((   now - mtime  )); [ "$quiet"   -ge 0 ] || quiet=0
