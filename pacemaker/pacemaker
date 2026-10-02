@@ -21,7 +21,7 @@ Python rather than shell because shell cannot do this portably: POSIX sh has no 
 `stat -c` is GNU-only, and `date -d`, `timeout`, `flock` and `setsid` are all missing on
 macOS. A shell poll loop also costs ~14,400 forks an hour.
 """
-import argparse, collections, json, os, shlex, shutil, signal, sys, time
+import argparse, collections, json, os, re, shlex, shutil, signal, sys, time
 
 HOME = os.path.expanduser("~/.pacemaker")
 
@@ -74,6 +74,19 @@ class Run:
     def exists(self):    return os.path.isdir(self.dir)
     def read_meta(self): return json.load(open(self.meta))
 
+    def fd(self, name):
+        return getattr(self, "fds", {}).get(name)
+
+    def open_files(self, d=None):
+        """Descriptors for the three files, held for the life of the watch."""
+        d = d or self.dir
+        self.fds = {}
+        for n in ("stdout", "stderr", "exit"):
+            try:
+                self.fds[n] = os.open(os.path.join(d, n), os.O_RDONLY)
+            except OSError:
+                self.fds[n] = None          # --attach to an older run that predates this
+
     def last_write(self):
         """When either log last grew, or None. On --attach this is the only honest answer
         to 'how long has it been quiet' -- the watcher was not here for the silence.
@@ -91,9 +104,14 @@ class Run:
 
     def exit_code(self):
         """None until the job finishes. Written by the job's own shell, so it is there
-        even for a run nobody was watching."""
+        even for a run nobody was watching. The file is pre-created empty, so `exists` is
+        not the signal -- content is."""
+        fd = getattr(self, "fds", {}).get("exit")
         try:
-            t = open(self.exit).read().strip()
+            if fd is not None:
+                t = os.pread(fd, 32, 0).decode("utf-8", "replace").strip()
+            else:
+                t = open(self.exit).read().strip()
             return int(t) if t else None
         except (OSError, ValueError):
             return None
@@ -106,12 +124,68 @@ class Run:
         except OSError:
             return False
 
-    def start(self, cmd):
-        if self.exists():
+    @staticmethod
+    def group_alive(pid):
+        """Is ANY process left in the job's group -- not just its leader.
+
+        The leader is the `sh` we launched, and `sh` dies on the first SIGTERM. Polling it
+        meant kill() saw "gone" and returned before ever sending SIGKILL, so a child that
+        ignores SIGTERM lived on while we reported it killed and wrote exit 124. Measured."""
+        try:
+            os.killpg(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    def write_meta(self, d):
+        """Atomic. A reader that catches a half-written meta treats the run as abandoned
+        and archives it -- which is how a concurrent start used to destroy a live one."""
+        tmp = self.meta + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(d, f)
+        os.replace(tmp, self.meta)
+
+    def claim(self, cmd):
+        """Take the slug, atomically. The rename IS the mutex.
+
+        The old order -- exists? / read meta / move / makedirs / fork / write meta -- was
+        unserialised, and the "already running" guard only saw a *previous* run, never a
+        simultaneous one. Eight starts released together left five reporting a sixth run's
+        output as their own, a meta whose cmd belonged to a different run than its stdout,
+        and archives with no meta at all, invisible to --list forever.
+
+        Built in a staging directory and moved into place with a single rename, because
+        mkdir-then-write-meta still leaves a window: another starter that reads the new
+        directory before its meta exists sees no pid, concludes it was abandoned, and
+        archives it out from under the process about to write to it. rename(2) onto an
+        existing non-empty directory fails, so the move IS the mutex and the directory
+        never exists without a meta inside it."""
+        for _ in range(100):
+            staging = os.path.join(HOME, f".staging-{self.slug}-{os.getpid()}")
+            shutil.rmtree(staging, ignore_errors=True)
+            os.makedirs(staging)
+            with open(os.path.join(staging, "meta"), "w") as f:
+                json.dump({"pid": os.getpid(), "started": time.time(), "cmd": cmd}, f)
+            # Pre-create the three files and hold descriptors to them BEFORE the directory
+            # is visible under its real name. The job's `>` redirections truncate these
+            # same inodes, and a descriptor follows the inode through any later rename --
+            # so when a newer run archives this directory, this watcher keeps reading its
+            # own job instead of silently switching to the new one's output. Without it,
+            # three concurrent starts all reported a fourth run's line as their own.
+            for n in ("stdout", "stderr", "exit"):
+                open(os.path.join(staging, n), "w").close()
+            self.open_files(staging)
+            try:
+                os.rename(staging, self.dir)
+                return
+            except OSError:
+                shutil.rmtree(staging, ignore_errors=True)
+
+            # Occupied. Refuse if it is live; otherwise archive it and try again.
             try:
                 m = self.read_meta()
             except (OSError, ValueError):
-                m = {}                      # a half-written meta is not a reason to refuse
+                m = {}
             old = m.get("pid")
             if self.exit_code() is None and isinstance(old, int) and self.alive(old):
                 sys.exit(f"pacemaker: '{self.slug}' is already running (pid {old}). "
@@ -119,10 +193,17 @@ class Run:
             stamp = time.strftime("%Y%m%d-%H%M%S",
                                   time.localtime(m.get("started") or time.time()))
             dest, n = f"{self.dir}-{stamp}", 1
-            while os.path.exists(dest):     # moving onto an existing dir nests inside it
+            while os.path.exists(dest):       # moving onto an existing dir nests inside it
                 dest, n = f"{self.dir}-{stamp}.{n}", n + 1
-            shutil.move(self.dir, dest)     # keep the old run's logs
-        os.makedirs(self.dir)
+            try:
+                shutil.move(self.dir, dest)   # keep the old run's logs
+            except (OSError, shutil.Error):
+                time.sleep(0.05)              # lost the race; look again
+        sys.exit(f"pacemaker: could not claim {short(self.dir)} — too much contention")
+
+    def start(self, cmd):
+        self.claim(cmd)
+        started = self.read_meta()["started"]
 
         # stdbuf line-buffers libc programs; PYTHONUNBUFFERED covers Python, which stdbuf
         # cannot touch. Without both, a healthy job writes nothing for minutes and reads
@@ -172,21 +253,28 @@ class Run:
         else:
             sys.exit("pacemaker: the job never reported a pid")
 
-        json.dump({"pid": pid, "started": time.time(), "cmd": cmd}, open(self.meta, "w"))
+        # started comes from claim(), not now: elapsed must count from when the slug was
+        # taken, not from whenever the fork happened to finish.
+        self.write_meta({"pid": pid, "started": started, "cmd": cmd})
         return pid
 
     def kill(self, pid):
-        """Negative pid: the job is its own group leader, so this reaches the shell AND
-        the command under it. Killing the pid alone orphans the command, unstoppably."""
+        """Kill the job's whole process group and say whether it worked.
+
+        Negative pid: the job is its own group leader, so this reaches the shell AND the
+        command under it. Killing the bare pid orphans the command, unstoppably. The
+        return value matters -- claiming a kill that did not happen is worse than failing
+        to kill, because the caller then believes the job is dead."""
         for sig in (signal.SIGTERM, signal.SIGKILL):
             try:
                 os.killpg(pid, sig)
             except OSError:
-                return
+                return True                      # nothing left in the group
             for _ in range(50):
-                if not self.alive(pid):
-                    return
+                if not self.group_alive(pid):
+                    return True
                 time.sleep(0.1)
+        return not self.group_alive(pid)
 
 
 def prune():
@@ -200,7 +288,11 @@ def prune():
     for name in os.listdir(HOME):
         d, e = os.path.join(HOME, name), os.path.join(HOME, name, "exit")
         try:
-            if not (os.path.isdir(d) and os.path.exists(e)):
+            # Non-empty, not merely present: `exit` is pre-created empty at claim time,
+            # so existence no longer means finished. Pruning on existence would delete
+            # live runs, and a job whose directory is gone keeps writing into an unlinked
+            # inode and can never signal that it finished.
+            if not (os.path.isdir(d) and os.path.isfile(e) and os.path.getsize(e) > 0):
                 continue
             size = 0
             for f in os.listdir(d):
@@ -227,7 +319,7 @@ def listing():
     rows = []
     for name in sorted(os.listdir(HOME)):
         d = os.path.join(HOME, name)
-        if not os.path.isdir(d):
+        if not os.path.isdir(d) or name.startswith("."):   # .staging-* is mid-claim
             continue
         try:
             m = json.load(open(os.path.join(d, "meta")))
@@ -252,7 +344,7 @@ def listing():
     print(f"\nlogs: {short(HOME)}/<name>/stdout and /stderr")
 
 
-def read_delta(path, off):
+def read_delta(path, off, fd=None):
     """Return (head_text, tail_text, skipped_bytes), new_offset, warning.
 
     Reads at most 2*CHUNK regardless of how much arrived. A job can write a gigabyte
@@ -260,7 +352,7 @@ def read_delta(path, off):
     4GB box is how the watcher becomes the outage. We only ever DISPLAY the first and last
     few lines, so only the first and last CHUNK are worth reading."""
     try:
-        size = os.path.getsize(path)
+        size = os.fstat(fd).st_size if fd is not None else os.path.getsize(path)
     except OSError:
         return ("", "", 0), off, "missing"
     if size < off:
@@ -269,16 +361,20 @@ def read_delta(path, off):
         return ("", "", 0), size, None
     n = size - off
     try:
-        with open(path, "rb") as f:
+        if fd is not None:
+            rd = lambda o, c: os.pread(fd, c, o)
+        else:
+            f = open(path, "rb")
+            rd = lambda o, c: (f.seek(o), f.read(c))[1]
+        try:
             if n <= 2 * CHUNK:
-                f.seek(off)
-                head, tail, skipped = f.read(n), b"", 0
+                head, tail, skipped = rd(off, n), b"", 0
             else:
-                f.seek(off)
-                head = f.read(CHUNK)
-                f.seek(size - CHUNK)
-                tail = f.read(CHUNK)
+                head, tail = rd(off, CHUNK), rd(size - CHUNK, CHUNK)
                 skipped = n - 2 * CHUNK
+        finally:
+            if fd is None:
+                f.close()
     except OSError:
         return ("", "", 0), off, "unreadable"
     d = lambda b: b.decode("utf-8", "replace").replace("\x00", "")
@@ -365,8 +461,8 @@ def drain(run, so, se, oo, eo):
     already in the files, but our read happened a tick earlier -- without this the final
     lines of a short command can be lost, which is exactly the kind of green-and-wrong
     this tool exists to prevent."""
-    (h, tl, sk), oo, _ = read_delta(run.out, oo); so.feed(h, tl, sk)
-    (h, tl, sk), eo, _ = read_delta(run.err, eo); se.feed(h, tl, sk)
+    (h, tl, sk), oo, _ = read_delta(run.out, oo, run.fd("stdout")); so.feed(h, tl, sk)
+    (h, tl, sk), eo, _ = read_delta(run.err, eo, run.fd("stderr")); se.feed(h, tl, sk)
     return oo, eo
 
 
@@ -377,6 +473,8 @@ def finish(run, started, code, so, se, paths=False):
 
 
 def watch(run, every, timeout, attaching):
+    if attaching:
+        run.open_files()      # a run we did not start: take hold of its inodes now
     try:
         m = run.read_meta()
         pid, started, cmd = int(m["pid"]), float(m["started"]), str(m.get("cmd", ""))
@@ -391,16 +489,16 @@ def watch(run, every, timeout, attaching):
     if attaching:
         code = run.exit_code()
         if code is not None:
-            (h, tl, sk), _, _ = read_delta(run.out, 0); so.feed(h, tl, sk)
-            (h, tl, sk), _, _ = read_delta(run.err, 0); se.feed(h, tl, sk)
+            (h, tl, sk), _, _ = read_delta(run.out, 0, run.fd("stdout")); so.feed(h, tl, sk)
+            (h, tl, sk), _, _ = read_delta(run.err, 0, run.fd("stderr")); se.feed(h, tl, sk)
             finish(run, started, code, so, se, paths=True)
             return
         if not run.alive(pid):
             emit(f"{run.slug} is gone and never recorded an exit code — killed, OOM, or the "
                  f"machine rebooted. Logs: {short(run.out)} and {short(run.err)}")
             return
-        (h, tl, sk), oo, _ = read_delta(run.out, 0); so.feed(h, tl, sk)
-        (h, tl, sk), eo, _ = read_delta(run.err, 0); se.feed(h, tl, sk)
+        (h, tl, sk), oo, _ = read_delta(run.out, 0, run.fd("stdout")); so.feed(h, tl, sk)
+        (h, tl, sk), eo, _ = read_delta(run.err, 0, run.fd("stderr")); se.feed(h, tl, sk)
         emit(f"Re-attached to {run.slug} — {cmd} — running for {fmt(time.time()-started)}. "
              f"Below is what it has written so far; full logs at {short(run.out)} and "
              f"{short(run.err)}.",
@@ -415,8 +513,8 @@ def watch(run, every, timeout, attaching):
         time.sleep(POLL)
         now = time.time()
 
-        (h, tl, sk), oo, ow = read_delta(run.out, oo)
-        (h2, tl2, sk2), eo, ew = read_delta(run.err, eo)
+        (h, tl, sk), oo, ow = read_delta(run.out, oo, run.fd("stdout"))
+        (h2, tl2, sk2), eo, ew = read_delta(run.err, eo, run.fd("stderr"))
         if h or tl or sk or h2 or tl2 or sk2:    # bytes arrived; counting lines would miss
             last_change = now                    # a lone newline closing an open fragment
         so.feed(h, tl, sk)
@@ -434,15 +532,22 @@ def watch(run, every, timeout, attaching):
                  *so.render(), *se.render())
             return
         if timeout and now - started > timeout:
-            run.kill(pid)
+            killed = run.kill(pid)
             drain(run, so, se, oo, eo)
-            try:
-                with open(run.exit, "w") as f:
-                    f.write("124")                   # the code timeout(1) uses
-            except OSError:
-                pass
-            emit(f"{run.slug} hit --timeout {timeout}s and was killed after {fmt(now-started)}.",
-                 *so.render(), *se.render())
+            if killed:
+                try:
+                    with open(run.exit, "w") as f:
+                        f.write("124")               # the code timeout(1) uses
+                except OSError:
+                    pass
+                head = (f"{run.slug} hit --timeout {timeout}s and was killed after "
+                        f"{fmt(now-started)}.")
+            else:
+                # No exit file: it did not finish and we must not pretend it did.
+                head = (f"{run.slug} hit --timeout {timeout}s but SURVIVED both TERM and "
+                        f"KILL after {fmt(now-started)} — it is still running. Check "
+                        f"process group {pid} yourself.")
+            emit(head, *so.render(), *se.render())
             return
 
         # Silent for the first minute: below that a job is a pass-through and the
@@ -520,8 +625,10 @@ def selftest():
         return p.returncode, out
 
     def bg(*args):
+        # Its own session, so a killpg aimed at it cannot reach this selftest -- which
+        # shares a process group with everything it spawns otherwise.
         return subprocess.Popen(ME + list(args), stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL)
+                                stderr=subprocess.DEVNULL, start_new_session=True)
 
     def watch_for(seconds, *args):
         """Run a watcher that will not exit on its own, and read what it said."""
@@ -574,6 +681,15 @@ def selftest():
     check("Heartbeat" not in out, "a sub-60s job stays silent")
     clean(S + "quick")
 
+    # The check above uses a job that ends on the first poll, so it passes with
+    # QUIET_START deleted. This one runs long enough that only the 60s rule keeps it quiet.
+    clean(S + "shh")
+    _, out = pm("--slug", S + "shh", "--every", "5", "--", "sh", "-c",
+                "echo early; sleep 6")
+    check("Heartbeat" not in out,
+          "a 6s job with --every 5 still says nothing before 60s", out[:90].replace("\n", "|"))
+    clean(S + "shh")
+
     # ---------------------------------------------------------------- truncation
     clean(S + "trunc")
     _, out = pm("--slug", S + "trunc", "--", "sh", "-c",
@@ -612,11 +728,15 @@ def selftest():
     check(re.search(r"^FINAL$", out, re.M), "output written just before exit is not lost")
     clean(S + "last")
 
+    # Bytes, not text: subprocess(text=True) performs universal-newline translation, so
+    # it turns \r into \n itself and this check passed with the \r handling deleted.
     clean(S + "cr")
-    _, out = pm("--slug", S + "cr", "--", "sh", "-c",
-                'printf "7%%\\r14%%\\r100%% done\\n"')
-    check(re.search(r"^100% done$", out, re.M),
-          "a \\r progress bar shows its latest state, not its first", out[:120])
+    raw = subprocess.run(ME + ["--slug", S + "cr", "--", "sh", "-c",
+                               'printf "7%%\\r14%%\\r100%% done\\n"'],
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout
+    check(b"\r" not in raw and re.search(rb"^100% done$", raw, re.M),
+          "a \\r progress bar shows its latest state, not its first",
+          repr(raw[:120]))
     clean(S + "cr")
 
     clean(S + "long")
@@ -655,8 +775,15 @@ def selftest():
                           capture_output=True, text=True).stdout.strip()
     check(ppid == "1", "job is reparented to init (ppid 1), not a child of pacemaker",
           f"ppid is {ppid!r} — a tree kill would reach it")
-    p.kill(); p.wait(); time.sleep(2)
-    check(Run.alive(jp), "job survives pacemaker being killed")
+    # Kill pacemaker's whole process GROUP, which is what Monitor does at expiry. The old
+    # version killed only the pacemaker process, which never reaps children whatever the
+    # design, so it passed with the detachment removed entirely.
+    try:
+        os.killpg(p.pid, signal.SIGKILL)     # bg() made it a session leader; safe
+    except OSError:
+        p.kill()
+    p.wait(); time.sleep(2)
+    check(Run.alive(jp), "job survives a kill of pacemaker's whole process group")
 
     out = watch_for(4, "--slug", S + "surv", "--attach", "--every", "300")
     check("Re-attached to " + S + "surv" in out, "attach resumes a live run by slug alone",
@@ -743,14 +870,19 @@ def selftest():
     clean(S + "list")
 
     # ---------------------------------------------------------------- validation
-    for args, msg in (
-        (("--slug", "x", "--every", "301"),    "--every above 300 rejected"),
-        (("--slug", "x", "--timeout", "1801"), "--timeout above 1800 rejected"),
-        (("--every", "60"),                    "--slug is required"),
-        (("--slug", "a/b"),                    "a path-like slug is rejected"),
+    # `rc != 0` was not enough: with validation deleted these fall through to the bare
+    # reminder, hang, get killed by the harness, and return a negative code -- which read
+    # as "rejected". Assert that it said why, and that it exited on its own.
+    for args, want, msg in (
+        (("--slug", "x", "--every", "301"),    "--every must be",   "--every above 300 rejected"),
+        (("--slug", "x", "--timeout", "1801"), "--timeout must be", "--timeout above 1800 rejected"),
+        (("--every", "60"),                    "--slug is required", "--slug is required"),
+        (("--slug", "a/b"),                    "--slug must be",    "a path-like slug is rejected"),
+        (("--slug", "a\nb"),                   "--slug must be",    "a slug with a newline is rejected"),
     ):
-        rc, _ = pm(*args, timeout=10)
-        check(rc != 0, msg)
+        t0 = time.time()
+        rc, out = pm(*args, timeout=10)
+        check(rc > 0 and want in out and time.time() - t0 < 8, msg, out[:70].replace("\n", "|"))
 
     # ---------------------------------------------------------------- prune safety
     # A directory's mtime does not advance when a file inside it is appended to, so an
@@ -765,6 +897,57 @@ def selftest():
     check(os.path.isdir(os.path.join(HOME, S + "live")),
           "prune leaves a live run alone despite an ancient mtime")
     p.kill(); p.wait(); kill_job(S + "live"); clean(S + "live"); clean(S + "other")
+
+    # ---------------------------------------------------------------- prune + archive
+    # Both of these had no check at all: prune() could be replaced by `return`, and the
+    # archive-on-slug-reuse by an rmtree that destroys the previous run's logs, and the
+    # suite stayed green.
+    clean(S + "old"); clean(S + "trig")
+    pm("--slug", S + "old", "--", "sh", "-c", "echo gone")
+    stale = time.time() - (PRUNE_DAYS + 1) * 86400
+    for f in ("exit", "stdout", "stderr", "meta"):
+        q = os.path.join(HOME, S + "old", f)
+        if os.path.exists(q):
+            os.utime(q, (stale, stale))
+    pm("--slug", S + "trig", "--", "sh", "-c", "true")          # a start runs prune()
+    check(not os.path.isdir(os.path.join(HOME, S + "old")),
+          f"prune actually removes a finished run older than {PRUNE_DAYS} days")
+    clean(S + "old"); clean(S + "trig")
+
+    clean(S + "arch")
+    pm("--slug", S + "arch", "--", "sh", "-c", "echo FIRSTRUN")
+    pm("--slug", S + "arch", "--", "sh", "-c", "echo SECONDRUN")
+    kept = [d for d in glob.glob(os.path.join(HOME, S + "arch-*"))
+            if os.path.isfile(os.path.join(d, "stdout"))
+            and "FIRSTRUN" in open(os.path.join(d, "stdout")).read()]
+    check(kept, "reusing a slug archives the previous run's logs rather than deleting them")
+    check(all(os.path.isfile(os.path.join(d, "meta")) for d in kept),
+          "an archived run keeps its meta, so --list can still see it")
+    clean(S + "arch")
+
+    # ---------------------------------------------------------------- concurrency
+    # Eight simultaneous starts on one slug used to interleave: five reported a sixth
+    # run's output as their own, and some archives were left with no meta at all.
+    clean(S + "race")
+    procs = [subprocess.Popen(ME + ["--slug", S + "race", "--", "sh", "-c", f"echo mine_{i}"],
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                              start_new_session=True) for i in range(8)]
+    outs = []
+    for q in procs:
+        try:    outs.append(q.communicate(timeout=60)[0])
+        except subprocess.TimeoutExpired:
+            q.kill(); outs.append(q.communicate()[0])
+    claimed = [re.search(r"^mine_\d+$", o, re.M) for o in outs]
+    mine = [m.group(0) for m in claimed if m]
+    refused = sum("already running" in o for o in outs)
+    check(len(set(mine)) == len(mine),
+          "concurrent starts on one slug never report another run's output",
+          f"{len(mine)} reports, {len(set(mine))} distinct; {refused} refused")
+    for d in [os.path.join(HOME, S + "race")] + glob.glob(os.path.join(HOME, S + "race-*")):
+        if os.path.isdir(d):
+            check(os.path.isfile(os.path.join(d, "meta")),
+                  f"every directory left by the race has a meta ({os.path.basename(d)})")
+    clean(S + "race")
 
     # ---------------------------------------------------------------- reminder
     out = watch_for(7, "--slug", S + "rem", "--every", "2")
@@ -835,8 +1018,12 @@ def main():
         sys.exit(f"pacemaker: --every must be 1..{EVERY_MAX}")
     if not 0 <= a.timeout <= TIMEOUT_MAX:
         sys.exit(f"pacemaker: --timeout must be 0..{TIMEOUT_MAX}")
-    if "/" in a.slug or a.slug.startswith("."):
-        sys.exit("pacemaker: --slug must be a plain name")
+    # Every line pacemaker prints is a Monitor event, so a slug containing a newline can
+    # fabricate one ("rv_x\nHeartbeat. all done"). Allow only what can name a directory
+    # and cannot forge output.
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", a.slug):
+        sys.exit("pacemaker: --slug must be letters, digits, dot, dash or underscore, "
+                 "starting with a letter or digit")
     cmd = a.cmd[1:] if a.cmd and a.cmd[0] == "--" else a.cmd
 
     os.makedirs(HOME, exist_ok=True)

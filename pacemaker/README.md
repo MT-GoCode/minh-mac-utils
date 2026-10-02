@@ -31,7 +31,7 @@ claiming a total it cannot know.
 
 ## What it does
 
-**Under 60 seconds it says nothing**, then hands back the whole result:
+**Under 60 seconds it says nothing**, then hands back the result:
 
 ```
 build completed in 12s with exit code 0.
@@ -40,7 +40,10 @@ stderr:
 a warning
 ```
 
-So for anything short it behaves like running the command directly. Past 60 seconds it
+So for anything short it behaves much like running the command directly — with two
+differences worth knowing: more than 50 lines per stream is truncated to a head and a tail
+(the log has all of it), and pacemaker's own exit status is not the job's. The job's code is
+in the completion line. Past 60 seconds it
 starts reporting, and keeps whatever the job wrote attached to the ping:
 
 ```
