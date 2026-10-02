@@ -1,31 +1,37 @@
 #!/bin/sh
-# monitor-heartbeat <logfile> [--pid PID] [--every SECS] [--quiet-after SECS]
+# monitor-heartbeat <logfile> [--pid PID] [--every SECS] [--quiet-after SECS] [--tail N]
 #
-# Print one line per tick describing a long-running job, by watching its log file.
-# Never exits on its own.
+# Print a heartbeat per tick for a long-running job, by watching its log file, and stream
+# whatever the job has written since the last tick. Never exits on its own.
 #
-#   heartbeat build.log | 6m12s since start | quiet 3s | last: linking | check on things and give report.
-#   heartbeat build.log | 1h07m27s since start | quiet 5m01s | last: … | hung, or just buffering? check on things.
+#   heartbeat build.log | 6m12s since start | quiet 3s | +47 lines | check on things and give report.
+#       Compiling serde v1.0.210
+#       Compiling tokio v1.40.0
 #
 # "since start" is the log file's BIRTH time, not when this process started, so a second
 # watcher armed later agrees with the first. That is what makes re-arming honest.
 #
-# "quiet" is time since the log's mtime last changed. Redirect both streams into it
-# (`cmd > log 2>&1`) AND line-buffer every stage, or a healthy job looks silent. See the
-# README: `python3 -u` does not survive a pipe, and stdbuf cannot fix Python at all.
+# "quiet" is time since the log's mtime last changed. "+N lines" is what arrived since the
+# previous tick; at most --tail of them are shown, so the count tells you what you are not
+# seeing. Redirect both streams into the log (`cmd > log 2>&1`) AND line-buffer every stage,
+# or a healthy job looks silent -- see the README, `python3 -u` does not survive a pipe.
 set -eu
 
 EVERY=75          # Minh's number.
 QUIET_AFTER=300   # 5 minutes of nothing is worth asking about.
+TAIL=50           # Minh's number.
+MAXCOL=200        # one runaway line should not become the whole heartbeat
+MAXBYTES=262144   # never read more than this much into memory per tick
 LOG=''
 PID=''
 
-usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --every)       EVERY="${2:?--every needs a value}"; shift 2 ;;
     --quiet-after) QUIET_AFTER="${2:?--quiet-after needs a value}"; shift 2 ;;
+    --tail)        TAIL="${2:?--tail needs a value}"; shift 2 ;;
     --pid)         PID="${2:?--pid needs a value}"; shift 2 ;;
     -h|--help)     usage; exit 0 ;;
     --)            shift; LOG="${1:?-- needs a logfile}"; shift ;;
@@ -35,11 +41,14 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$LOG" ] || { usage >&2; exit 2; }
-for n in "$EVERY" "$QUIET_AFTER" ${PID:+"$PID"}; do
-  case "$n" in ''|*[!0-9]*) echo "monitor-heartbeat: --every/--quiet-after/--pid take whole numbers (got '$n')" >&2; exit 2 ;; esac
+for n in "$EVERY" "$QUIET_AFTER" "$TAIL" ${PID:+"$PID"}; do
+  case "$n" in ''|*[!0-9]*) echo "monitor-heartbeat: --every/--quiet-after/--tail/--pid take whole numbers (got '$n')" >&2; exit 2 ;; esac
   [ "${#n}" -le 9 ] || { echo "monitor-heartbeat: '$n' is absurd" >&2; exit 2; }
 done
-[ "$EVERY" -gt 0 ] || { echo "monitor-heartbeat: --every must be > 0" >&2; exit 2; }
+# Upper bound is Minh's: past three minutes between check-ins you are not monitoring, you
+# are hoping. Every tick also costs the reader a turn, so the floor is a deliberate choice.
+[ "$EVERY" -gt 0 ]   || { echo "monitor-heartbeat: --every must be > 0" >&2; exit 2; }
+[ "$EVERY" -le 180 ] || { echo "monitor-heartbeat: --every max is 180 (got $EVERY) — longer than three minutes is not monitoring" >&2; exit 2; }
 [ ! -e "$LOG" ] || [ -f "$LOG" ] || { echo "monitor-heartbeat: $LOG is not a regular file" >&2; exit 2; }
 
 # Pick each tool's dialect by CAPABILITY, never by `uname`. A Mac with coreutils on PATH
@@ -49,9 +58,9 @@ done
 # (`ps -o etime=` would avoid stat entirely but returns garbage inside LXC, where the
 # container's /proc boot time disagrees with the host's; `ps -o etimes=` is GNU-only.)
 if stat -c %Y / >/dev/null 2>&1; then
-  stat_triple() { stat -c '%W %Y %i' "$1"; }   # birth is 0 where unrecorded
+  stat_quad() { stat -c '%W %Y %i %s' "$1"; }   # birth is 0 where unrecorded
 else
-  stat_triple() { stat -f '%B %m %i' "$1"; }
+  stat_quad() { stat -f '%B %m %i %z' "$1"; }
 fi
 when() { date -r "$1" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -d "@$1" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "epoch $1"; }
 
@@ -63,6 +72,11 @@ fmt() {  # seconds -> 43s | 6m12s | 1h07m27s
   fi
 }
 
+# Last TAIL lines of the file's final MAXBYTES, indented, safe on binary.
+tail_body() {
+  tail -c "$MAXBYTES" "$1" 2>/dev/null | tr -d '\000' | tail -n "$TAIL" | cut -c "1-$MAXCOL" | sed 's/^/    /'
+}
+
 # Killing this process would otherwise orphan `sleep` for up to EVERY seconds.
 nap() {
   sleep "$EVERY" &
@@ -72,31 +86,59 @@ nap() {
 }
 
 NAME=$(basename -- "$LOG")   # N monitors are indistinguishable without this
-START=''; INODE=''; note=''
+START=''; INODE=''; OFFSET=0; note=''; first=1
 
 while :; do
   now=$(date +%s)
+  body=''
 
-  if [ -f "$LOG" ] && triple=$(stat_triple "$LOG" 2>/dev/null); then
-    birth=${triple%% *}; rest=${triple#* }; mtime=${rest%% *}; inode=${rest##* }
-    case "$birth$mtime" in ''|*[!0-9]*)
-      printf 'monitor-heartbeat: cannot parse stat output for %s: %s\n' "$LOG" "$triple" >&2; exit 1 ;;
+  if [ -f "$LOG" ] && quad=$(stat_quad "$LOG" 2>/dev/null); then
+    set -- $quad
+    birth=$1; mtime=$2; inode=$3; size=$4
+    case "$birth$mtime$size" in ''|*[!0-9]*)
+      printf 'monitor-heartbeat: cannot parse stat output for %s: %s\n' "$LOG" "$quad" >&2; exit 1 ;;
     esac
     [ "$birth" -gt 0 ] || birth=''
 
     if [ -z "$START" ]; then
-      START=${birth:-$now}
-      INODE=$inode
-      # Said once, appended to the first tick so one tick is still one line. `>` truncates
-      # without recreating, so a reused log path keeps its old birth time and a fresh run
-      # would otherwise claim hours of elapsed with nothing to show it.
+      START=${birth:-$now}; INODE=$inode
+      # Said once. `>` truncates without recreating, so a reused log path keeps its old
+      # birth time and a fresh run would otherwise claim hours of elapsed.
       note=" (log created $(when "$START"))"
     fi
 
-    replaced=''
+    event=''
+    if [ "$first" = 1 ]; then
+      # A fresh watcher has no previous tick, so nothing here is genuinely new. Re-arming
+      # must not relabel half an hour of old output as having just arrived. Show the tail
+      # as context, say that is what it is, and start counting deltas from here.
+      OFFSET=$size
+      if [ "$size" -gt 0 ]; then
+        body=$(tail_body "$LOG" || true)
+        event=" | arming, showing the tail of what is already there"
+      else
+        event=' | arming, log is empty so far'
+      fi
+    fi
+
     if [ -n "$birth" ] && [ "$inode" != "$INODE" ]; then
-      replaced=" | log was REPLACED $(fmt $(( now - birth ))) ago (rotated or recreated)"
-      INODE=$inode
+      event="$event | log was REPLACED (rotated or recreated)"; INODE=$inode; OFFSET=0
+    fi
+    if [ "$size" -lt "$OFFSET" ]; then
+      event="$event | log was TRUNCATED"; OFFSET=0
+    fi
+
+    # Everything written since the previous tick. This, not a snapshot of the final line,
+    # answers "what has it been doing" -- a traceback, a compiler error with its context,
+    # or the same three lines repeating in a retry loop all survive it.
+    added=0
+    if [ "$first" = 0 ] && [ "$size" -gt "$OFFSET" ]; then
+      delta=$(tail -c "+$(( OFFSET + 1 ))" "$LOG" 2>/dev/null | tail -c "$MAXBYTES" | tr -d '\000' || true)
+      if [ -n "$delta" ]; then
+        added=$(printf '%s\n' "$delta" | wc -l | tr -d ' ')
+        body=$(printf '%s\n' "$delta" | tail -n "$TAIL" | cut -c "1-$MAXCOL" | sed 's/^/    /')
+      fi
+      OFFSET=$size
     fi
 
     elapsed=$(( now - START )); [ "$elapsed" -ge 0 ] || elapsed=0
@@ -107,25 +149,28 @@ while :; do
     # Clamping it to 0 reports a dead job as perfectly healthy for as long as the skew
     # lasts -- the precise failure this tool exists to prevent.
     if [ "$quiet" -lt 0 ]; then
-      printf 'heartbeat %s | %s since start%s | mtime is %s in the FUTURE — clock skew, quiet is meaningless. check on things.%s\n' \
-        "$NAME" "$(fmt "$elapsed")" "$replaced" "$(fmt $(( 0 - quiet )))" "$note"
-      note=''; nap; continue
+      state="mtime is $(fmt $(( 0 - quiet ))) in the FUTURE — clock skew, quiet is meaningless."
+    else
+      state="quiet $(fmt "$quiet")"
     fi
-
-    last=$(tail -c 2000 "$LOG" 2>/dev/null | tr -d '\000' | tail -1 | cut -c1-120)
-    if [ -n "$last" ]; then last=" | last: $last"; else last=' | log empty'; fi
 
     if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then
-      printf 'heartbeat %s | %s since start%s | quiet %s%s | PID %s IS GONE — the job ended, stop the monitor.%s\n' \
-        "$NAME" "$(fmt "$elapsed")" "$replaced" "$(fmt "$quiet")" "$last" "$PID" "$note"
+      verdict="PID $PID IS GONE — the job ended, stop the monitor."
     elif [ "$quiet" -ge "$QUIET_AFTER" ]; then
-      printf 'heartbeat %s | %s since start%s | quiet %s%s | hung, or just buffering? check on things.%s\n' \
-        "$NAME" "$(fmt "$elapsed")" "$replaced" "$(fmt "$quiet")" "$last" "$note"
+      verdict='hung, or just buffering? check on things.'
     else
-      printf 'heartbeat %s | %s since start%s | quiet %s%s | check on things and give report.%s\n' \
-        "$NAME" "$(fmt "$elapsed")" "$replaced" "$(fmt "$quiet")" "$last" "$note"
+      verdict='check on things and give report.'
     fi
-    note=''
+
+    if [ "$first" = 1 ]; then
+      printf 'heartbeat %s | %s since start%s | %s | %s%s\n' \
+        "$NAME" "$(fmt "$elapsed")" "$event" "$state" "$verdict" "$note"
+    else
+      printf 'heartbeat %s | %s since start%s | %s | +%s lines | %s%s\n' \
+        "$NAME" "$(fmt "$elapsed")" "$event" "$state" "$added" "$verdict" "$note"
+    fi
+    [ -z "$body" ] || printf '%s\n' "$body"
+    note=''; first=0
 
   else
     # Also covers the unlink-between-test-and-stat race. A vanished log is a condition to

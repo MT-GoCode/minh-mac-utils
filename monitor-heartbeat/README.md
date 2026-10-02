@@ -8,13 +8,25 @@ monitor-heartbeat /tmp/job.log       # one line per tick, forever
 ```
 
 ```
-heartbeat 6m12s since start | quiet 3s | check on things and give report.
-heartbeat 1h07m27s since start | quiet 5m01s | hung? check on things.
+heartbeat build.log | 6m12s since start | quiet 3s | +47 lines | check on things and give report.
+    Compiling serde v1.0.210
+    Compiling tokio v1.40.0
+heartbeat build.log | 1h07m27s since start | quiet 5m01s | +0 lines | hung, or just buffering? check on things.
 ```
+
+Each tick streams what the job wrote since the previous one, at most `--tail` lines, with
+the true count. `+47 lines` with 3 shown means go read the log; `+3` with 3 shown means you
+have everything. A single final line was tried first and is not enough — the last line of a
+traceback is `^^^^^`, and of a progress bar is a fragment.
+
+A freshly armed watcher has no previous tick, so it says `arming` and shows the tail of
+what is already there rather than relabelling old output as new.
 
 | flag | default | meaning |
 | :- | :- | :- |
-| `--every` | `75` | seconds between heartbeats |
+| `--every` | `75` | seconds between heartbeats, 1–180 |
+| `--tail` | `50` | most lines of new output to show per tick |
+| `--pid` | — | also report when that pid is gone, which silence cannot tell you |
 | `--quiet-after` | `300` | seconds of no growth before the line says `hung?` |
 
 ## Why it exists
