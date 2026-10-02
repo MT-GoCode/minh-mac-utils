@@ -19,4 +19,4 @@ case ":$PATH:" in
   *) printf '  \033[33m!\033[0m %s is not on PATH — add it to your shell rc\n' "$BINDIR" ;;
 esac
 "$BINDIR/pacemaker" --help >/dev/null || bad "the installed copy will not run"
-ok "runs — now ./test.sh to check it behaves correctly on this machine"
+ok "runs — now 'pacemaker --selftest' to check it behaves correctly on this machine"

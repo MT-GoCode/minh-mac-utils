@@ -17,6 +17,17 @@ Monitor(pacemaker --slug build --attach)           resume after Monitor expires
 | `--every` | `75` | seconds between pings, max 300 |
 | `--timeout` | none | kill the job after this many seconds, max 1800 |
 | `--attach` | | resume watching a run that is already going |
+| `--list` | | every run on this machine, its state and its command |
+| `--selftest` | | run the behavioural checks against this copy |
+
+With no command it is a bare timer — nothing to launch, nothing to detach, no files kept:
+
+```
+Heartbeat. Reminder to check on ci — 22m00s since this reminder was armed.
+```
+
+It holds no state, so that clock restarts when you re-arm. The wording says so rather than
+claiming a total it cannot know.
 
 ## What it does
 
@@ -45,6 +56,17 @@ Heartbeat. build running for 9m30s. Quiet for 5m01s. Is this hung, or is there a
 stdout is unlabelled, stderr goes under `stderr:`. At most 50 lines per stream per ping,
 keeping the head as well as the tail — a burst's phase markers are at the front, and forty
 trailing `ok` lines are its least informative slice.
+
+A job can also write faster than pacemaker polls. It reads at most 64 KiB from each end of
+whatever arrived, never the whole delta, so a run that prints 5 MB in one burst still costs
+well under a kilobyte of notification and a fixed amount of memory:
+
+```
+... 412 lines omitted and 4761KB never read, full log at ~/.pacemaker/sweep/stdout ...
+```
+
+The *log* is complete; only the ping is abridged. "never read" is the honest part — the
+line count either side of a skip is a floor, and saying so beats a confident wrong total.
 
 **Eager by default.** It pings when a burst *settles* (1.5s of quiet), not on a clock —
 with a floor of `--every / 3` so a chatty job cannot storm you, and a ceiling of `--every`
@@ -107,7 +129,16 @@ orphans the command underneath it.
 ## Install
 
 ```sh
-./install.sh      # one file to ~/.local/bin, no sudo
-./test.sh         # behavioural checks — run these on each machine
+./install.sh          # one file to ~/.local/bin, no sudo
+pacemaker --selftest  # the checks, from wherever it is installed
 ./uninstall.sh
 ```
+
+**The tests are in the tool**, not beside it, so `pacemaker --selftest` works on any
+machine that has pacemaker — no clone, no second file to copy. That is the whole reason
+it is a flag and not a `test.sh`: validating a Mac used to mean shipping files around.
+
+They assert behaviour from outside the process, because unit-style checking missed every
+bug that actually shipped here. Being Python rather than shell also removes the test
+layer's own portability problem: macOS has no `timeout(1)`, and where coreutils supplies
+one it is on the **login** shell's PATH, which is not what ssh gives you.
