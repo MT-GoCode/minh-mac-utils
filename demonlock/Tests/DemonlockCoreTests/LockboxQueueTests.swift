@@ -39,10 +39,10 @@ final class LockboxQueueTests: XCTestCase {
                    requestMarker: dir + "/unlock", abortMarker: dir + "/abort",
                    onFailure: .drop, payloadIsJSON: false, auditLog: dir + "/audit.log")
     }
-    func windows() -> [String: Double] { (loadJSON(path) as Lockbox.LBFile?)?.unlockedUntil ?? [:] }
-    func setWindow(_ name: String, until: Double) {
+    func windows() -> [String: Double] { (loadJSON(path) as Lockbox.LBFile?)?.unlockedAt ?? [:] }
+    func setWindow(_ name: String, until: Double) {   // `until` is now the unlocked-AT stamp
         var f: Lockbox.LBFile = loadJSON(path) ?? .init()
-        f.unlockedUntil[name] = until; saveJSON(f, to: path)
+        f.unlockedAt[name] = until; saveJSON(f, to: path)
     }
 
     let entryDelay = { (_: String) -> Double in max(7200, Bounds.lockboxUnlockDelayMin) }
@@ -67,7 +67,7 @@ final class LockboxQueueTests: XCTestCase {
         XCTAssertEqual(aborted, ["bank"])
         // the tick-side mirror:
         var f: Lockbox.LBFile = loadJSON(path)!
-        for n in aborted { f.unlockedUntil.removeValue(forKey: n) }
+        for n in aborted { f.unlockedAt.removeValue(forKey: n) }
         saveJSON(f, to: path)
         XCTAssertNil(windows()["bank"])
         XCTAssertTrue(queue.status().rows.isEmpty)
@@ -83,7 +83,7 @@ final class LockboxQueueTests: XCTestCase {
                                            key: { $0 }, validate: { _ in true })
         XCTAssertEqual(aborted, ["bank"])                      // returned despite empty pending
         var f: Lockbox.LBFile = loadJSON(path)!
-        for n in aborted { f.unlockedUntil.removeValue(forKey: n) }
+        for n in aborted { f.unlockedAt.removeValue(forKey: n) }
         saveJSON(f, to: path)
         XCTAssertNil(windows()["bank"])                        // relocked
     }
@@ -108,6 +108,17 @@ final class LockboxQueueTests: XCTestCase {
         XCTAssertEqual(applied2, 0)                          // never re-applied → no window resurrection
     }
 
+    func testOpenUnlockNeverAutoRelocks() {
+        // The whole point of dropping lockboxAutoRelock: an entry unlocked at t=1000 is still
+        // unlocked an arbitrarily long time later. Only `copy` or `abort` closes it.
+        setWindow("bank", until: 1000)
+        let queue = q()
+        _ = MarkerIO.append(dir + "/unlock", line: "other")
+        _ = queue.consumeMarkers(now: 1000 + 86_400 * 365, enforcedUID: uid, delaySec: entryDelay,
+                                 key: { $0 }, validate: { _ in true })
+        XCTAssertEqual(windows()["bank"], 1000)   // a year later, still open
+    }
+
     func testSiblingWindowSurvivesQueueSaves() {
         setWindow("open-one", until: 5000)
         let queue = q()
@@ -117,7 +128,7 @@ final class LockboxQueueTests: XCTestCase {
     }
 
     func testLegacyPendingMigratesAndWindowSiblingPreserved() throws {
-        let legacy = #"{"pending":{"bank":{"requestedAt":10,"applyAt":7210}},"unlockedUntil":{"other":9999}}"#
+        let legacy = #"{"pending":{"bank":{"requestedAt":10,"applyAt":7210}},"unlockedAt":{"other":9999}}"#
         try legacy.write(toFile: path, atomically: true, encoding: .utf8)
         let queue = q()
         XCTAssertEqual(queue.status().rows.map(\.key), ["bank"])

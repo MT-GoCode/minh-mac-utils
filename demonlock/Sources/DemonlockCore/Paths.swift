@@ -64,7 +64,7 @@ enum Paths {
     // password-lockbox: secrets live in a SEPARATE 0600 root-only file (never settings.json, which is
     // 644). Lock state is published for `show` (names + lock state only, never secrets).
     static let lockboxFile      = supportDir + "/lockbox.json"          // 0600 root: [{name, secret, delaySec}]
-    static let lockboxStateFile = supportDir + "/lockbox-state.json"    // pending unlocks + unlockedUntil
+    static let lockboxStateFile = supportDir + "/lockbox-state.json"    // pending unlocks + unlockedAt
     static let lbUnlockMarker   = rvInboxDir + "/lockbox-unlock"        // contents = name
     static let lbAbortMarker    = rvInboxDir + "/lockbox-abort"         // contents = name
     static let lbCopyMarker     = rvInboxDir + "/lockbox-copy"          // contents = name

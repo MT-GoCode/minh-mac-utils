@@ -19,7 +19,6 @@ enum Bounds {
     static let rvMaxRequestDurationCeil = 4.0 * 3600                 // ceiling on the configurable grant duration
     static let rvExtendMax          = 1.0 * 3600                     // i-still-need-sudo: ≤ this per call
     static let lockboxUnlockDelayMin = 1.0 * 3600                    // password-lockbox per-entry unlock delay floor
-    static let lockboxAutoRelock    = 15.0 * 60                      // auto-relock an unlocked, never-copied secret
 
     static func clamp(_ v: Double, _ r: ClosedRange<Double>) -> Double { Swift.min(Swift.max(v, r.lowerBound), r.upperBound) }
 }

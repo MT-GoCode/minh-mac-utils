@@ -421,7 +421,8 @@ demonlock password-lockbox add --name <n> --delay "1h"       # then paste the se
 
 `copy` puts the secret on the clipboard as a **concealed pasteboard type**
 (`org.nspasteboard.ConcealedType`) so a spared clipboard manager (Raycast keeps history) doesn't retain
-it. An unlocked entry **auto-relocks 15 min** later if never copied; per-entry unlock delay floor is 1h.
+it. An unlocked entry stays unlocked **until `copy` or `abort`** — there is no auto-relock; per-entry
+unlock delay floor is 1h.
 
 ## Delayed changes (`delay-set-policy` + the map's "Save in 36h")
 
