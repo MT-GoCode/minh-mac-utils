@@ -10,8 +10,9 @@ bad() { printf '  \033[31m✗\033[0m %s\n' "$*"; exit 1; }
 [ -f "$SRC/irreproachable" ] || bad "irreproachable missing from $SRC"
 command -v python3 >/dev/null || bad "python3 not found"
 SHIM="irreproachable paseo shim"
-grep -qs "$SHIM" "$BINDIR/paseo" && rm -f "$BINDIR/paseo" && hash -r   # re-derive it: never probe through an old shim
-command -v paseo >/dev/null || bad "paseo not on PATH — irreproachable drives agents through it"
+real_paseo() { type -ap paseo | while read -r p; do grep -qs "$SHIM" "$p" || { echo "$p"; break; }; done; }
+PASEO="$(real_paseo)"                     # never our own shim: it is re-derived from the real one below
+[ -n "$PASEO" ] || bad "paseo not on PATH (run this from a login shell) — irreproachable drives agents through it"
 python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$SRC/irreproachable" || bad "irreproachable does not parse"
 
 # A live watcher runs the old code: a newer mute would poke it with a signal it does not handle, killing it.
@@ -29,8 +30,10 @@ install -m 0755 "$SRC/irreproachable" "$BINDIR/irreproachable"
 
 # Agents' shells get a plain PATH, not a login one. If paseo is only reachable from a login shell (an nvm
 # install on macOS), give agents a shim that calls the exact node and paseo found now.
-if ! PATH="$BINDIR:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" command -v paseo >/dev/null; then
-  PASEO="$(command -v paseo)"; NODE="$(command -v node)" || bad "node not found, so the paseo shim cannot be written"
+if [ -n "$(PATH="$BINDIR:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" real_paseo)" ]; then
+  grep -qs "$SHIM" "$BINDIR/paseo" && rm -f "$BINDIR/paseo" || true   # agents see a real paseo: no shim needed
+else
+  NODE="$(command -v node)" || bad "node not found, so the paseo shim cannot be written"
   printf '#!/bin/sh\n# %s -- re-run irreproachable/install.sh if node moves\nexec "%s" "%s" "$@"\n' \
     "$SHIM" "$NODE" "$PASEO" > "$BINDIR/paseo"
   chmod 0755 "$BINDIR/paseo"
