@@ -3,6 +3,9 @@
 
     irreproachable new "<goal>" [--steer-every 30m] [--idle-after 6m] [--steer-prompt TEXT] [--agent ID]
     irreproachable clear [--agent ID]
+    irreproachable mute [DURATION] [--agent ID]
+    irreproachable unmute [--agent ID]
+    irreproachable ls
     irreproachable --selftest
 
 Run `new` inside a Paseo agent and it governs that agent ($PASEO_AGENT_ID). A detached watcher
@@ -19,13 +22,14 @@ because the agent harness kills process trees when a tool call ends.
 State lives in ~/.irreproachable/<agent-id>/. `meta.json` is written once, by the watcher.
 `log` holds `<epoch> <event>` lines; an `END <reason>` line records how a goal ended.
 """
-import argparse, datetime, filecmp, json, os, re, shutil, signal, subprocess, sys, tempfile, time, uuid
+import argparse, datetime, filecmp, json, os, re, select, shutil, signal, subprocess, sys, tempfile, time, uuid
 
 HOME          = os.path.expanduser("~/.irreproachable")
 IDLE_AFTER    = 360   # pacemaker EVERY_MAX 300s (Minh's) + 60s for ping delivery
 START_TIMEOUT = 5     # ~300x the measured 16 ms watcher startup
 SLACK         = 5     # inspect + send wall time, 1.1 s each measured, x2 headroom
 STEER_EVERY   = 1800  # Minh's number
+MUTE_MAX      = 3600  # Minh's number: a mute is at most 1h, and that is also the default
 BUSY          = ("running", "initializing")   # Paseo BUSY_STATUSES (agent-manager.js:173)
 C_LOCALE      = {**os.environ, "LC_ALL": "C"}
 
@@ -81,7 +85,10 @@ class PaseoError(Exception):
 
 
 def paseo(*args):
-    p = subprocess.run(["paseo", *args, "--json"], capture_output=True, text=True)
+    try:
+        p = subprocess.run(["paseo", *args, "--json"], capture_output=True, text=True)
+    except FileNotFoundError:
+        raise PaseoError("paseo not on PATH -- run irreproachable/install.sh, which installs a shim if needed")
     if p.returncode == 0:
         return json.loads(p.stdout)
     raw = (p.stdout + p.stderr).strip()    # paseo puts its error JSON on stderr
@@ -95,6 +102,17 @@ def paseo(*args):
 def gdir(aid):      return os.path.join(HOME, aid)
 def meta_path(aid): return os.path.join(gdir(aid), "meta.json")
 def log_path(aid):  return os.path.join(gdir(aid), "log")
+def muted_path(aid): return os.path.join(gdir(aid), "muted")
+
+
+def muted_until(aid, token):
+    """End of this goal's mute, or 0. The file names its goal's token, so a mute never outlives its goal."""
+    try:
+        with open(muted_path(aid)) as f:
+            tok, until = f.read().split()
+    except FileNotFoundError:
+        return 0.0
+    return float(until) if tok == token else 0.0
 
 
 def read_meta(aid):
@@ -114,6 +132,7 @@ def write_meta(aid, m):
 
 
 def log(aid, event):
+    event = " ".join(event.split())        # a multi-line paseo error must not break the log format
     with open(log_path(aid), "a") as f:
         f.write(f"{time.time():.3f} {event}\n")
 
@@ -140,8 +159,8 @@ def ended(aid, token):
     return None
 
 
-def alive(aid):
-    m = read_meta(aid)
+def alive(aid, m=None):
+    m = m or read_meta(aid)
     return m is not None and ended(aid, m["token"]) is None and lstart(m["pid"]) == m["lstart"]
 
 
@@ -157,15 +176,68 @@ def resolve_agent(arg):
     return aid
 
 
-def find_goal(arg):
-    """The goal directory for an id or id prefix. Works after the agent itself is gone."""
-    aid = resolve_agent(arg)
-    hits = [n for n in (os.listdir(HOME) if os.path.isdir(HOME) else []) if n.startswith(aid)]
-    if not hits:
-        die(1, f"no goal for {aid[:8]}")
+def goals():
+    """Ids of goal dirs that still have meta: live, or ended but not yet cleared."""
+    return [n for n in (os.listdir(HOME) if os.path.isdir(HOME) else []) if os.path.exists(meta_path(n))]
+
+
+def find_goal(aid):
+    """The goal for an id or id prefix, or None. Works after the agent itself is gone."""
+    hits = [n for n in goals() if n.startswith(aid)]
     if len(hits) > 1:
         die(2, f"{aid} is ambiguous")
-    return hits[0]
+    return hits[0] if hits else None
+
+
+def state(aid, m):
+    if not alive(aid, m):
+        return f"ENDED {ended(aid, m['token']) or 'watcher died'}"
+    left = muted_until(aid, m["token"]) - time.time()
+    return f"watching (muted {fmt(left)})" if left > 0 else "watching"
+
+
+def live_goal(arg):
+    """The live goal for an id or prefix, or exit 1 saying there is none."""
+    want = resolve_agent(arg)
+    aid = find_goal(want)
+    m = read_meta(aid) if aid else None
+    if not (m and alive(aid, m)):
+        die(1, f"no live goal on {want[:8]}")
+    return aid, m
+
+
+def poke(m):                                    # wake the watcher so a mute change takes effect at once
+    try:
+        os.kill(m["pid"], signal.SIGUSR1)
+    except (ProcessLookupError, PermissionError):
+        pass                                    # gone since alive() looked, or the pid now belongs to someone else
+
+
+def cmd_mute(a):
+    if a.duration > MUTE_MAX:
+        die(2, f"a mute is at most {fmt(MUTE_MAX)}")
+    aid, m = live_goal(a.agent)
+    tmp = f"{muted_path(aid)}.tmp.{os.getpid()}"
+    with open(tmp, "w") as f:
+        f.write(f"{m['token']} {time.time() + a.duration}")
+    os.replace(tmp, muted_path(aid))
+    log(aid, f"MUTED {m['token']} for={a.duration}")
+    poke(m)
+    print(f"goal prompts muted on {aid[:8]} for {fmt(a.duration)} (steers continue)")
+
+
+def cmd_unmute(a):
+    aid, m = live_goal(a.agent)
+    try:
+        if muted_until(aid, m["token"]) <= time.time():
+            raise FileNotFoundError             # expired, or left by an earlier goal
+        os.remove(muted_path(aid))
+    except FileNotFoundError:
+        print(f"{aid[:8]} was not muted")
+        return
+    log(aid, f"UNMUTED {m['token']}")
+    poke(m)
+    print(f"goal prompts unmuted on {aid[:8]}")
 
 
 def updated_at(info):
@@ -204,6 +276,12 @@ def spawn(cfg):
 
 def watch(cfg):
     me, aid, tok = os.getpid(), cfg["aid"], cfg["token"]
+    # mute/unmute poke us with SIGUSR1 once meta exists, so the handler goes in first. The self-pipe turns the
+    # signal into readable bytes: the sleep below ends early, and a poke during a paseo call is not lost.
+    wake_r, wake_w = os.pipe()
+    os.set_blocking(wake_w, False)
+    signal.signal(signal.SIGUSR1, lambda *_: None)
+    signal.set_wakeup_fd(wake_w)
     started = lstart(me)
     assert started, "ps -o lstart= failed"     # a null lstart would make a dead watcher look alive
     write_meta(aid, {"pid": me, "lstart": started, "token": tok, "goal": cfg["goal"],
@@ -248,6 +326,7 @@ def watch(cfg):
         # A busy (or permission-blocked) agent has not ended its turn, so its quiet clock restarts no
         # earlier than now: the earliest a goal prompt can be due is a full idle_after from now.
         due = now - quiet + cfg["idle_after"] if idle else now + cfg["idle_after"]
+        due = max(due, muted_until(aid, tok))      # a mute holds goal prompts only; steers keep their cadence
         goal_due = idle and now >= due
         # A steer due within idle_after goes out instead of the goal prompt (it carries the goal), so we
         # never interrupt a goal prompt we just sent.
@@ -259,8 +338,9 @@ def watch(cfg):
             if not send("goal", GOAL_PROMPT.format(quiet=fmt(quiet), goal=cfg["goal"]), quiet):
                 return
             due = time.time() + cfg["idle_after"]
-        # Agent activity only ever moves `due` later, so nothing can become due before it.
-        time.sleep(max(1, min(due, next_steer) - time.time()))
+        # Agent activity only moves `due` later; only a mute change moves it earlier, and its poke ends the wait.
+        if select.select([wake_r], [], [], max(1, min(due, next_steer) - time.time()))[0]:
+            os.read(wake_r, 512)                   # poked: re-read the mute and recompute
 
 
 # --------------------------------------------------------------------------------------------- commands
@@ -274,6 +354,14 @@ def cmd_new(a):
     if info.get("Archived"):
         die(2, f"agent {aid[:8]} is archived")
     aid = info["Id"]
+    prior = read_meta(aid)
+    replacing = prior is not None and alive(aid, prior)
+    if replacing:
+        log(aid, f"REPLACED {prior['token']}")
+        try:
+            os.killpg(prior["pid"], signal.SIGTERM)
+        except ProcessLookupError:
+            pass
     token = uuid.uuid4().hex
     spawn({"aid": aid, "token": token, "goal": a.goal, "idle_after": a.idle_after,
            "steer_every": a.steer_every, "steer_prompt": a.steer_prompt})
@@ -281,23 +369,30 @@ def cmd_new(a):
     while time.time() < deadline:
         m = read_meta(aid)
         if m and m["token"] == token:
-            print(f"watching {aid[:8]} — goal prompt after {fmt(a.idle_after)} idle, steer every {fmt(a.steer_every)}")
+            print(f"{'replaced goal on' if replacing else 'watching'} {aid[:8]} — goal prompt after "
+                  f"{fmt(a.idle_after)} idle, steer every {fmt(a.steer_every)}")
             return
         time.sleep(0.05)
     die(1, f"watcher did not start (see {log_path(aid)})")
 
 
 def cmd_clear(a):
-    aid = find_goal(a.agent)
-    m, was = read_meta(aid), alive(aid)
-    if m is None:
-        print(f"no goal on {aid[:8]}")          # already cleared: clearing twice is not an error
+    want = resolve_agent(a.agent)
+    aid = find_goal(want)
+    m = read_meta(aid) if aid else None
+    if m is None:                               # already cleared: clearing twice is not an error
+        print(f"no goal on {want[:8]}")
         return
+    was = alive(aid, m)
     try:
         os.remove(meta_path(aid))
-    except FileNotFoundError:
-        print(f"no goal on {aid[:8]}")
+    except FileNotFoundError:                   # a concurrent clear won
+        print(f"no goal on {want[:8]}")
         return
+    try:
+        os.remove(muted_path(aid))
+    except FileNotFoundError:
+        pass
     if was:
         log(aid, f"CLEARED {m['token']}")
         try:
@@ -307,19 +402,35 @@ def cmd_clear(a):
     print(f"cleared goal on {aid[:8]}" if was else f"removed ended goal on {aid[:8]}")
 
 
+def cmd_ls(a):
+    try:
+        titles = {x["id"]: x.get("name") or "-" for x in paseo("ls")}
+    except PaseoError:
+        titles = {}
+        print("irreproachable: paseo unavailable — titles omitted", file=sys.stderr)
+    now = time.time()
+    rows = [(m, aid) for aid in goals() for m in [read_meta(aid)] if m]
+    for m, aid in sorted(rows, key=lambda r: r[0]["started"]):
+        print(f"{aid[:8]}  {state(aid, m):<26}  {fmt(now - m['started']):>8}  "
+              f"{titles.get(aid, '-')[:30]:<30}  {m['goal'][:60]}")
+
+
 # --------------------------------------------------------------------------------------------- selftest
 
-SECTIONS = ("args", "goal", "steer-a", "steer-b", "steer-c")
+SECTIONS = ("args", "goal", "steer-a", "steer-b", "steer-c", "edges", "mute")
 
 
 def selftest(only):
+    if os.getuid() == 0:
+        die(1, "do not run as root — irreproachable is a per-user tool")
     os.environ.pop("PASEO_AGENT_ID", None)     # the suite runs inside Minh's agent; never govern it
     SELF = os.path.abspath(__file__)
     inst = shutil.which("irreproachable")
     if not (inst and filecmp.cmp(inst, SELF, shallow=False)):
         die(1, "run ./install.sh first — the agents under test call irreproachable from PATH")
     want = lambda name: not only or name in only
-    results, CREATED = [], []
+    results, CREATED, PIDS = [], [], []
+    FIXTURES = [os.path.join(HOME, d) for d in ("zzirr-dead", "zzirr-live")]
     # One workspace for the whole run: outside an agent, `paseo run` would otherwise make one per agent and
     # leave it behind after the agent is deleted.
     WS = paseo("workspace", "create", "--isolation", "local", "--path", tempfile.gettempdir(),
@@ -354,9 +465,14 @@ def selftest(only):
         tll = tl.splitlines()
         return [tll[i + 1] for i, l in enumerate(tll[:-1]) if l.strip() == marker]   # paseo logs cuts long lines
 
+    def note(m_):               # every watcher the suite starts, so the final leftover check covers them all
+        if m_:
+            PIDS.append((m_["pid"], m_["lstart"]))
+        return m_ or {}
+
     def meta_of(aid):           # the first meta seen; waits for the agent to have run `new`
         wait_for(lambda: read_meta(aid) is not None, 120, 2)
-        return read_meta(aid) or {}
+        return note(read_meta(aid))
 
     def wait_for(pred, timeout, step):
         end = time.time() + timeout
@@ -377,6 +493,8 @@ def selftest(only):
             subprocess.run(["paseo", "delete", aid], capture_output=True)
             shutil.rmtree(gdir(aid), ignore_errors=True)
         subprocess.run(["paseo", "workspace", "archive", WS], capture_output=True)
+        for d in FIXTURES:
+            shutil.rmtree(d, ignore_errors=True)
 
     try:
         if want("args"):
@@ -411,8 +529,8 @@ def selftest(only):
 
             def cleared():
                 m = read_meta(aid)
-                if m:
-                    seen.setdefault("meta", m)
+                if m and "meta" not in seen:
+                    seen["meta"] = note(m)
                 return "meta" in seen and m is None
             # ~20s spawn + ~60s turn 1 + 2 x (45s idle + SLACK + ~20s turn) ~= 230s
             check("the agent cleared its goal", wait_for(cleared, 420, 5))
@@ -475,7 +593,7 @@ def selftest(only):
                               f'irreproachable clear')
             wait_for(lambda: os.path.exists(marks), 120, 1)          # the agent is now busy in the work command
             run("new", GOAL, "--agent", aid, "--steer-every", "90s", "--idle-after", "1h")
-            m = read_meta(aid) or {}
+            m = note(read_meta(aid))
             tok = m.get("token")
             w = wstart(aid, tok) if tok else time.time()
             with open(dl, "w") as f:
@@ -508,7 +626,7 @@ def selftest(only):
             wait_for(lambda: paseo("inspect", aid)["Status"] == "idle", 120, 2)
             run("new", "Reply to every prompt briefly.", "--agent", aid, "--steer-every", "45s", "--idle-after", "1h",
                 "--steer-prompt", "Reply with the single word PONG.")
-            m = read_meta(aid) or {}
+            m = note(read_meta(aid))
             tok = m.get("token")
             w = wstart(aid, tok) if tok else time.time()
             time.sleep(max(0, w + 240 - time.time()))
@@ -533,7 +651,7 @@ def selftest(only):
             pend = lambda: bool(paseo("inspect", aid).get("PendingPermissions"))
             check("the agent is waiting on a permission", wait_for(pend, 60, 2))
             r = run("new", "x", "--agent", aid, "--steer-every", "150s", "--idle-after", "30s")
-            tok = (read_meta(aid) or {}).get("token")
+            tok = note(read_meta(aid)).get("token")
             samples = []
             for _ in range(18):                 # 180s: without the hold a steer is due at +150
                 i = paseo("inspect", aid)
@@ -557,17 +675,140 @@ def selftest(only):
             # the early-steer arm may send it up to idle_after sooner: >= t_r + 150 - 2*30 - SLACK. Without the reset
             # the steer would land at the first check after t_r, <= t_r + 30 + SLACK.
             check("the first steer came a full interval after the permission", bool(s) and s[0] >= t_r + 90 - SLACK,
-                  f"steer at t_r+{s[0] - t_r:.0f}s" if s else "no steer")
+                  (f"steer at t_r+{s[0] - t_r:.0f}s" if s else "no steer") + f"\nwatcher log: {log_lines(aid)}")
             g = [x for x in sent(aid, tok, "goal") if s and x < s[0]]
             check("no goal prompt within idle_after of the steer that followed it",
                   bool(s) and all(s[0] - x >= 30 - SLACK for x in g), f"goals={[x - t_r for x in g]} steer={s and s[0] - t_r}")
             run("clear", "--agent", aid)
             shutil.rmtree(tmp, ignore_errors=True)
             drop(aid)
+
+        if want("edges"):
+            print("### ls and lifecycle edges", flush=True)
+
+            def row(a_):
+                return next((l for l in run("ls").stdout.splitlines() if l.startswith(a_[:8])), None)
+
+            def gone(m_):
+                return lstart(m_["pid"]) != m_["lstart"]
+
+            def goal(name):     # a goal Haiku cannot satisfy or clear on its own
+                return f"{name}: reply with one word; never run any command"
+
+            aid = spawn_agent("edges", "Reply to every prompt with one word, then end your turn.")
+            idle = lambda: paseo("inspect", aid)["Status"] == "idle"
+            wait_for(idle, 120, 2)
+            # A fresh idle clock: goal one must never reach its 30 s idle-after before it is replaced.
+            paseo("send", "--no-wait", aid, "--prompt", "ping")
+            time.sleep(3)
+            wait_for(idle, 60, 1)
+            run("new", goal("goal one"), "--agent", aid, "--idle-after", "30s", "--steer-every", "1h")
+            m1 = note(read_meta(aid))
+            r = run("new", goal("goal two"), "--agent", aid, "--idle-after", "30s", "--steer-every", "1h")
+            m2 = note(read_meta(aid))
+            check("new on a goal replaces it", "replaced" in r.stdout and m2.get("pid") != m1.get("pid"), r.stdout)
+            check("the old watcher is gone", bool(m1) and wait_for(lambda: gone(m1), SLACK, 0.5))
+            rw = row(aid) or ""
+            check("ls shows the new goal watching", "watching" in rw and "goal two" in rw, rw)
+            # wait on the delivered prompt itself: SEND is logged before the ~1 s `paseo send` call
+            wait_for(lambda: any(x.startswith("goal two") for x in line_after(timeline(aid), "[Goal]")),
+                     30 + SLACK + 30, 3)
+            after = line_after(timeline(aid), "[Goal]")
+            check("the replaced goal is never delivered, the new one is",
+                  any(x.startswith("goal two") for x in after) and not any(x.startswith("goal one") for x in after),
+                  after)
+            os.kill(m2["pid"], signal.SIGKILL)
+            wait_for(lambda: gone(m2), SLACK, 0.5)
+            rw = row(aid) or ""
+            check("a killed watcher shows as died", "ENDED watcher died" in rw and "watching" not in rw, rw)
+            r = run("clear", "--agent", aid[:8])
+            check("clear by prefix removes an ended goal", "removed ended goal" in r.stdout and row(aid) is None,
+                  r.stdout)
+            r = run("clear", "--agent", aid[:8])
+            check("clearing twice is not an error", r.returncode == 0 and "no goal" in r.stdout, r.stdout + r.stderr)
+            run("new", goal("goal three"), "--agent", aid, "--idle-after", "30s", "--steer-every", "1h")
+            m3 = note(read_meta(aid))
+            drop(aid)
+            wait_for(lambda: gone(m3), 30 + SLACK + 5, 2)        # cheap ps check; one `ls` afterwards
+            rw = row(aid) or ""
+            check("a deleted agent's goal ends as agent gone", "ENDED agent gone" in rw and gone(m3), rw)
+            r = run("clear", "--agent", aid[:8])
+            check("and clear removes it", "removed ended goal" in r.stdout and row(aid) is None, r.stdout)
+
+            os.makedirs(FIXTURES[0], exist_ok=True)
+            open(os.path.join(FIXTURES[0], "log"), "w").close()
+            # above any pid_max: signalling it is always ESRCH, so nothing live can ever be hit
+            write_meta("zzirr-live", {"pid": 2 ** 31 - 1, "lstart": "x", "token": "t", "goal": "g",
+                                      "started": time.time()})
+            r = run("clear", "--agent", "zzirr")
+            check("a prefix matches only goals with meta", r.returncode == 0 and "removed ended goal" in r.stdout,
+                  r.stdout + r.stderr)
+        if want("mute"):
+            print("### mute holds goal prompts, not steers", flush=True)
+            r = run("mute", "2h", "--agent", "x")
+            check("a mute over 1h is refused", r.returncode == 2 and "at most" in r.stderr, r.stderr)
+            aid = spawn_agent("mute", "Reply to every prompt with one word, then end your turn.")
+            idle = lambda: paseo("inspect", aid)["Status"] == "idle"
+            wait_for(idle, 120, 2)
+            row = lambda: next((l for l in run("ls").stdout.splitlines() if l.startswith(aid[:8])), "")
+            G = "goal: reply with one word; never run any command"
+            run("new", G, "--agent", aid, "--idle-after", "30s", "--steer-every", "1h")
+            m = note(read_meta(aid))
+            tok = m.get("token")
+            # 1. a mute holds the goal prompt until it ends, then releases it at once
+            r = run("mute", "75s", "--agent", aid)
+            until = muted_until(aid, tok)
+            check("mute starts", r.returncode == 0 and until > time.time(), r.stdout + r.stderr)
+            check("ls shows the mute", "muted" in row(), row())
+            wait_for(lambda: sent(aid, tok, "goal"), 75 + 30 + SLACK, 3)
+            g = sent(aid, tok, "goal")
+            check("no goal prompt during the mute, one right after it",
+                  bool(g) and until <= g[0] <= until + SLACK, f"until={until} goals={g}")
+            # 2. unmute wakes the watcher: wait until it is surely asleep on the 1h horizon, so only the poke can
+            #    bring the next prompt within SLACK
+            wait_for(idle, 60, 2)
+            run("mute", "1h", "--agent", aid)
+            time.sleep(30 + SLACK)
+            t_u = time.time()
+            r = run("unmute", "--agent", aid)
+            wait_for(lambda: len(sent(aid, tok, "goal")) > len(g), 30 + SLACK, 1)
+            g2 = sent(aid, tok, "goal")[len(g):]
+            check("unmute wakes the watcher at once", r.returncode == 0 and bool(g2) and g2[0] - t_u <= SLACK,
+                  f"unmute at {t_u} goals after={g2}")
+            # 2b. unmute only lifts the hold: inside the idle window it sends nothing early
+            wait_for(idle, 60, 2)
+            last = sent(aid, tok, "goal")[-1]
+            run("mute", "1h", "--agent", aid)
+            time.sleep(5)
+            t_u2 = time.time()
+            run("unmute", "--agent", aid)
+            wait_for(lambda: sent(aid, tok, "goal")[-1] > last, 30 + SLACK + 30, 1)
+            nxt = sent(aid, tok, "goal")[-1]
+            check("unmute inside the idle window sends nothing early", t_u2 < last + 30 and nxt - last >= 30,
+                  f"last goal {last}, unmute {t_u2 - last:+.0f}s, next goal {nxt - last:+.0f}s")
+            # 3. a mute never outlives its goal: replace the goal while muted
+            wait_for(idle, 60, 2)
+            run("mute", "1h", "--agent", aid)
+            run("new", G, "--agent", aid, "--idle-after", "1h", "--steer-every", "45s")
+            m2 = note(read_meta(aid))
+            check("a replaced goal does not inherit the mute", "watching" in row() and "muted" not in row(), row())
+            # 4. a bare mute lasts 1h, and steers keep their cadence during it
+            r = run("mute", "--agent", aid)
+            left = muted_until(aid, m2.get("token")) - time.time()
+            check("a bare mute lasts 1h", r.returncode == 0 and 3600 - SLACK <= left <= 3600, f"{left:.0f}s left")
+            w2 = wstart(aid, m2.get("token"))
+            wait_for(lambda: sent(aid, m2.get("token"), "steer"), 45 + SLACK + 5, 2)
+            s2 = sent(aid, m2.get("token"), "steer")
+            check("steers keep their cadence while muted", bool(s2) and 45 <= s2[0] - w2 <= 45 + SLACK,
+                  [x - w2 for x in s2])
+            run("clear", "--agent", aid)
+            drop(aid)
     finally:
         cleanup()
     listed = {a.get("id") for a in paseo("ls")}
     check("no selftest agent remains", not (listed & set(CREATED)))
+    check("no watcher started by the selftest is left running",
+          bool(PIDS) and not any(lstart(p_) == l_ for p_, l_ in PIDS), PIDS)
     check("the selftest workspace was archived",
           WS not in {w.get("workspaceId") or w.get("id") for w in paseo("workspace", "ls")})
     failed = results.count(False)
@@ -588,6 +829,12 @@ def main():
     p.add_argument("--agent", help="agent id (default: $PASEO_AGENT_ID)")
     p = sub.add_parser("clear", help="end an agent's goal")
     p.add_argument("--agent", help="agent id or prefix (default: $PASEO_AGENT_ID)")
+    p = sub.add_parser("mute", help="hold goal prompts (not steers) for a while")
+    p.add_argument("duration", nargs="?", type=dur, default=MUTE_MAX, help="at most and by default 1h")
+    p.add_argument("--agent", help="agent id or prefix (default: $PASEO_AGENT_ID)")
+    p = sub.add_parser("unmute", help="end a mute early")
+    p.add_argument("--agent", help="agent id or prefix (default: $PASEO_AGENT_ID)")
+    sub.add_parser("ls", help="list goals and whether each is being watched")
     a = ap.parse_args()
     if a.selftest is not None:
         selftest(a.selftest)
@@ -595,6 +842,12 @@ def main():
         cmd_new(a)
     elif a.cmd == "clear":
         cmd_clear(a)
+    elif a.cmd == "ls":
+        cmd_ls(a)
+    elif a.cmd == "mute":
+        cmd_mute(a)
+    elif a.cmd == "unmute":
+        cmd_unmute(a)
     else:
         ap.print_help()
         sys.exit(2)
