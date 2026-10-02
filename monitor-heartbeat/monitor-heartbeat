@@ -73,8 +73,27 @@ fmt() {  # seconds -> 43s | 6m12s | 1h07m27s
 }
 
 # Last TAIL lines of the file's final MAXBYTES, indented, safe on binary.
+# Show the first and last few lines, never just the tail. A burst of 96 test cases ends
+# in 50 identical "ok" lines, which is the least informative slice of it -- the phase
+# markers and the first failure are at the front. Marker is "| " not spaces: Monitor's
+# notification rendering strips leading whitespace, so indentation does not survive.
+show() {   # reads lines on stdin, total count in $1
+  _n=$1
+  if [ "$_n" -le "$TAIL" ]; then
+    cut -c "1-$MAXCOL" | sed 's/^/| /'
+  else
+    _h=$(( TAIL / 5 )); [ "$_h" -ge 1 ] || _h=1
+    _t=$(( TAIL - _h ))
+    _tmp=$(cat)
+    printf '%s\n' "$_tmp" | head -n "$_h"  | cut -c "1-$MAXCOL" | sed 's/^/| /'
+    printf '|  ... %s lines omitted ...\n' "$(( _n - TAIL ))"
+    printf '%s\n' "$_tmp" | tail -n "$_t"  | cut -c "1-$MAXCOL" | sed 's/^/| /'
+  fi
+}
+
 tail_body() {
-  tail -c "$MAXBYTES" "$1" 2>/dev/null | tr -d '\000' | tail -n "$TAIL" | cut -c "1-$MAXCOL" | sed 's/^/    /'
+  _c=$(tail -c "$MAXBYTES" "$1" 2>/dev/null | tr -d '\000' | wc -l | tr -d ' ')
+  tail -c "$MAXBYTES" "$1" 2>/dev/null | tr -d '\000' | show "$_c"
 }
 
 # Killing this process would otherwise orphan `sleep` for up to EVERY seconds.
@@ -136,7 +155,7 @@ while :; do
       delta=$(tail -c "+$(( OFFSET + 1 ))" "$LOG" 2>/dev/null | tail -c "$MAXBYTES" | tr -d '\000' || true)
       if [ -n "$delta" ]; then
         added=$(printf '%s\n' "$delta" | wc -l | tr -d ' ')
-        body=$(printf '%s\n' "$delta" | tail -n "$TAIL" | cut -c "1-$MAXCOL" | sed 's/^/    /')
+        body=$(printf '%s\n' "$delta" | show "$added")
       fi
       OFFSET=$size
     fi

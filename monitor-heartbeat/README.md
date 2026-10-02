@@ -9,13 +9,17 @@ monitor-heartbeat /tmp/job.log       # one line per tick, forever
 
 ```
 heartbeat build.log | 6m12s since start | quiet 3s | +47 lines | check on things and give report.
-    Compiling serde v1.0.210
-    Compiling tokio v1.40.0
+| Compiling serde v1.0.210
+| Compiling tokio v1.40.0
 heartbeat build.log | 1h07m27s since start | quiet 5m01s | +0 lines | hung, or just buffering? check on things.
 ```
 
 Each tick streams what the job wrote since the previous one, at most `--tail` lines, with
-the true count. `+47 lines` with 3 shown means go read the log; `+3` with 3 shown means you
+the true count. When there is more than that it shows the **first fifth and the last
+rest**, with `... N lines omitted ...` between — a burst of 96 test cases ends in 50
+identical `ok` lines, and the phase markers and first failure are at the front. Lines are
+prefixed `| ` rather than indented, because Monitor's notification rendering strips
+leading whitespace. `+47 lines` with 3 shown means go read the log; `+3` with 3 shown means you
 have everything. A single final line was tried first and is not enough — the last line of a
 traceback is `^^^^^`, and of a progress bar is a fragment.
 

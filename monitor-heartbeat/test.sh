@@ -127,11 +127,26 @@ kill "$s" 2>/dev/null; wait "$s" 2>/dev/null
 head -1 "$stream" | grep -q 'arming' \
   && ok "first tick says arming, does not claim a false delta" \
   || no "first tick: $(head -1 "$stream")"
-grep -q '^    alpha' "$stream" && ok "arming shows existing output" || no "no existing output shown"
+grep -q '^| alpha' "$stream" && ok "arming shows existing output" || no "no existing output shown"
 grep -q '+2 lines' "$stream" && ok "a later tick counts only what is new (+2)" || no "never reported +2: $(grep -c . "$stream") lines"
-grep -q '^    gamma' "$stream" && ok "streams the new lines, indented" || no "gamma not streamed"
+grep -q '^| gamma' "$stream" && ok "streams the new lines, marked" || no "gamma not streamed"
 grep -q '+0 lines' "$stream" && ok "an idle tick reports +0" || no "never reported +0"
 rm -f "$stream"
+
+# A burst must keep its head, not just its tail: the phase markers and the first failure
+# are at the front, and 50 trailing "ok" lines are the least informative slice.
+burst="$(mktemp)"; : > "$burst"
+"$MH" "$burst" --every 2 --tail 20 > "$burst.out" 2>&1 &
+bp=$!
+sleep 1
+{ echo "FIRSTLINE"; for i in $(seq 1 90); do echo "filler $i"; done; echo "LASTLINE"; } >> "$burst"
+sleep 3
+for c in $(pgrep -P "$bp" 2>/dev/null); do kill "$c" 2>/dev/null; done; kill "$bp" 2>/dev/null; wait "$bp" 2>/dev/null
+grep -q '^| FIRSTLINE' "$burst.out" && ok "a burst keeps its first lines" || no "head of the burst was dropped"
+grep -q '^| LASTLINE'  "$burst.out" && ok "a burst keeps its last lines"  || no "tail of the burst was dropped"
+grep -q 'lines omitted' "$burst.out" && ok "says how many it omitted" || no "no omission marker"
+grep -q '^| ' "$burst.out" && ok "marker survives whitespace stripping" || no "no | marker"
+rm -f "$burst" "$burst.out"
 
 "$MH" "$log" --every 181 >/dev/null 2>&1
 [ $? -eq 2 ] && ok "--every above 180 rejected" || no "--every 181 accepted"
