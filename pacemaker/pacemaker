@@ -1,0 +1,334 @@
+#!/usr/bin/env python3
+"""pacemaker — turn a silent long-running command into one that pings you.
+
+Meant to be run BY Monitor, which executes it and turns every line it prints into a
+notification. It works in a plain shell but then it is talking to nobody.
+
+    Monitor(pacemaker --slug build -- make -j8)        a job
+    Monitor(pacemaker --slug ci --every 120)           a bare reminder, no command
+    Monitor(pacemaker --slug build --attach)           resume after Monitor expires
+
+Under 60 seconds it says nothing at all and then hands back the whole result, so it is a
+drop-in for running the command directly. Past 60 seconds it starts reporting.
+
+The job is double-forked and reparented to init, because this harness kills the process
+TREE when a Monitor expires -- a new session alone is not enough while pacemaker is still
+the parent (measured: the job died). pacemaker also stays out of the job's data path: the
+job writes straight to its own files and pacemaker only reads them, so killing pacemaker
+can never SIGPIPE the job.
+
+Python rather than shell because shell cannot do this portably: POSIX sh has no `read -t`,
+`stat -c` is GNU-only, and `date -d`, `timeout`, `flock` and `setsid` are all missing on
+macOS. A shell poll loop also costs ~14,400 forks an hour.
+"""
+import argparse, json, os, shlex, shutil, signal, sys, time
+
+HOME = os.path.expanduser("~/.pacemaker")
+
+EVERY_DEFAULT = 75        # Minh's number
+EVERY_MAX     = 300       # Minh's number
+TIMEOUT_MAX   = 1800      # nothing may outlive Monitor's own ceiling
+QUIET_START   = 60        # below this a job is a pass-through, so say nothing at all
+SETTLE        = 1.5       # a burst has stopped when nothing new arrives for this long
+POLL          = 1.0       # must be under SETTLE or settling cannot be detected
+HUNG_AFTER    = 300       # 5 minutes of silence is worth asking about
+LINES         = 50        # per stream per emission
+HEAD          = 10        # of those, from the front: a burst's phase markers live there
+COLS          = 200       # one runaway line is not the whole notification
+PRUNE_DAYS    = 7
+PRUNE_BYTES   = 500 * 1024 * 1024
+
+
+def fmt(sec):
+    sec = int(sec)
+    h, m, s = sec // 3600, (sec % 3600) // 60, sec % 60
+    return f"{h}h{m:02d}m{s:02d}s" if h else (f"{m}m{s:02d}s" if m else f"{s}s")
+
+
+def block(text, label=None):
+    """One stream's output, capped. stdout goes unlabelled and stderr is labelled, which
+    is Minh's format. A burst keeps its head as well as its tail -- the phase markers are
+    at the front, and 40 trailing 'ok' lines are its least informative slice."""
+    lines = [l[:COLS] for l in text.splitlines()]
+    if not lines:
+        return []
+    if len(lines) > LINES:
+        lines = lines[:HEAD] + [f"... {len(lines) - LINES} lines omitted ..."] + lines[HEAD - LINES:]
+    return ([f"{label}:"] if label else []) + lines
+
+
+def emit(*parts):
+    """One flush per emission: Monitor batches stdout within 200ms into a single event."""
+    sys.stdout.write("\n".join(p for p in parts if p) + "\n")
+    sys.stdout.flush()
+
+
+class Run:
+    def __init__(self, slug):
+        self.slug = slug
+        self.dir  = os.path.join(HOME, slug)
+        self.out  = os.path.join(self.dir, "stdout")
+        self.err  = os.path.join(self.dir, "stderr")
+        self.exit = os.path.join(self.dir, "exit")
+        self.meta = os.path.join(self.dir, "meta")
+
+    def exists(self):    return os.path.isdir(self.dir)
+    def read_meta(self): return json.load(open(self.meta))
+
+    def exit_code(self):
+        """None until the job finishes. Written by the job's own shell, so it is there
+        even for a run nobody was watching."""
+        try:
+            t = open(self.exit).read().strip()
+            return int(t) if t else None
+        except (OSError, ValueError):
+            return None
+
+    @staticmethod
+    def alive(pid):
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    def start(self, cmd):
+        if self.exists():
+            m = self.read_meta()
+            if self.exit_code() is None and self.alive(m["pid"]):
+                sys.exit(f"pacemaker: '{self.slug}' is already running (pid {m['pid']}). "
+                         f"Use --attach, or pick another --slug.")
+            stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(m.get("started", time.time())))
+            shutil.move(self.dir, f"{self.dir}-{stamp}")      # keep the old run's logs
+        os.makedirs(self.dir)
+
+        # stdbuf line-buffers libc programs; PYTHONUNBUFFERED covers Python, which stdbuf
+        # cannot touch. Without both, a healthy job writes nothing for minutes and reads
+        # as hung.
+        env = dict(os.environ, PYTHONUNBUFFERED="1")
+        # shlex.quote throughout: joining argv with plain spaces destroys the caller's
+        # quoting, turning `sh -c 'sleep 60'` into `sh -c sleep` with 60 as $0.
+        inner = (f"{cmd} > {shlex.quote(self.out)} 2> {shlex.quote(self.err)}; "
+                 f"echo $? > {shlex.quote(self.exit)}")
+        argv = ["sh", "-c", inner]
+        if shutil.which("stdbuf"):
+            argv = ["stdbuf", "-oL", "-eL"] + argv
+
+        # Double fork. A new session alone does NOT survive this harness: it kills the
+        # process tree at Monitor expiry and reaches the job through pacemaker whatever
+        # session it is in. Letting the middle process exit reparents the job to init
+        # before any kill exists. setsid runs in the grandchild so it is its own group
+        # leader and os.killpg on its pid reaches the whole job later.
+        pidfile = os.path.join(self.dir, "pid")
+        mid = os.fork()
+        if mid == 0:
+            try:
+                gc = os.fork()
+                if gc == 0:
+                    os.setsid()
+                    fd = os.open(os.devnull, os.O_RDWR)
+                    os.dup2(fd, 0); os.dup2(fd, 1); os.dup2(fd, 2)
+                    os.execvpe(argv[0], argv, env)
+                with open(pidfile, "w") as f:
+                    f.write(str(gc))
+            finally:
+                os._exit(0)
+        os.waitpid(mid, 0)
+
+        for _ in range(500):
+            try:
+                pid = int(open(pidfile).read())
+                break
+            except (OSError, ValueError):
+                time.sleep(0.01)
+        else:
+            sys.exit("pacemaker: the job never reported a pid")
+
+        json.dump({"pid": pid, "started": time.time(), "cmd": cmd}, open(self.meta, "w"))
+        return pid
+
+    def kill(self, pid):
+        """Negative pid: the job is its own group leader, so this reaches the shell AND
+        the command under it. Killing the pid alone orphans the command, unstoppably."""
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(pid, sig)
+            except OSError:
+                return
+            for _ in range(50):
+                if not self.alive(pid):
+                    return
+                time.sleep(0.1)
+
+
+def prune():
+    """Only ever touch finished runs. A directory's mtime does not advance when a file
+    inside it is appended to, so an age rule alone deletes LIVE runs -- and a job whose
+    directory is gone keeps writing into an unlinked inode and can never signal that it
+    finished."""
+    if not os.path.isdir(HOME):
+        return
+    done = []
+    for name in os.listdir(HOME):
+        d, e = os.path.join(HOME, name), os.path.join(HOME, name, "exit")
+        if os.path.isdir(d) and os.path.exists(e):
+            size = sum(os.path.getsize(os.path.join(d, f))
+                       for f in os.listdir(d) if os.path.isfile(os.path.join(d, f)))
+            done.append((os.path.getmtime(e), d, size))
+    now   = time.time()
+    total = sum(s for _, _, s in done)
+    for mt, d, size in sorted(done):
+        if now - mt > PRUNE_DAYS * 86400 or total > PRUNE_BYTES:
+            shutil.rmtree(d, ignore_errors=True)
+            total -= size
+
+
+def tail_from(path, off):
+    """New bytes since `off`. A size below the offset means the file was truncated or
+    replaced; report that rather than the silence it would otherwise look like."""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return "", off, "missing"
+    if size < off:
+        return "", 0, "truncated"
+    if size == off:
+        return "", off, None
+    with open(path, "rb") as f:
+        f.seek(off)
+        data = f.read(size - off)
+    return data.decode("utf-8", "replace"), size, None
+
+
+def finish(run, started, code, o, e):
+    emit(f"{run.slug} completed in {fmt(time.time()-started)} with exit code {code}.",
+         *block(o), *block(e, "stderr"))
+
+
+def watch(run, every, timeout, attaching):
+    m = run.read_meta()
+    pid, started, cmd = m["pid"], m["started"], m["cmd"]
+    floor = every / 3                 # at most three emissions per heartbeat interval
+    oo = eo = 0
+    o = e = ""                        # buffers, NOT per-poll locals: the offset advances
+                                      # on every poll, so bytes read during a poll that
+                                      # does not emit must be held or they are lost
+
+    if attaching:
+        code = run.exit_code()
+        if code is not None:
+            po, _, _ = tail_from(run.out, 0)
+            pe, _, _ = tail_from(run.err, 0)
+            finish(run, started, code, po, pe)
+            return
+        if not run.alive(pid):
+            emit(f"{run.slug} is gone and never recorded an exit code — killed, OOM, or the "
+                 f"machine rebooted. Logs: {run.out} and {run.err}")
+            return
+        oo, eo = os.path.getsize(run.out), os.path.getsize(run.err)
+        emit(f"Re-attached to {run.slug}, running for {fmt(time.time()-started)}. {cmd}")
+
+    last_emit = last_change = time.time()
+    while True:
+        time.sleep(POLL)
+        now = time.time()
+
+        new_o, oo, ow = tail_from(run.out, oo)
+        new_e, eo, ew = tail_from(run.err, eo)
+        o += new_o
+        e += new_e
+        if new_o or new_e:
+            last_change = now
+
+        code = run.exit_code()
+        if code is not None:
+            finish(run, started, code, o, e)
+            return
+        if not run.alive(pid):
+            emit(f"{run.slug} died after {fmt(now-started)} with no exit code — killed, OOM, "
+                 f"or out of disk. Logs: {run.out} and {run.err}",
+                 *block(o), *block(e, "stderr"))
+            return
+        if timeout and now - started > timeout:
+            run.kill(pid)
+            with open(run.exit, "w") as f:
+                f.write("124")                       # the code timeout(1) uses
+            emit(f"{run.slug} hit --timeout {timeout}s and was killed after {fmt(now-started)}.",
+                 *block(o), *block(e, "stderr"))
+            return
+
+        # Silent for the first minute. Below that a job is a pass-through and the
+        # completion line says everything there is to say.
+        if now - started < QUIET_START:
+            continue
+
+        pending = o + e
+        quiet = now - last_change
+        due = (pending and quiet >= SETTLE and now - last_emit >= floor) or (now - last_emit >= every)
+        if not due:
+            continue
+
+        head = f"Heartbeat. {run.slug} running for {fmt(now-started)}."
+        if not pending:
+            head += f" Quiet for {fmt(quiet)}."
+            if quiet >= HUNG_AFTER:
+                head += " Is this hung, or is there a problem?"
+        for w, name in ((ow, "stdout"), (ew, "stderr")):
+            if w:
+                head += f" ({name} was {w})"
+        emit(head, *block(o), *block(e, "stderr"))
+        o = e = ""
+        last_emit = now
+
+
+def remind(slug, every, timeout):
+    """No pid, no logs, nothing to lose -- so nothing to detach and nothing to resume."""
+    start = time.time()
+    while True:
+        time.sleep(every)
+        if timeout and time.time() - start > timeout:
+            emit(f"Reminder for {slug} stopped after --timeout {timeout}s.")
+            return
+        emit(f"Heartbeat. Reminder to check on {slug}.")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--slug", required=True,
+                    help="names the run; you choose it, so you can always --attach")
+    ap.add_argument("--every", type=int, default=EVERY_DEFAULT, help=f"seconds, max {EVERY_MAX}")
+    ap.add_argument("--timeout", type=int, default=0,
+                    help=f"kill the job after this many seconds, max {TIMEOUT_MAX}")
+    ap.add_argument("--attach", action="store_true", help="resume watching an existing run")
+    ap.add_argument("cmd", nargs=argparse.REMAINDER)
+    a = ap.parse_args()
+
+    if not 0 < a.every <= EVERY_MAX:
+        sys.exit(f"pacemaker: --every must be 1..{EVERY_MAX}")
+    if not 0 <= a.timeout <= TIMEOUT_MAX:
+        sys.exit(f"pacemaker: --timeout must be 0..{TIMEOUT_MAX}")
+    if "/" in a.slug or a.slug.startswith("."):
+        sys.exit("pacemaker: --slug must be a plain name")
+    cmd = a.cmd[1:] if a.cmd and a.cmd[0] == "--" else a.cmd
+
+    os.makedirs(HOME, exist_ok=True)
+    run = Run(a.slug)
+
+    if a.attach:
+        if not run.exists():
+            sys.exit(f"pacemaker: no run named '{a.slug}' — it was pruned, or never started.")
+        watch(run, a.every, a.timeout, attaching=True)
+    elif cmd:
+        prune()
+        run.start(shlex.join(cmd))
+        watch(run, a.every, a.timeout, attaching=False)
+    else:
+        remind(a.slug, a.every, a.timeout)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
