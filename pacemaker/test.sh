@@ -105,6 +105,30 @@ grep -q 'already running' <<<"$out" && ok "a second run on a live slug is refuse
                                     || no "collision not caught: $out"
 kill -9 -"$(pid_of t_dup)" 2>/dev/null; kill "$pm" 2>/dev/null; clean t_dup
 
+# ---------------------------------------------------------------- listing + attach context
+clean t_list
+"$PM" --slug t_list -- sh -c 'echo listed; exit 7' >/dev/null 2>&1
+out="$("$PM" --list 2>&1)"
+grep -q 't_list' <<<"$out" && ok "--list shows a finished run" || no "--list missed it: $out"
+grep -q 'exit 7'  <<<"$out" && ok "--list shows its exit code" || no "no exit code in --list"
+grep -q 'logs:'   <<<"$out" && ok "--list says where the logs are" || no "--list omits log paths"
+
+out="$("$PM" --slug t_list --attach 2>&1)"
+grep -q 'with exit code 7' <<<"$out" && ok "attach replays a finished run" || no "attach lost the result"
+grep -q 'Full logs:' <<<"$out" && ok "attach names both log files" || no "attach omits log paths"
+clean t_list
+
+clean t_ctx
+"$PM" --slug t_ctx --every 300 -- sh -c 'echo EARLYLINE; sleep 30' >/dev/null 2>&1 &
+pm=$!; sleep 3
+"$PM" --slug t_ctx --attach --every 300 >/tmp/pm_ctx.out 2>&1 &
+a=$!; sleep 3
+for c in $(pgrep -P $a 2>/dev/null); do kill "$c" 2>/dev/null; done; kill $a 2>/dev/null; wait $a 2>/dev/null
+grep -q 'EARLYLINE' /tmp/pm_ctx.out \
+  && ok "attach to a live run shows what it already wrote" || no "attach started blind"
+rm -f /tmp/pm_ctx.out
+kill -9 -"$(pid_of t_ctx)" 2>/dev/null; kill "$pm" 2>/dev/null; clean t_ctx
+
 # ---------------------------------------------------------------- argument validation
 "$PM" --slug x --every 301 >/dev/null 2>&1;  [ $? -ne 0 ] && ok "--every above 300 rejected" || no "--every 301 accepted"
 "$PM" --slug x --timeout 1801 >/dev/null 2>&1; [ $? -ne 0 ] && ok "--timeout above 1800 rejected" || no "--timeout 1801 accepted"

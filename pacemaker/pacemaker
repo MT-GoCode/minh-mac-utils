@@ -187,6 +187,39 @@ def prune():
             total -= size
 
 
+def listing():
+    """Finished runs are only reachable by --attach while they still hold the live slot;
+    once the slug is reused the old one is archived under its start time. Without a listing
+    they are invisible."""
+    if not os.path.isdir(HOME):
+        return
+    rows = []
+    for name in sorted(os.listdir(HOME)):
+        d = os.path.join(HOME, name)
+        if not os.path.isdir(d):
+            continue
+        try:
+            m = json.load(open(os.path.join(d, "meta")))
+        except OSError:
+            continue
+        r = Run(name)
+        code = r.exit_code()
+        if code is not None:
+            state = f"exit {code}"
+        elif Run.alive(m["pid"]):
+            state = "RUNNING"
+        else:
+            state = "died"
+        rows.append((m["started"], name, state, m.get("cmd", "")))
+    if not rows:
+        print("no runs under " + HOME)
+        return
+    for started, name, state, cmd in sorted(rows):
+        print(f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(started))}  "
+              f"{state:<9} {name:<24} {cmd[:60]}")
+    print(f"\nlogs: {HOME}/<name>/stdout and /stderr")
+
+
 def tail_from(path, off):
     """New bytes since `off`. A size below the offset means the file was truncated or
     replaced; report that rather than the silence it would otherwise look like."""
@@ -204,8 +237,9 @@ def tail_from(path, off):
     return data.decode("utf-8", "replace"), size, None
 
 
-def finish(run, started, code, o, e):
-    emit(f"{run.slug} completed in {fmt(time.time()-started)} with exit code {code}.",
+def finish(run, started, code, o, e, paths=False):
+    tail = f" Full logs: {run.out} and {run.err}" if paths else ""
+    emit(f"{run.slug} completed in {fmt(time.time()-started)} with exit code {code}.{tail}",
          *block(o, where=run.out), *block(e, "stderr", where=run.err))
 
 
@@ -223,14 +257,17 @@ def watch(run, every, timeout, attaching):
         if code is not None:
             po, _, _ = tail_from(run.out, 0)
             pe, _, _ = tail_from(run.err, 0)
-            finish(run, started, code, po, pe)
+            finish(run, started, code, po, pe, paths=True)
             return
         if not run.alive(pid):
             emit(f"{run.slug} is gone and never recorded an exit code — killed, OOM, or the "
                  f"machine rebooted. Logs: {run.out} and {run.err}")
             return
-        oo, eo = os.path.getsize(run.out), os.path.getsize(run.err)
-        emit(f"Re-attached to {run.slug}, running for {fmt(time.time()-started)}. {cmd}")
+        po, oo, _ = tail_from(run.out, 0)
+        pe, eo, _ = tail_from(run.err, 0)
+        emit(f"Re-attached to {run.slug}, running for {fmt(time.time()-started)}. {cmd} "
+             f"Below is what it has written so far; full logs at {run.out} and {run.err}.",
+             *block(po, where=run.out), *block(pe, "stderr", where=run.err))
 
     last_emit = last_change = time.time()
     while True:
@@ -299,7 +336,8 @@ def remind(slug, every, timeout):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--slug", required=True,
+    ap.add_argument("--list", action="store_true", help="show every run on this machine and its state")
+    ap.add_argument("--slug",
                     help="names the run; you choose it, so you can always --attach")
     ap.add_argument("--every", type=int, default=EVERY_DEFAULT, help=f"seconds, max {EVERY_MAX}")
     ap.add_argument("--timeout", type=int, default=0,
@@ -308,6 +346,11 @@ def main():
     ap.add_argument("cmd", nargs=argparse.REMAINDER)
     a = ap.parse_args()
 
+    if a.list:
+        listing()
+        return
+    if not a.slug:
+        ap.error("--slug is required (or use --list)")
     if not 0 < a.every <= EVERY_MAX:
         sys.exit(f"pacemaker: --every must be 1..{EVERY_MAX}")
     if not 0 <= a.timeout <= TIMEOUT_MAX:
