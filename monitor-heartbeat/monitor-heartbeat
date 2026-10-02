@@ -1,52 +1,59 @@
 #!/bin/sh
-# monitor-heartbeat <logfile> [--every SECS] [--quiet-after SECS]
+# monitor-heartbeat <logfile> [--pid PID] [--every SECS] [--quiet-after SECS]
 #
-# Print one line per tick describing a long-running job, by watching only its log file.
-# Knows nothing about processes, pids, or who is reading it. Never exits on its own.
+# Print one line per tick describing a long-running job, by watching its log file.
+# Never exits on its own.
 #
-#   heartbeat 6m12s since start | quiet 3s | check on things and give report.
-#   heartbeat 1h07m27s since start | quiet 5m01s | hung? check on things.
+#   heartbeat build.log | 6m12s since start | quiet 3s | last: linking | check on things and give report.
+#   heartbeat build.log | 1h07m27s since start | quiet 5m01s | last: … | hung, or just buffering? check on things.
 #
-# "since start" is measured from the log file's BIRTH time, not from when this process
-# started, so a second watcher armed later reports the same elapsed. That is what makes
-# re-arming a watch cheap and honest.
+# "since start" is the log file's BIRTH time, not when this process started, so a second
+# watcher armed later agrees with the first. That is what makes re-arming honest.
 #
-# "quiet" is time since the log last grew. Redirect both streams into it (`cmd > log 2>&1`)
-# or stderr-only failures will look like silence.
+# "quiet" is time since the log's mtime last changed. Redirect both streams into it
+# (`cmd > log 2>&1`) AND line-buffer every stage, or a healthy job looks silent. See the
+# README: `python3 -u` does not survive a pipe, and stdbuf cannot fix Python at all.
 set -eu
 
 EVERY=75          # Minh's number.
 QUIET_AFTER=300   # 5 minutes of nothing is worth asking about.
 LOG=''
+PID=''
 
-usage() { sed -n '2,4p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --every)       EVERY="${2:?--every needs a value}"; shift 2 ;;
     --quiet-after) QUIET_AFTER="${2:?--quiet-after needs a value}"; shift 2 ;;
+    --pid)         PID="${2:?--pid needs a value}"; shift 2 ;;
     -h|--help)     usage; exit 0 ;;
+    --)            shift; LOG="${1:?-- needs a logfile}"; shift ;;
     -*)            echo "monitor-heartbeat: unknown option $1" >&2; usage >&2; exit 2 ;;
-    *)             LOG="$1"; shift ;;
+    *)             [ -z "$LOG" ] || { echo "monitor-heartbeat: one logfile only (got '$LOG' and '$1')" >&2; exit 2; }
+                   LOG="$1"; shift ;;
   esac
 done
 [ -n "$LOG" ] || { usage >&2; exit 2; }
-case "$EVERY$QUIET_AFTER" in *[!0-9]*) echo "monitor-heartbeat: --every and --quiet-after take whole seconds" >&2; exit 2 ;; esac
+for n in "$EVERY" "$QUIET_AFTER" ${PID:+"$PID"}; do
+  case "$n" in ''|*[!0-9]*) echo "monitor-heartbeat: --every/--quiet-after/--pid take whole numbers (got '$n')" >&2; exit 2 ;; esac
+  [ "${#n}" -le 9 ] || { echo "monitor-heartbeat: '$n' is absurd" >&2; exit 2; }
+done
 [ "$EVERY" -gt 0 ] || { echo "monitor-heartbeat: --every must be > 0" >&2; exit 2; }
+[ ! -e "$LOG" ] || [ -f "$LOG" ] || { echo "monitor-heartbeat: $LOG is not a regular file" >&2; exit 2; }
 
-# Pick stat's dialect by CAPABILITY, never by `uname`. A Mac with coreutils on PATH gives
-# GNU stat in a login shell and BSD stat over plain ssh -- the same machine, two dialects,
-# and `-f` means "format" to one and "filesystem" to the other. Detecting by OS reads a
+# Pick each tool's dialect by CAPABILITY, never by `uname`. A Mac with coreutils on PATH
+# gives GNU in a login shell and BSD over plain ssh -- the same machine, two dialects, and
+# `stat -f` means "format" to one and "filesystem" to the other. Detecting by OS reads a
 # filesystem report as a timestamp and silently reports quiet=0 forever.
 # (`ps -o etime=` would avoid stat entirely but returns garbage inside LXC, where the
 # container's /proc boot time disagrees with the host's; `ps -o etimes=` is GNU-only.)
 if stat -c %Y / >/dev/null 2>&1; then
-  stat_birth() { stat -c %W "$1"; }   # 0 on filesystems without birth times
-  stat_mtime() { stat -c %Y "$1"; }
+  stat_triple() { stat -c '%W %Y %i' "$1"; }   # birth is 0 where unrecorded
 else
-  stat_birth() { stat -f %B "$1"; }
-  stat_mtime() { stat -f %m "$1"; }
+  stat_triple() { stat -f '%B %m %i' "$1"; }
 fi
+when() { date -r "$1" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -d "@$1" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "epoch $1"; }
 
 fmt() {  # seconds -> 43s | 6m12s | 1h07m27s
   _h=$(( $1 / 3600 )); _m=$(( ($1 % 3600) / 60 )); _s=$(( $1 % 60 ))
@@ -56,37 +63,83 @@ fmt() {  # seconds -> 43s | 6m12s | 1h07m27s
   fi
 }
 
-START=''
+# Killing this process would otherwise orphan `sleep` for up to EVERY seconds.
+nap() {
+  sleep "$EVERY" &
+  _w=$!
+  trap 'kill "$_w" 2>/dev/null; exit 0' INT TERM
+  wait "$_w" 2>/dev/null || true
+}
+
+NAME=$(basename -- "$LOG")   # N monitors are indistinguishable without this
+START=''; INODE=''; note=''
+
 while :; do
   now=$(date +%s)
 
-  if [ -f "$LOG" ]; then
-    # Birth time is 0 on filesystems that do not record it; fall back to first sighting,
-    # which only costs correct elapsed across a re-arm.
-    birth=$(stat_birth "$LOG" 2>/dev/null || echo 0)
-    case "$birth" in ''|*[!0-9]*) birth=0 ;; esac
-    if [ "$birth" -gt 0 ]; then START="$birth"; fi
-    [ -n "$START" ] || START="$now"
-
-    # No fallback here on purpose. Substituting "now" for an unreadable mtime is what made
-    # the stat-dialect bug invisible: quiet pinned to 0 looks exactly like a healthy job.
-    mtime=$(stat_mtime "$LOG" 2>/dev/null) || mtime=''
-    case "$mtime" in
-      ''|*[!0-9]*) printf 'monitor-heartbeat: cannot read mtime of %s (stat said: %s)\n' "$LOG" "${mtime:-nothing}" >&2; exit 1 ;;
+  if [ -f "$LOG" ] && triple=$(stat_triple "$LOG" 2>/dev/null); then
+    birth=${triple%% *}; rest=${triple#* }; mtime=${rest%% *}; inode=${rest##* }
+    case "$birth$mtime" in ''|*[!0-9]*)
+      printf 'monitor-heartbeat: cannot parse stat output for %s: %s\n' "$LOG" "$triple" >&2; exit 1 ;;
     esac
+    [ "$birth" -gt 0 ] || birth=''
+
+    if [ -z "$START" ]; then
+      START=${birth:-$now}
+      INODE=$inode
+      # Said once, appended to the first tick so one tick is still one line. `>` truncates
+      # without recreating, so a reused log path keeps its old birth time and a fresh run
+      # would otherwise claim hours of elapsed with nothing to show it.
+      note=" (log created $(when "$START"))"
+    fi
+
+    replaced=''
+    if [ -n "$birth" ] && [ "$inode" != "$INODE" ]; then
+      replaced=" | log was REPLACED $(fmt $(( now - birth ))) ago (rotated or recreated)"
+      INODE=$inode
+    fi
 
     elapsed=$(( now - START )); [ "$elapsed" -ge 0 ] || elapsed=0
-    quiet=$((   now - mtime  )); [ "$quiet"   -ge 0 ] || quiet=0
+    quiet=$(( now - mtime ))
 
-    if [ "$quiet" -ge "$QUIET_AFTER" ]; then
-      printf 'heartbeat %s since start | quiet %s | hung? check on things.\n' "$(fmt "$elapsed")" "$(fmt "$quiet")"
-    else
-      printf 'heartbeat %s since start | quiet %s | check on things and give report.\n' "$(fmt "$elapsed")" "$(fmt "$quiet")"
+    # NO CLAMP on quiet. A negative value means the filesystem clock disagrees with this
+    # one (NFS/SMB skew, a container clock behind its host, rsync -t from a skewed source).
+    # Clamping it to 0 reports a dead job as perfectly healthy for as long as the skew
+    # lasts -- the precise failure this tool exists to prevent.
+    if [ "$quiet" -lt 0 ]; then
+      printf 'heartbeat %s | %s since start%s | mtime is %s in the FUTURE — clock skew, quiet is meaningless. check on things.%s\n' \
+        "$NAME" "$(fmt "$elapsed")" "$replaced" "$(fmt $(( 0 - quiet )))" "$note"
+      note=''; nap; continue
     fi
+
+    last=$(tail -c 2000 "$LOG" 2>/dev/null | tr -d '\000' | tail -1 | cut -c1-120)
+    if [ -n "$last" ]; then last=" | last: $last"; else last=' | log empty'; fi
+
+    if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then
+      printf 'heartbeat %s | %s since start%s | quiet %s%s | PID %s IS GONE — the job ended, stop the monitor.%s\n' \
+        "$NAME" "$(fmt "$elapsed")" "$replaced" "$(fmt "$quiet")" "$last" "$PID" "$note"
+    elif [ "$quiet" -ge "$QUIET_AFTER" ]; then
+      printf 'heartbeat %s | %s since start%s | quiet %s%s | hung, or just buffering? check on things.%s\n' \
+        "$NAME" "$(fmt "$elapsed")" "$replaced" "$(fmt "$quiet")" "$last" "$note"
+    else
+      printf 'heartbeat %s | %s since start%s | quiet %s%s | check on things and give report.%s\n' \
+        "$NAME" "$(fmt "$elapsed")" "$replaced" "$(fmt "$quiet")" "$last" "$note"
+    fi
+    note=''
+
   else
+    # Also covers the unlink-between-test-and-stat race. A vanished log is a condition to
+    # report, never a reason to die: the doctrine re-arms only on expiry, so exiting here
+    # would leave the job unwatched for the rest of its life.
     [ -n "$START" ] || START="$now"
-    printf 'heartbeat %s since start | no log at %s yet.\n' "$(fmt $(( now - START )))" "$LOG"
+    missing=$(( now - START ))
+    if [ "$missing" -ge "$QUIET_AFTER" ]; then
+      printf 'heartbeat %s | no log at %s after %s — wrong path, or the job died before its first write?\n' \
+        "$NAME" "$LOG" "$(fmt "$missing")"
+    else
+      printf 'heartbeat %s | %s since start | no log at %s yet.\n' "$NAME" "$(fmt "$missing")" "$LOG"
+    fi
   fi
 
-  sleep "$EVERY"
+  nap
 done

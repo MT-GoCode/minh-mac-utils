@@ -25,6 +25,8 @@ tick() {
   "$MH" "$@" > "$o" 2>&1 &
   p=$!
   sleep 1
+  # kill the child sleep too, or every tick() leaks one for --every seconds
+  for c in $(pgrep -P "$p" 2>/dev/null); do kill "$c" 2>/dev/null; done
   kill "$p" 2>/dev/null
   wait "$p" 2>/dev/null
   head -1 "$o"
@@ -63,8 +65,9 @@ esac
 a="$(tick "$log" --every 3600)"
 sleep 2
 b="$(tick "$log" --every 3600)"
-ea="$(printf '%s' "$a" | sed -n 's/heartbeat \([0-9hms]*\) since.*/\1/p')"
-eb="$(printf '%s' "$b" | sed -n 's/heartbeat \([0-9hms]*\) since.*/\1/p')"
+# the line is: heartbeat <name> | <dur> since start | ...
+ea="$(printf '%s' "$a" | sed -n 's/.*| \([0-9hms]*\) since start.*/\1/p')"
+eb="$(printf '%s' "$b" | sed -n 's/.*| \([0-9hms]*\) since start.*/\1/p')"
 if [ -n "$ea" ] && [ "$ea" != "$eb" ]; then
   ok "elapsed continues across a fresh watcher ($ea -> $eb)"
 else
@@ -82,6 +85,33 @@ esac
 
 "$MH" "$log" --every abc >/dev/null 2>&1
 [ $? -eq 2 ] && ok "non-numeric --every rejected" || no "bad --every was accepted"
+
+# --- regressions from the adversarial review -------------------------------------
+line="$(tick "$log" --every 3600)"
+case "$line" in *"last:"*) ok "line carries the log's last line" ;; *) no "no last: in $line" ;; esac
+case "$line" in heartbeat\ *"$(basename "$log")"*) ok "line names the log" ;; *) no "line does not name the log: $line" ;; esac
+
+fut="$(mktemp)"; echo x > "$fut"
+touch -d '+2 hours' "$fut" 2>/dev/null || touch -A 020000 "$fut"
+line="$(tick "$fut" --every 3600)"
+case "$line" in *FUTURE*) ok "future mtime reported, not clamped to quiet 0" ;; *) no "clock skew hidden: $line" ;; esac
+rm -f "$fut"
+
+line="$(tick "/tmp/nope-$$" --every 3600 --quiet-after 0)"
+case "$line" in *"wrong path"*) ok "missing log escalates past --quiet-after" ;; *) no "missing log never escalates: $line" ;; esac
+
+( sleep 0.1 ) & dead=$!; wait "$dead" 2>/dev/null
+line="$(tick "$log" --every 3600 --pid "$dead")"
+case "$line" in *"IS GONE"*) ok "--pid detects the job ended" ;; *) no "--pid missed a dead job: $line" ;; esac
+
+"$MH" "$log" "$log" >/dev/null 2>&1
+[ $? -eq 2 ] && ok "two logfiles rejected" || no "second positional silently won"
+
+before=$(ps -eo ppid,args --no-headers 2>/dev/null | awk '$1==1 && /sleep 600/' | wc -l)
+"$MH" "$log" --every 600 >/dev/null 2>&1 & k=$!
+sleep 1; kill -TERM "$k" 2>/dev/null; wait "$k" 2>/dev/null; sleep 1
+after=$(ps -eo ppid,args --no-headers 2>/dev/null | awk '$1==1 && /sleep 600/' | wc -l)
+[ "$after" -le "$before" ] && ok "no orphan sleep after TERM" || no "orphaned $((after-before)) sleep(s)"
 
 rm -f "$log"
 echo
