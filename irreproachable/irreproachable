@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """irreproachable — keep a Paseo agent working toward a goal until it says the goal is met.
 
-    irreproachable new "<goal>" [--idle-after 6m] [--agent ID]
+    irreproachable new "<goal>" [--steer-every 30m] [--idle-after 6m] [--steer-prompt TEXT] [--agent ID]
     irreproachable clear [--agent ID]
     irreproachable --selftest
 
 Run `new` inside a Paseo agent and it governs that agent ($PASEO_AGENT_ID). A detached watcher
-re-sends the goal whenever nothing has woken the agent for --idle-after. The agent runs
-`irreproachable clear` when the goal is met.
+re-sends the goal whenever nothing has woken the agent for --idle-after, and every --steer-every
+sends a steer -- a progress-and-discipline check -- interrupting the agent if it is busy, because
+Paseo has no queue. The agent runs `irreproachable clear` when the goal is met.
 
 It checks the agent with `paseo inspect` (1.45 s CPU each, measured) rather than holding
 `paseo wait`, because a blocked `paseo wait` holds 150 MB (measured) and this runs on a 4 GB box.
@@ -24,6 +25,7 @@ HOME          = os.path.expanduser("~/.irreproachable")
 IDLE_AFTER    = 360   # pacemaker EVERY_MAX 300s (Minh's) + 60s for ping delivery
 START_TIMEOUT = 5     # ~300x the measured 16 ms watcher startup
 SLACK         = 5     # inspect + send wall time, 1.1 s each measured, x2 headroom
+STEER_EVERY   = 1800  # Minh's number
 BUSY          = ("running", "initializing")   # Paseo BUSY_STATUSES (agent-manager.js:173)
 C_LOCALE      = {**os.environ, "LC_ALL": "C"}
 
@@ -35,6 +37,28 @@ and say so. Do not clear it to escape the work.
 
 [Goal]
 {goal}"""
+
+STEER_HEADER = "[Automated Steer -- do not ignore]"
+STEER_BODY = """Give a concise, high-signal progress report to the user of your progress relative to the final goal.
+1. If you are going down a rabbit hole, only continue if it is genuinely in the way of the goal. Can this
+   be abandoned and just accepted as debt later on? Should you research better solutions either online
+   or other code?
+2. If any judgement calls need to be made, can it be done by prioritizing progress toward the goal and
+   exemplifying the code principles?
+3. Are you exemplifying any reminders stated in the goal prompt? Are you making a concentrated effort to
+   deliver and exemplify code principles?
+
+Remember, all that matters to the user is the accomplishment of the goal in an irreproachable manner,
+exemplifying code-principles, and simplicity, whether it takes subagents, code-review, probes,
+decisions made, etc."""
+# A steer interrupts a busy agent (Paseo has no queue); this line makes it carry on afterwards (measured).
+RESUME = ("If this message cut off a tool call, that was deliberate and is not a rejection or an error. Report, "
+          "then immediately redo the interrupted step and carry on in this same turn. Do not stop to ask.")
+
+
+def steer_text(cfg):
+    return (f"{STEER_HEADER}\n{cfg['steer_prompt'] or STEER_BODY}\n\n{RESUME}\n\n"
+            f"[Goal Prompt Reminder]\n{cfg['goal']}")
 
 
 def dur(s):
@@ -183,9 +207,10 @@ def watch(cfg):
     started = lstart(me)
     assert started, "ps -o lstart= failed"     # a null lstart would make a dead watcher look alive
     write_meta(aid, {"pid": me, "lstart": started, "token": tok, "goal": cfg["goal"],
-                     "idle_after": cfg["idle_after"], "started": time.time()})
+                     "idle_after": cfg["idle_after"], "steer_every": cfg["steer_every"],
+                     "steer_prompt": cfg["steer_prompt"], "started": time.time()})
     log(aid, f"START {tok}")
-    last_sent = 0.0
+    last_sent, next_steer = 0.0, time.time() + cfg["steer_every"]
 
     def mine():
         m = read_meta(aid)
@@ -193,6 +218,19 @@ def watch(cfg):
 
     def finish(e):
         log(aid, f"END {tok} " + ("agent gone" if e.not_found else f"paseo: {e}"))
+
+    def send(kind, text, quiet):
+        nonlocal last_sent
+        if not mine():
+            return False
+        last_sent = time.time()
+        log(aid, f"SEND {tok} {kind} quiet={int(quiet)}")   # logged before the call: an END after it = not delivered
+        try:
+            paseo("send", "--no-wait", aid, "--prompt", text)
+        except PaseoError as e:
+            finish(e)
+            return False
+        return True
 
     while mine():
         try:
@@ -202,23 +240,27 @@ def watch(cfg):
         if info.get("Archived"):
             return log(aid, f"END {tok} agent gone")
         now = time.time()
+        pending = bool(info.get("PendingPermissions"))
+        idle = not pending and info["Status"] not in BUSY
+        if pending:
+            next_steer = max(next_steer, now + cfg["steer_every"])   # time waiting on Minh doesn't count
         quiet = now - max(updated_at(info), last_sent)
-        idle = not info.get("PendingPermissions") and info["Status"] not in BUSY
         # A busy (or permission-blocked) agent has not ended its turn, so its quiet clock restarts no
         # earlier than now: the earliest a goal prompt can be due is a full idle_after from now.
         due = now - quiet + cfg["idle_after"] if idle else now + cfg["idle_after"]
-        if idle and now >= due:
-            if not mine():
+        goal_due = idle and now >= due
+        # A steer due within idle_after goes out instead of the goal prompt (it carries the goal), so we
+        # never interrupt a goal prompt we just sent.
+        if now >= next_steer or (goal_due and next_steer - now < cfg["idle_after"]):
+            if not send("steer", steer_text(cfg), quiet):
                 return
-            last_sent = now
-            log(aid, f"SEND {tok} goal quiet={int(quiet)}")   # logged before the call: an END after it = not delivered
-            try:
-                paseo("send", "--no-wait", aid, "--prompt", GOAL_PROMPT.format(quiet=fmt(quiet), goal=cfg["goal"]))
-            except PaseoError as e:
-                return finish(e)
-            due = now + cfg["idle_after"]
+            next_steer, due = time.time() + cfg["steer_every"], time.time() + cfg["idle_after"]
+        elif goal_due:
+            if not send("goal", GOAL_PROMPT.format(quiet=fmt(quiet), goal=cfg["goal"]), quiet):
+                return
+            due = time.time() + cfg["idle_after"]
         # Agent activity only ever moves `due` later, so nothing can become due before it.
-        time.sleep(max(1, due - time.time()))
+        time.sleep(max(1, min(due, next_steer) - time.time()))
 
 
 # --------------------------------------------------------------------------------------------- commands
@@ -233,12 +275,13 @@ def cmd_new(a):
         die(2, f"agent {aid[:8]} is archived")
     aid = info["Id"]
     token = uuid.uuid4().hex
-    spawn({"aid": aid, "token": token, "goal": a.goal, "idle_after": a.idle_after})
+    spawn({"aid": aid, "token": token, "goal": a.goal, "idle_after": a.idle_after,
+           "steer_every": a.steer_every, "steer_prompt": a.steer_prompt})
     deadline = time.time() + START_TIMEOUT
     while time.time() < deadline:
         m = read_meta(aid)
         if m and m["token"] == token:
-            print(f"watching {aid[:8]} — goal prompt after {fmt(a.idle_after)} idle")
+            print(f"watching {aid[:8]} — goal prompt after {fmt(a.idle_after)} idle, steer every {fmt(a.steer_every)}")
             return
         time.sleep(0.05)
     die(1, f"watcher did not start (see {log_path(aid)})")
@@ -266,13 +309,21 @@ def cmd_clear(a):
 
 # --------------------------------------------------------------------------------------------- selftest
 
-def selftest():
+SECTIONS = ("args", "goal", "steer-a", "steer-b", "steer-c")
+
+
+def selftest(only):
     os.environ.pop("PASEO_AGENT_ID", None)     # the suite runs inside Minh's agent; never govern it
     SELF = os.path.abspath(__file__)
     inst = shutil.which("irreproachable")
     if not (inst and filecmp.cmp(inst, SELF, shallow=False)):
         die(1, "run ./install.sh first — the agents under test call irreproachable from PATH")
+    want = lambda name: not only or name in only
     results, CREATED = [], []
+    # One workspace for the whole run: outside an agent, `paseo run` would otherwise make one per agent and
+    # leave it behind after the agent is deleted.
+    WS = paseo("workspace", "create", "--isolation", "local", "--path", tempfile.gettempdir(),
+               "--title", "irr-selftest")["workspaceId"]
 
     def check(name, ok, detail=""):
         results.append(ok)
@@ -281,12 +332,31 @@ def selftest():
     def run(*args):
         return subprocess.run([SELF, *args], capture_output=True, text=True)
 
-    def spawn_agent(title, prompt):
-        aid = paseo("run", "--background", "--title", f"irr-selftest-{title}",
-                    "--provider", "claude/claude-haiku-4-5-20251001", "--mode", "bypassPermissions",
-                    prompt)["agentId"]
+    def spawn_agent(title, prompt, mode="bypassPermissions"):
+        aid = paseo("run", "--background", "--workspace", WS, "--title", f"irr-selftest-{title}",
+                    "--provider", "claude/claude-haiku-4-5-20251001", "--mode", mode, prompt)["agentId"]
         CREATED.append(aid)
         return aid
+
+    def drop(aid):              # one throwaway agent alive at a time: ox-dev has 4 GB
+        subprocess.run(["paseo", "delete", aid], capture_output=True)
+
+    def sent(aid, tok, kind):
+        return [t for t, e in log_lines(aid) if e.startswith(f"SEND {tok} {kind} ")]
+
+    def wstart(aid, tok):
+        return next(t for t, e in log_lines(aid) if e == f"START {tok}")
+
+    def timeline(aid):
+        return subprocess.run(["paseo", "logs", aid], capture_output=True, text=True).stdout
+
+    def line_after(tl, marker):
+        tll = tl.splitlines()
+        return [tll[i + 1] for i, l in enumerate(tll[:-1]) if l.strip() == marker]   # paseo logs cuts long lines
+
+    def meta_of(aid):           # the first meta seen; waits for the agent to have run `new`
+        wait_for(lambda: read_meta(aid) is not None, 120, 2)
+        return read_meta(aid) or {}
 
     def wait_for(pred, timeout, step):
         end = time.time() + timeout
@@ -306,77 +376,200 @@ def selftest():
                     pass
             subprocess.run(["paseo", "delete", aid], capture_output=True)
             shutil.rmtree(gdir(aid), ignore_errors=True)
+        subprocess.run(["paseo", "workspace", "archive", WS], capture_output=True)
 
     try:
-        print("### arguments", flush=True)
-        r = run("new", "x")
-        check("new with no agent exits 2", r.returncode == 2 and "no agent" in r.stderr, r.stderr)
-        r = run("new", "x", "--agent", "00000000-dead-beef-0000-000000000000")
-        check("new on a missing agent exits 2", r.returncode == 2 and "Agent not found" in r.stderr, r.stderr)
-        for bad in ("0s", "5"):
-            r = run("new", "x", "--idle-after", bad, "--agent", "x")
-            check(f"--idle-after {bad} is refused", r.returncode == 2 and "duration" in r.stderr, r.stderr)
+        if want("args"):
+            print("### arguments", flush=True)
+            r = run("new", "x")
+            check("new with no agent exits 2", r.returncode == 2 and "no agent" in r.stderr, r.stderr)
+            r = run("new", "x", "--agent", "00000000-dead-beef-0000-000000000000")
+            check("new on a missing agent exits 2", r.returncode == 2 and "Agent not found" in r.stderr, r.stderr)
+            for bad in ("0s", "5"):
+                r = run("new", "x", "--idle-after", bad, "--agent", "x")
+                check(f"--idle-after {bad} is refused", r.returncode == 2 and "duration" in r.stderr, r.stderr)
 
-        print("### goal loop", flush=True)
-        tmp = tempfile.mkdtemp(prefix="irr-")
-        n, IDLE = os.path.join(tmp, "n.txt"), 45     # longer than a Haiku turn: a send keyed to the wrong clock lands visibly early
-        GOAL = (f"Make {n} have exactly 3 lines. Each time you are prompted, append exactly ONE line to it: "
-                f"the next integer, a space, and the current Unix time in seconds (run date +%s). Never append "
-                f"more than one line in a turn. When the file has 3 lines, run: irreproachable clear")
-        # The foreground sleep keeps turn 1 busy past IDLE: a watcher that ignored "busy" would prompt mid-turn,
-        # before line 1 exists.
-        aid = spawn_agent("goal", f'This is an automated test of a tool; follow it literally. First run exactly this '
-                                  f'with Bash: `irreproachable new "{GOAL}" --idle-after {IDLE}s` Then, as a deliberate '
-                                  f'part of the test, run `sleep 60` with Bash in the FOREGROUND (run_in_background '
-                                  f'false, timeout 120000) -- do not background it. Then append the first line to {n} '
-                                  f'as the goal describes, and end your turn.')
-        seen = {}
+        if want("goal"):
+            print("### goal loop", flush=True)
+            tmp = tempfile.mkdtemp(prefix="irr-")
+            n, marks, work = (os.path.join(tmp, f) for f in ("n.txt", "marks", "work.py"))
+            IDLE = 45                   # longer than a Haiku turn: a send keyed to the wrong clock lands visibly early
+            with open(n, "w") as f:     # line 1 is ours, so the agent's first turn is only `new` plus busy work
+                f.write(f"1 {int(time.time())}\n")
+            with open(work, "w") as f:  # 50 s of observable busyness, under the 60 s foreground rule
+                f.write(f'import time\nf = open("{marks}", "a")\nf.write("START %d\\n" % time.time()); f.flush()\n'
+                        f'time.sleep(50)\nf.write("END %d\\n" % time.time())\n')
+            GOAL = (f"Make {n} have exactly 3 lines. It already has line 1. Each time you are prompted, append exactly ONE "
+                    f"line to it: the next integer, a space, and the current Unix time in seconds (run date +%s). Never "
+                    f"append more than one line in a turn. When the file has 3 lines, run: irreproachable clear")
+            aid = spawn_agent("goal", f'This is an automated test of a tool; follow it literally. First run exactly this '
+                                      f'with Bash: `irreproachable new "{GOAL}" --idle-after {IDLE}s` Then, as a deliberate '
+                                      f'part of the test, run `python3 {work}` with Bash in the FOREGROUND '
+                                      f'(run_in_background false, timeout 120000) -- do not background it. Do not touch '
+                                      f'{n} in this turn. Then end your turn and wait to be prompted.')
+            seen = {}
 
-        def cleared():
-            m = read_meta(aid)
-            if m:
-                seen.setdefault("meta", m)
-            return "meta" in seen and m is None
-        # ~20s spawn + ~80s turn 1 + 2 x (45s idle + SLACK + ~20s turn) + ~20s clear ~= 260s
-        check("the agent cleared its goal", wait_for(cleared, 420, 5))
-        meta = seen.get("meta", {})
-        check("the watcher exits", bool(meta) and wait_for(lambda: lstart(meta["pid"]) != meta["lstart"], SLACK, 1))   # clear killpg's it
-        lines = log_lines(aid)                       # read after the watcher is gone, so a late send would show
-        events = [e for _, e in lines]
-        check("the goal arrived unmangled", meta.get("goal") == GOAL, repr(meta.get("goal")))
-        check("new ran exactly once", sum(e.startswith("START ") for e in events) == 1, events)
-        tok = meta.get("token")
-        try:
-            rows = [l.split() for l in open(n).read().splitlines()]
-        except FileNotFoundError:
-            rows = []
-        ok_rows = len(rows) == 3 and [r[0] for r in rows] == ["1", "2", "3"] and all(len(r) == 2 for r in rows)
-        check("n.txt has lines 1, 2, 3", ok_rows, rows)
-        sends = [t for t, e in lines if e.startswith(f"SEND {tok} goal")]
-        check("exactly two goal prompts", len(sends) == 2, sends)
-        if ok_rows and len(sends) == 2:
-            t1, t2, t3 = (int(r[1]) for r in rows)
-            causal = t1 <= sends[0] < t2 + 1 and t2 <= sends[1] < t3 + 1
-            # quiet counts from the end of the turn that wrote the line, which is after its `date`
-            # the turn ends a few seconds after its `date`; the watcher sends right at the due time
-            gated = all(t + IDLE - 1 <= s <= t + IDLE + SLACK + 30 for t, s in ((t1, sends[0]), (t2, sends[1])))
-        else:
-            causal = gated = False
-        check("each line followed the goal prompt that caused it", causal, f"lines={rows} sends={sends}")
-        check("each prompt came idle-after after the previous line, not sooner", gated, f"lines={rows} sends={sends}")
-        cl = [t for t, e in lines if e == f"CLEARED {tok}"]
-        check("no send after the clear", bool(cl) and all(t < cl[0] for t, e in lines if e.startswith("SEND")), lines)
-        tl = subprocess.run(["paseo", "logs", aid], capture_output=True, text=True).stdout
-        tll = tl.splitlines()
-        after = [tll[i + 1] for i, l in enumerate(tll[:-1]) if l.strip() == "[Goal]"]   # paseo logs cuts long lines
-        check("the prompts carried the header and the goal",
-              tl.count("[Automated Goal Reminder") == 2 and len(after) == 2
-              and all(x.startswith(GOAL[:60]) for x in after), tl[-1500:])
-        shutil.rmtree(tmp, ignore_errors=True)
+            def cleared():
+                m = read_meta(aid)
+                if m:
+                    seen.setdefault("meta", m)
+                return "meta" in seen and m is None
+            # ~20s spawn + ~60s turn 1 + 2 x (45s idle + SLACK + ~20s turn) ~= 230s
+            check("the agent cleared its goal", wait_for(cleared, 420, 5))
+            meta = seen.get("meta", {})
+            check("the watcher exits", bool(meta) and wait_for(lambda: lstart(meta["pid"]) != meta["lstart"], SLACK, 1))   # clear killpg's it
+            lines = log_lines(aid)                       # read after the watcher is gone, so a late send would show
+            events = [e for _, e in lines]
+            check("the goal arrived unmangled", meta.get("goal") == GOAL, repr(meta.get("goal")))
+            check("new ran exactly once", sum(e.startswith("START ") for e in events) == 1, events)
+            tok = meta.get("token")
+            try:
+                rows = [l.split() for l in open(n).read().splitlines()]
+                mk = [l.split() for l in open(marks).read().splitlines()]
+            except FileNotFoundError:
+                rows, mk = [], []
+            ok_rows = len(rows) == 3 and [r[0] for r in rows] == ["1", "2", "3"] and all(len(r) == 2 for r in rows)
+            check("n.txt has lines 1, 2, 3", ok_rows, rows)
+            sends = [t for t, e in lines if e.startswith(f"SEND {tok} goal")]
+            check("exactly two goal prompts", len(sends) == 2, sends)
+            busy = [(int(a[1]), int(b[1])) for a, b in zip(mk, mk[1:]) if a[0] == "START" and b[0] == "END"]
+            check("the busy work ran", len(busy) >= 1, mk)
+            check("no prompt while the agent was busy",
+                  bool(busy) and not any(a <= s < b + 1 for s in sends for a, b in busy), f"busy={busy} sends={sends}")
+            if ok_rows and len(sends) == 2 and busy:
+                t2, t3 = int(rows[1][1]), int(rows[2][1])
+                causal = sends[0] < t2 + 1 and t2 <= sends[1] < t3 + 1
+                # quiet counts from the end of the turn: after the busy work's END, then after the `date` of line 2
+                gated = all(t + IDLE - 1 <= s <= t + IDLE + SLACK + 30 for t, s in ((busy[-1][1], sends[0]), (t2, sends[1])))
+            else:
+                causal = gated = False
+            check("each line followed the goal prompt that caused it", causal, f"lines={rows} sends={sends}")
+            check("each prompt came idle-after after the turn before it, not sooner", gated,
+                  f"busy={busy} lines={rows} sends={sends}")
+            cl = [t for t, e in lines if e == f"CLEARED {tok}"]
+            check("no send after the clear", bool(cl) and all(t < cl[0] for t, e in lines if e.startswith("SEND")), lines)
+            tl = timeline(aid)
+            after = line_after(tl, "[Goal]")
+            check("the prompts carried the header and the goal",
+                  tl.count("[Automated Goal Reminder") == 2 and len(after) == 2
+                  and all(x.startswith(GOAL[:60]) for x in after), tl[-1500:])
+            shutil.rmtree(tmp, ignore_errors=True)
+            drop(aid)
+
+        if want("steer-a"):
+            print("### steer interrupts a busy agent, which then resumes", flush=True)
+            tmp = tempfile.mkdtemp(prefix="irr-")
+            marks, done, work, dl = (os.path.join(tmp, f) for f in ("marks", "done", "work.py", "deadline"))
+            # The work runs until a deadline the selftest sets once the goal is registered: watcher start + 130, so it
+            # is ~38 s after the first steer (wstart+~92) and ~37 s before the second (~wstart+182) -- independent of
+            # how long the agent took to spawn. A resumed run only waits out the remainder.
+            with open(work, "w") as f:
+                f.write(f'import os, time\nf = open("{marks}", "a")\nf.write("START %d\\n" % time.time()); f.flush()\n'
+                        f'while not os.path.exists("{dl}") or time.time() < float(open("{dl}").read()):\n'
+                        f'    time.sleep(1)\nf.write("END %d\\n" % time.time())\n')
+            GOAL = f"After the work command finishes, append the word DONE to {done}. Then run: irreproachable clear"
+            aid = spawn_agent("steer-a", f'This is an automated test of a tool; follow it literally. As a deliberate part '
+                              f'of the test, run `python3 {work}` with Bash in the FOREGROUND (run_in_background false, '
+                              f'timeout 280000) -- do not background it. If you are interrupted, report and then run '
+                              f'that same command again. When it finishes, append the word DONE to {done}, then run: '
+                              f'irreproachable clear')
+            wait_for(lambda: os.path.exists(marks), 120, 1)          # the agent is now busy in the work command
+            run("new", GOAL, "--agent", aid, "--steer-every", "90s", "--idle-after", "1h")
+            m = read_meta(aid) or {}
+            tok = m.get("token")
+            w = wstart(aid, tok) if tok else time.time()
+            with open(dl, "w") as f:
+                f.write(str(w + 130))
+            check("the agent finished and cleared", wait_for(lambda: m and read_meta(aid) is None, 300, 5))
+            s = sent(aid, tok, "steer")
+            check("exactly one steer", len(s) == 1, s)
+            check("the steer came on cadence", len(s) == 1 and 90 <= s[0] - w <= 90 + SLACK, [x - w for x in s])
+            try:
+                mk = [l.split() for l in open(marks).read().splitlines()]
+            except FileNotFoundError:
+                mk = []
+            starts = [int(x[1]) for x in mk if x[0] == "START"]
+            cut = (len(s) == 1 and len(starts) >= 2 and starts[0] < s[0]
+                   and not any(x[0] == "END" and starts[0] <= int(x[1]) < s[0] for x in mk))
+            check("the steer cut a running command", cut, f"marks={mk} steer={s}")
+            check("the agent resumed and finished the work",
+                  bool(mk) and mk[-1][0] == "END" and os.path.exists(done) and "DONE" in open(done).read(), mk)
+            check("no goal prompt", sent(aid, tok, "goal") == [])
+            tl = timeline(aid)
+            check("the steer carried header, Minh's body, resume line and goal",
+                  "[Automated Steer" in tl and "Give a concise, high-signal" in tl and RESUME in tl
+                  and any(x.startswith(GOAL[:60]) for x in line_after(tl, "[Goal Prompt Reminder]")), tl[-1500:])
+            shutil.rmtree(tmp, ignore_errors=True)
+            drop(aid)
+
+        if want("steer-b"):
+            print("### steer cadence and --steer-prompt", flush=True)
+            aid = spawn_agent("steer-b", "Reply to every prompt with one short sentence, then end your turn.")
+            wait_for(lambda: paseo("inspect", aid)["Status"] == "idle", 120, 2)
+            run("new", "Reply to every prompt briefly.", "--agent", aid, "--steer-every", "45s", "--idle-after", "1h",
+                "--steer-prompt", "Reply with the single word PONG.")
+            m = read_meta(aid) or {}
+            tok = m.get("token")
+            w = wstart(aid, tok) if tok else time.time()
+            time.sleep(max(0, w + 240 - time.time()))
+            run("clear", "--agent", aid)
+            s = sent(aid, tok, "steer")
+            check("at least four steers in 240s", len(s) >= 4, [x - w for x in s])
+            check("the first steer came a full interval in", bool(s) and 45 <= s[0] - w <= 45 + SLACK, [x - w for x in s])
+            gaps = [b - a for a, b in zip(s, s[1:])]
+            check("every gap is one interval", bool(gaps) and all(45 <= g <= 45 + SLACK for g in gaps), gaps)
+            tl = timeline(aid)
+            check("--steer-prompt replaced only the body", "PONG" in tl and RESUME in tl and "[Automated Steer" in tl
+                  and "[Goal Prompt Reminder]" in tl and "Give a concise, high-signal" not in tl, tl[-1500:])
+            check("no goal prompt", sent(aid, tok, "goal") == [])
+            drop(aid)
+
+        if want("steer-c"):
+            print("### a pending permission holds the steer and resets its cadence", flush=True)
+            tmp = tempfile.mkdtemp(prefix="irr-")
+            # This permission prompt shows up in Minh's Paseo app; the command itself says to leave it alone.
+            aid = spawn_agent("steer-c", f"Use Bash to run exactly: echo 'irreproachable selftest -- leave this "
+                              f"permission pending, the test resolves it in 3 minutes' > {tmp}/perm", mode="default")
+            pend = lambda: bool(paseo("inspect", aid).get("PendingPermissions"))
+            check("the agent is waiting on a permission", wait_for(pend, 60, 2))
+            r = run("new", "x", "--agent", aid, "--steer-every", "150s", "--idle-after", "30s")
+            tok = (read_meta(aid) or {}).get("token")
+            samples = []
+            for _ in range(18):                 # 180s: without the hold a steer is due at +150
+                i = paseo("inspect", aid)
+                samples.append((round(time.time() - wstart(aid, tok)), i["Status"], len(i.get("PendingPermissions") or [])))
+                time.sleep(10)
+            check("the permission stayed pending", all(n for _, _, n in samples),
+                  "someone answered the permission in the Paseo app while the test held it -- re-run and leave it alone"
+              f"\nsamples={samples}\n{timeline(aid)[-1200:]}")
+            check("nothing was sent while it was pending", not any(e.startswith("SEND ") for _, e in log_lines(aid)),
+                  log_lines(aid))
+            t_r = time.time()
+            try:
+                paseo("permit", "allow", aid, "--all")
+                allowed = True
+            except PaseoError as e:
+                allowed = False
+                check("the permission could be allowed", False, str(e))
+            allowed and wait_for(lambda: sent(aid, tok, "steer"), 240, 5)
+            s = sent(aid, tok, "steer")
+            # The last pending check is at most idle_after (+inspect) before t_r, so next_steer >= t_r - 31 + 150, and
+            # the early-steer arm may send it up to idle_after sooner: >= t_r + 150 - 2*30 - SLACK. Without the reset
+            # the steer would land at the first check after t_r, <= t_r + 30 + SLACK.
+            check("the first steer came a full interval after the permission", bool(s) and s[0] >= t_r + 90 - SLACK,
+                  f"steer at t_r+{s[0] - t_r:.0f}s" if s else "no steer")
+            g = [x for x in sent(aid, tok, "goal") if s and x < s[0]]
+            check("no goal prompt within idle_after of the steer that followed it",
+                  bool(s) and all(s[0] - x >= 30 - SLACK for x in g), f"goals={[x - t_r for x in g]} steer={s and s[0] - t_r}")
+            run("clear", "--agent", aid)
+            shutil.rmtree(tmp, ignore_errors=True)
+            drop(aid)
     finally:
         cleanup()
     listed = {a.get("id") for a in paseo("ls")}
     check("no selftest agent remains", not (listed & set(CREATED)))
+    check("the selftest workspace was archived",
+          WS not in {w.get("workspaceId") or w.get("id") for w in paseo("workspace", "ls")})
     failed = results.count(False)
     print(f"{len(results)}/{len(results)} passed" if not failed else f"{failed} FAILED", flush=True)
     sys.exit(1 if failed else 0)
@@ -384,17 +577,20 @@ def selftest():
 
 def main():
     ap = argparse.ArgumentParser(prog="irreproachable", description=__doc__.split("\n")[0])
-    ap.add_argument("--selftest", action="store_true", help="run the behavioural checks against real Paseo agents")
+    ap.add_argument("--selftest", nargs="*", choices=SECTIONS, metavar="SECTION",
+                    help=f"run the behavioural checks against real Paseo agents; optionally only {', '.join(SECTIONS)}")
     sub = ap.add_subparsers(dest="cmd")
     p = sub.add_parser("new", help="give an agent a goal")
     p.add_argument("goal")
     p.add_argument("--idle-after", type=dur, default=IDLE_AFTER, help="quiet time before the goal prompt (default 6m)")
+    p.add_argument("--steer-every", type=dur, default=STEER_EVERY, help="steer cadence; interrupts if busy (default 30m)")
+    p.add_argument("--steer-prompt", help="replace the steer's body (header, resume line and goal are kept)")
     p.add_argument("--agent", help="agent id (default: $PASEO_AGENT_ID)")
     p = sub.add_parser("clear", help="end an agent's goal")
     p.add_argument("--agent", help="agent id or prefix (default: $PASEO_AGENT_ID)")
     a = ap.parse_args()
-    if a.selftest:
-        selftest()
+    if a.selftest is not None:
+        selftest(a.selftest)
     elif a.cmd == "new":
         cmd_new(a)
     elif a.cmd == "clear":
