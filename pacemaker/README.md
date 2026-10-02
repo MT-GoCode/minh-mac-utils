@@ -71,9 +71,15 @@ well under a kilobyte of notification and a fixed amount of memory:
 The *log* is complete; only the ping is abridged. "never read" is the honest part — the
 line count either side of a skip is a floor, and saying so beats a confident wrong total.
 
-**Eager by default.** It pings when a burst *settles* (1.5s of quiet), not on a clock —
-with a floor of `--every / 3` so a chatty job cannot storm you, and a ceiling of `--every`
-so a silent one still reports. Set `--every` to what you can stand hearing from.
+**Eager, and there is no other mode.** It pings when a burst *settles* (1.5s of quiet),
+not on a clock. Two flat numbers bound it: **at most one ping per 20s, at least one per
+`--every`.**
+
+The floor is a constant rather than a fraction of `--every` so both are statable on their
+own. It binds only on *bursty* jobs — a continuously chatty one never goes quiet for 1.5s,
+so it never takes the eager path and reports on the `--every` clock instead. The trade,
+stated plainly: raising `--every` slows the silence pings but not a bursty job, because an
+eager ping always carries new output. It is news, not noise.
 
 ## Surviving Monitor
 

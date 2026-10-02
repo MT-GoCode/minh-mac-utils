@@ -30,6 +30,7 @@ EVERY_MAX     = 300       # Minh's number
 TIMEOUT_MAX   = 1800      # nothing may outlive Monitor's own ceiling
 QUIET_START   = 60        # below this a job is a pass-through, so say nothing at all
 SETTLE        = 1.5       # a burst has stopped when nothing new arrives for this long
+FLOOR         = 20        # never ping more often than this, even with news to carry
 POLL          = 1.0       # must be under SETTLE or settling cannot be detected
 HUNG_AFTER    = 300       # 5 minutes of silence is worth asking about
 LINES         = 50        # per stream per emission
@@ -460,7 +461,12 @@ def drain(run, so, se, oo, eo):
     """One last read. The job's shell writes `exit` only after the command's output is
     already in the files, but our read happened a tick earlier -- without this the final
     lines of a short command can be lost, which is exactly the kind of green-and-wrong
-    this tool exists to prevent."""
+    this tool exists to prevent.
+
+    NOT COVERED BY --selftest, and honestly so: the window between the poll's read and its
+    exit-file check is sub-millisecond, so no timing-based test can reliably land in it.
+    Mutation testing confirms the suite stays green with this call deleted. It is kept
+    because it is nearly free and strictly safer, not because anything proves it works."""
     (h, tl, sk), oo, _ = read_delta(run.out, oo, run.fd("stdout")); so.feed(h, tl, sk)
     (h, tl, sk), eo, _ = read_delta(run.err, eo, run.fd("stderr")); se.feed(h, tl, sk)
     return oo, eo
@@ -481,7 +487,13 @@ def watch(run, every, timeout, attaching):
     except (OSError, ValueError, KeyError, TypeError):
         sys.exit(f"pacemaker: '{run.slug}' has no readable meta. Anything it wrote is "
                  f"under {short(run.dir)}")
-    floor = every / 3                 # at most three emissions per heartbeat interval
+    # A flat 20s, not a fraction of --every. Two independent numbers you can state --
+    # "at most one ping per 20s, at least one per --every" -- beat one number and a made-up
+    # ratio. It also only binds on BURSTY jobs: a continuously chatty one never settles, so
+    # it never takes the eager branch at all. The cost, stated plainly: raising --every no
+    # longer throttles a bursty job, only the silent-job cadence. That is the right way
+    # round, because an eager ping always carries new output -- it is news, not noise.
+    floor = min(FLOOR, every)         # a floor above the ceiling would be meaningless
     so = Stream(None, run.out)        # stdout is unlabelled, Minh's format
     se = Stream("stderr", run.err)
     oo = eo = 0
@@ -834,6 +846,20 @@ def selftest():
     check(open(os.path.join(HOME, S + "tmo", "exit")).read().strip() == "124",
           "timeout records exit 124")
     clean(S + "tmo")
+
+    # `sleep` dies on SIGTERM, so the checks above pass even with the SIGKILL escalation
+    # deleted -- mutation testing proved exactly that, on the very bug this escalation was
+    # added to fix. This child ignores SIGTERM, so only a real escalation ends it.
+    clean(S + "stubborn")
+    _, out = pm("--slug", S + "stubborn", "--every", "300", "--timeout", "3", "--",
+                "python3", "-c", "import signal,time\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(120)")
+    jp = job_pid(S + "stubborn")
+    time.sleep(1)
+    check(jp and not Run.group_alive(jp) and "was killed" in out,
+          "--timeout escalates to SIGKILL for a child that ignores SIGTERM",
+          f"group_alive={jp and Run.group_alive(jp)}; {out[:70]}".replace("\n", "|"))
+    kill_job(S + "stubborn"); clean(S + "stubborn")
 
     clean(S + "died")
     p = subprocess.Popen(ME + ["--slug", S + "died", "--every", "300",
