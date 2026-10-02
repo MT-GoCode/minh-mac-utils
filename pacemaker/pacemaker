@@ -45,7 +45,7 @@ def fmt(sec):
     return f"{h}h{m:02d}m{s:02d}s" if h else (f"{m}m{s:02d}s" if m else f"{s}s")
 
 
-def block(text, label=None):
+def block(text, label=None, where=None):
     """One stream's output, capped. stdout goes unlabelled and stderr is labelled, which
     is Minh's format. A burst keeps its head as well as its tail -- the phase markers are
     at the front, and 40 trailing 'ok' lines are its least informative slice."""
@@ -53,7 +53,11 @@ def block(text, label=None):
     if not lines:
         return []
     if len(lines) > LINES:
-        lines = lines[:HEAD] + [f"... {len(lines) - LINES} lines omitted ..."] + lines[HEAD - LINES:]
+        # Say where the rest is. Without this the agent sees "36 lines omitted" and has
+        # no way to reach them short of already knowing the directory convention.
+        gap = f"... {len(lines) - LINES} lines omitted, full log at {where} ..." if where \
+              else f"... {len(lines) - LINES} lines omitted ..."
+        lines = lines[:HEAD] + [gap] + lines[HEAD - LINES:]
     return ([f"{label}:"] if label else []) + lines
 
 
@@ -202,7 +206,7 @@ def tail_from(path, off):
 
 def finish(run, started, code, o, e):
     emit(f"{run.slug} completed in {fmt(time.time()-started)} with exit code {code}.",
-         *block(o), *block(e, "stderr"))
+         *block(o, where=run.out), *block(e, "stderr", where=run.err))
 
 
 def watch(run, every, timeout, attaching):
@@ -276,7 +280,7 @@ def watch(run, every, timeout, attaching):
         for w, name in ((ow, "stdout"), (ew, "stderr")):
             if w:
                 head += f" ({name} was {w})"
-        emit(head, *block(o), *block(e, "stderr"))
+        emit(head, *block(o, where=run.out), *block(e, "stderr", where=run.err))
         o = e = ""
         last_emit = now
 

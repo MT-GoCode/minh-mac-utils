@@ -30,6 +30,16 @@ grep -q '^stderr:$' <<<"$out" && grep -q '^oops$' <<<"$out" \
   && ok "stderr is passed through, labelled" || no "stderr missing or unlabelled"
 grep -q Heartbeat <<<"$out" && no "a sub-60s job must stay silent" || ok "no heartbeat under 60s"
 
+# ---------------------------------------------------------------- truncation
+clean t_trunc
+out="$("$PM" --slug t_trunc -- sh -c 'for i in $(seq 1 70); do echo "line $i"; done' 2>&1)"
+grep -q 'lines omitted' <<<"$out" && ok "a long burst is truncated" || no "no truncation at 70 lines"
+grep -q "full log at .*t_trunc/stdout" <<<"$out" \
+  && ok "truncation says where the full log is" || no "no log path in the omission marker"
+grep -q '^line 1$'  <<<"$out" && ok "truncation keeps the head" || no "head dropped"
+grep -q '^line 70$' <<<"$out" && ok "truncation keeps the tail" || no "tail dropped"
+clean t_trunc
+
 # ---------------------------------------------------------------- quoting
 clean t_quote
 out="$("$PM" --slug t_quote --every 5 -- sh -c 'printf "%s\n" "a b c"' 2>&1)"
