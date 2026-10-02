@@ -1,5 +1,5 @@
 // swift-tools-version:5.9
-// MacUtilsCore — shared plumbing for Minh Trinh's macOS self-discipline tools (minh-mac-utils).
+// MacUtilsCore — shared plumbing for Minh Trinh's macOS self-discipline tools (minh-qol-utilities).
 // Edit here; nothing is vendored anywhere. Foundation-only: anything that needs AppKit stays in the app.
 import PackageDescription
 let package = Package(

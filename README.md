@@ -1,4 +1,4 @@
-# minh-mac-utils
+# minh-qol-utilities
 
 My macOS self-discipline + workflow tools. Each is a self-contained folder with its own README
 (architecture, file layout, permissions, OS interactions). This page is the **index** and the
@@ -17,7 +17,7 @@ first so you enter your password once. Full step-by-step setup (permissions + se
 
 **Uninstall everything:**
 ```bash
-cd ~/code/minh-mac-utils
+cd ~/code/minh-qol-utilities
 sudo -v
 sudo nextdns-sidecar networklockdown disarm
 sudo demonlock disarm
@@ -36,7 +36,7 @@ sudo ./demonlock/uninstall.sh
 
 **Reinstall everything:**
 ```bash
-cd ~/code/minh-mac-utils && git pull
+cd ~/code/minh-qol-utilities && git pull
 sudo -v
 sudo ./demonlock/install.sh
 sudo ./multistreamviewer/install.sh
@@ -64,6 +64,7 @@ sudo ./demonlock/register-recommended-spares.sh
 | **stayup** | menu-bar toggle for staying awake with the lid closed (`pmset disablesleep`); `stayup` CLI | `sudo ./stayup/install.sh` | yes |
 | **blockrem** | scheduled **un-quittable screen blocks** for forced breaks — a root daemon revives a grey full-screen cover + input freeze at each alarm; **fail-open** (a bug always lifts it); managing alarms is no-sudo | `sudo ./blockrem/install.sh` | yes |
 | **browser-blitz** | drive your **real, logged-in Chrome** with `agent-browser`: a shim impersonates a Chrome CDP endpoint over an MV3 extension, and each agent session is fenced to its own tab group; `browser-blitz` CLI | `./browser-blitz/browser-blitz/install.sh` | no |
+| **monitor-heartbeat** | tells you a long-running job is still alive by watching only its log: one line per tick with elapsed and how long it has been silent, so a hang stops looking like work. No daemon, no state, no pids. **Also runs on Linux.** | `./monitor-heartbeat/install.sh` | no |
 | **gitas** | one git identity manager: per-account name/email/PAT in one 0600 file, routed automatically by remote URL (authorship *and* auth from the same trigger). All GitHub over HTTPS+PAT — no keys, no `gh auth`. **Also runs on Linux.** | `./gitas/install.sh <accounts.ini>` | no |
 
 **Paseo daemon (`scripts/`).** `scripts/setup-paseo-daemon.sh` hands the third-party Paseo daemon to
@@ -125,7 +126,7 @@ paused; no-op if nowplaying-cli isn't installed).
 - *(Optional)* **Pluckeye** — an extra layer; the lockers' real teeth is demonlock's admin-release-valve delay.
 
 ### 2. Install (each app is `sudo ./<app>/install.sh`)
-`git clone https://github.com/MT-GoCode/minh-mac-utils.git ~/code/minh-mac-utils && cd ~/code/minh-mac-utils`
+`git clone https://github.com/MT-GoCode/minh-qol-utilities.git ~/code/minh-qol-utilities && cd ~/code/minh-qol-utilities`
 (https — a fresh machine has no SSH key yet), then, in this order:
 
 1. **demonlock** — `sudo ./demonlock/install.sh` → `demonlock perm-ask` (grant **Location → Always** *and* **Accessibility**, the latter for settings-guard) → `demonlock scan` / `demonlock zones` / `sudo demonlock setpolicy '…'` → `sudo demonlock arm`. Configure the admin release valve (`sudo demonlock admin-release-valve set-gate-policy/set-delay/set-max-request-duration`) so you can get sudo back without holding a password.

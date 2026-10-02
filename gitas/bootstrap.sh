@@ -11,8 +11,8 @@
 # never lands in .git/config.
 set -euo pipefail
 
-ACC="${1:-}"; REPO_DIR="${2:-$HOME/code/minh-mac-utils}"
-REPO_URL="https://github.com/MT-GoCode/minh-mac-utils.git"
+ACC="${1:-}"; REPO_DIR="${2:-$HOME/code/minh-qol-utilities}"
+REPO_URL="https://github.com/MT-GoCode/minh-qol-utilities.git"
 BINDIR="$HOME/.local/bin"
 
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }

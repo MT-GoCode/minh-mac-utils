@@ -1,0 +1,82 @@
+#!/bin/sh
+# monitor-heartbeat <logfile> [--every SECS] [--quiet-after SECS]
+#
+# Print one line per tick describing a long-running job, by watching only its log file.
+# Knows nothing about processes, pids, or who is reading it. Never exits on its own.
+#
+#   heartbeat 6m12s since start | quiet 3s | check on things and give report.
+#   heartbeat 1h07m27s since start | quiet 5m01s | hung? check on things.
+#
+# "since start" is measured from the log file's BIRTH time, not from when this process
+# started, so a second watcher armed later reports the same elapsed. That is what makes
+# re-arming a watch cheap and honest.
+#
+# "quiet" is time since the log last grew. Redirect both streams into it (`cmd > log 2>&1`)
+# or stderr-only failures will look like silence.
+set -eu
+
+EVERY=75          # Minh's number.
+QUIET_AFTER=300   # 5 minutes of nothing is worth asking about.
+LOG=''
+
+usage() { sed -n '2,4p' "$0" | sed 's/^# \{0,1\}//'; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --every)       EVERY="${2:?--every needs a value}"; shift 2 ;;
+    --quiet-after) QUIET_AFTER="${2:?--quiet-after needs a value}"; shift 2 ;;
+    -h|--help)     usage; exit 0 ;;
+    -*)            echo "monitor-heartbeat: unknown option $1" >&2; usage >&2; exit 2 ;;
+    *)             LOG="$1"; shift ;;
+  esac
+done
+[ -n "$LOG" ] || { usage >&2; exit 2; }
+case "$EVERY$QUIET_AFTER" in *[!0-9]*) echo "monitor-heartbeat: --every and --quiet-after take whole seconds" >&2; exit 2 ;; esac
+[ "$EVERY" -gt 0 ] || { echo "monitor-heartbeat: --every must be > 0" >&2; exit 2; }
+
+# The only platform-dependent thing here. `ps -o etime=` would avoid it but returns garbage
+# inside LXC (the container's /proc boot time disagrees with the host's), and `ps -o etimes=`
+# does not exist on macOS at all.
+case "$(uname -s)" in
+  Darwin) stat_birth() { stat -f %B "$1"; }; stat_mtime() { stat -f %m "$1"; } ;;
+  *)      stat_birth() { stat -c %W "$1"; }; stat_mtime() { stat -c %Y "$1"; } ;;
+esac
+
+fmt() {  # seconds -> 43s | 6m12s | 1h07m27s
+  _h=$(( $1 / 3600 )); _m=$(( ($1 % 3600) / 60 )); _s=$(( $1 % 60 ))
+  if   [ "$_h" -gt 0 ]; then printf '%dh%02dm%02ds' "$_h" "$_m" "$_s"
+  elif [ "$_m" -gt 0 ]; then printf '%dm%02ds' "$_m" "$_s"
+  else                       printf '%ds' "$_s"
+  fi
+}
+
+START=''
+while :; do
+  now=$(date +%s)
+
+  if [ -f "$LOG" ]; then
+    # Birth time is 0 on filesystems that do not record it; fall back to first sighting,
+    # which only costs correct elapsed across a re-arm.
+    birth=$(stat_birth "$LOG" 2>/dev/null || echo 0)
+    case "$birth" in ''|*[!0-9]*) birth=0 ;; esac
+    if [ "$birth" -gt 0 ]; then START="$birth"; fi
+    [ -n "$START" ] || START="$now"
+
+    mtime=$(stat_mtime "$LOG" 2>/dev/null || echo "$now")
+    case "$mtime" in ''|*[!0-9]*) mtime="$now" ;; esac
+
+    elapsed=$(( now - START )); [ "$elapsed" -ge 0 ] || elapsed=0
+    quiet=$((   now - mtime  )); [ "$quiet"   -ge 0 ] || quiet=0
+
+    if [ "$quiet" -ge "$QUIET_AFTER" ]; then
+      printf 'heartbeat %s since start | quiet %s | hung? check on things.\n' "$(fmt "$elapsed")" "$(fmt "$quiet")"
+    else
+      printf 'heartbeat %s since start | quiet %s | check on things and give report.\n' "$(fmt "$elapsed")" "$(fmt "$quiet")"
+    fi
+  else
+    [ -n "$START" ] || START="$now"
+    printf 'heartbeat %s since start | no log at %s yet.\n' "$(fmt $(( now - START )))" "$LOG"
+  fi
+
+  sleep "$EVERY"
+done

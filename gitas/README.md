@@ -24,7 +24,7 @@ Copy your filled-in `accounts.ini` onto the machine by hand — it holds PATs an
 then copy `bootstrap.sh` across and run it:
 
 ```bash
-./bootstrap.sh ~/my-accounts.ini            # optional 2nd arg: repo dir, default ~/code/minh-mac-utils
+./bootstrap.sh ~/my-accounts.ini            # optional 2nd arg: repo dir, default ~/code/minh-qol-utilities
 ```
 
 `bootstrap.sh` is idempotent and does the whole machine: checks `git >= 2.36` (below that,

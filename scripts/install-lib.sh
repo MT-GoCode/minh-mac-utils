@@ -1,5 +1,5 @@
 #!/bin/bash
-# Shared install primitives for minh-mac-utils. Sourced by each app's install.sh / uninstall.sh and by
+# Shared install primitives for minh-qol-utilities. Sourced by each app's install.sh / uninstall.sh and by
 # the top-level install-all.sh. Every dl_* function assumes ROOT with SUDO_USER set unless noted.
 # Manifests declare a few vars + provide_bundle()/post_install(); dl_run_manifest wires the flow:
 #   build (provide_bundle) → [dl_stop if STOP_FIRST=yes] → deploy → CLI → post_install → spare.
