@@ -246,10 +246,16 @@ def updated_at(info):
 
 # ---------------------------------------------------------------------------------------------- watcher
 
+WATCH_ARG, WATCH_ENV = "_watch", "IRREPROACHABLE_WATCH"
+
+
 def spawn(cfg):
     """Double fork: the middle process exits so the watcher is reparented to init before the tool
     call that launched it ends. setsid makes the watcher's pid its process group, so `clear`'s
-    killpg also takes down a `paseo send` that is in flight."""
+    killpg also takes down a `paseo send` that is in flight. The watcher then re-execs as
+    `irreproachable _watch`, so its command line never carries the goal: an agent running
+    `pkill -f <a word from its goal>` must not kill its own watcher."""
+    me = os.path.abspath(sys.argv[0])
     mid = os.fork()
     if mid:
         os.waitpid(mid, 0)
@@ -262,7 +268,7 @@ def spawn(cfg):
                 fd = os.open(os.devnull, os.O_RDWR)
                 for n in (0, 1, 2):
                     os.dup2(fd, n)
-                watch(cfg)
+                os.execve(sys.executable, [sys.executable, me, WATCH_ARG], {**os.environ, WATCH_ENV: json.dumps(cfg)})
             except BaseException as e:
                 try:
                     log(cfg["aid"], f"END {cfg['token']} crashed: {type(e).__name__}: {e}")
@@ -717,6 +723,9 @@ def selftest(only):
             check("the replaced goal is never delivered, the new one is",
                   any(x.startswith("goal two") for x in after) and not any(x.startswith("goal one") for x in after),
                   after)
+            subprocess.run(["pkill", "-f", "goal two"], capture_output=True)   # an agent killing what its goal names
+            time.sleep(1)
+            check("pkill -f on words from the goal leaves the watcher alive", bool(m2) and not gone(m2))
             os.kill(m2["pid"], signal.SIGKILL)
             wait_for(lambda: gone(m2), SLACK, 0.5)
             rw = row(aid) or ""
@@ -816,7 +825,22 @@ def selftest(only):
     sys.exit(1 if failed else 0)
 
 
+def run_watcher():
+    cfg = json.loads(os.environ.pop(WATCH_ENV))
+    try:
+        watch(cfg)
+    except BaseException as e:
+        try:
+            log(cfg["aid"], f"END {cfg['token']} crashed: {type(e).__name__}: {e}")
+        except BaseException:
+            pass    # the goal directory may already be gone; there is nobody left to tell
+    finally:
+        os._exit(0)
+
+
 def main():
+    if sys.argv[1:] == [WATCH_ARG]:
+        return run_watcher()
     ap = argparse.ArgumentParser(prog="irreproachable", description=__doc__.split("\n")[0])
     ap.add_argument("--selftest", nargs="*", choices=SECTIONS, metavar="SECTION",
                     help=f"run the behavioural checks against real Paseo agents; optionally only {', '.join(SECTIONS)}")
