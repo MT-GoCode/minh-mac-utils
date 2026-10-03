@@ -656,7 +656,8 @@ def selftest(only):
                               f"permission pending, the test resolves it in 3 minutes' > {tmp}/perm", mode="default")
             pend = lambda: bool(paseo("inspect", aid).get("PendingPermissions"))
             check("the agent is waiting on a permission", wait_for(pend, 60, 2))
-            r = run("new", "x", "--agent", aid, "--steer-every", "150s", "--idle-after", "30s")
+            r = run("new", "reply with one word; never run any command", "--agent", aid, "--steer-every", "150s",
+                    "--idle-after", "30s")
             tok = note(read_meta(aid)).get("token")
             samples = []
             for _ in range(18):                 # 180s: without the hold a steer is due at +150
@@ -671,6 +672,11 @@ def selftest(only):
             t_r = time.time()
             try:
                 paseo("permit", "allow", aid, "--all")
+                # A default-mode agent that tries a tool after a goal prompt raises a second permission, which the
+                # watcher rightly holds for too. That is not under test here, so nothing after this one may block.
+                m = subprocess.run(["paseo", "agent", "mode", aid, "bypassPermissions"], capture_output=True, text=True)
+                check("the agent could be switched to bypass after the held permission", m.returncode == 0,
+                      m.stdout + m.stderr)
                 allowed = True
             except PaseoError as e:
                 allowed = False
